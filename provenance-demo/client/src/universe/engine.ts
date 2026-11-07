@@ -29,7 +29,7 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2'
 export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
 
 const EYE = 1.7
-const TRAIL_MS = 35
+const TRAIL_MS = 16
 
 interface Universe {
   def: UniverseDef
@@ -479,7 +479,7 @@ export class UniverseEngine {
     this.lastFrame = now
     const t = (now - this.startedAt) / 1000
 
-    this.look.lerp(this.ndc, 1 - Math.exp(-dt * 2.5))
+    this.look.lerp(this.ndc, 1 - Math.exp(-dt * 5))
     this.travel(dt, t)
     this.placeCamera(1 - Math.exp(-dt * 6))
     this.updateDoors(dt, t)
@@ -632,7 +632,7 @@ export class UniverseEngine {
   /** Project recent pointer stamps to the screen for the finishing pass's lingering ripple. */
   private updateWake(now: number, inside: number) {
     const cam = inside >= 0 ? this.universes[inside].cam : this.camera
-    const strength = this.reducedMotion ? 0 : 1
+    const strength = 0 // screen ripple retired: it smeared the image; the particle wake carries the effect
     let prev: THREE.Vector3 | null = null, prevT = 0
     for (let i = WAKE_STAMPS - 1; i >= 0; i--) {
       const e = this.trail[i]

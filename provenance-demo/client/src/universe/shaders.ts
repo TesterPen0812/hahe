@@ -162,6 +162,14 @@ export const fieldVertex = /* glsl */ `
       p.x += sin(t * 0.25 + p.y * 0.4 + aSeed * 9.0) * 0.05;
       vFade = smoothstep(0.0, 0.2, slide) * (1.0 - smoothstep(0.75, 1.0, slide));
       vTwinkle = 0.75 + 0.35 * sin(t * (0.8 + aSeed) + aSeed * 60.0);
+    } else if (uMode > 12.5) {
+      // Glass beads strung on hanging columns: they creep down their strand and sway together.
+      float slide = fract(t * (0.012 + fract(aSeed * 5.7) * 0.02) + aSeed * 7.0);
+      p.y -= slide * 1.6;
+      float sway = sin(t * 0.35 + p.x * 0.15 + p.z * 0.05);
+      p.x += sway * 0.06 * (1.0 + p.y * 0.04);
+      vFade = smoothstep(0.0, 0.25, slide) * (1.0 - smoothstep(0.7, 1.0, slide));
+      vTwinkle = 0.9 + 0.2 * sin(t * (0.5 + aSeed) + aSeed * 40.0);
     } else {
       // The Q-Day curtain: strands sway; once crossed they part away from the path like a veil.
       float open = clamp((0.55 - uOpacity) / 0.4, 0.0, 1.0);
@@ -178,10 +186,10 @@ export const fieldVertex = /* glsl */ `
       if (tr.w > 0.0) {
         vec2 d = p.xz - tr.xy;
         float r2 = dot(d, d);
-        float fall = exp(-r2 / 5.0) * exp(-tr.z * 1.4) * tr.w;
+        float fall = exp(-r2 / 4.0) * exp(-tr.z * 2.2) * tr.w;
         vec2 dir = d * inversesqrt(max(r2, 1e-4));
-        p.xz += dir * fall * 0.9;
-        p.y += fall * 0.7;
+        p.xz += dir * fall * 1.3;
+        p.y += fall * 0.9;
         vTwinkle += fall * 0.6;
       }
     }
@@ -235,6 +243,21 @@ export const fieldFragment = /* glsl */ `
     float a = shape * vEnergy * (1.0 - fog * fog) * near * op * vFade;
     // distant grains take on the colour of the air
     vec3 col = mix(vColor * vTwinkle, uFogColor, fog * 0.7);
+    if (uMode > 12.5 && vBlur < 0.55) {
+      // An in-focus bead is a small glass sphere: lit from above-left, dark limb, bright rim.
+      vec2 q = gl_PointCoord * 2.0 - 1.0;
+      float rr = dot(q, q);
+      if (rr > 1.0) discard;
+      vec3 n = vec3(q.x, -q.y, sqrt(1.0 - rr));
+      float lit = 0.32 + 0.68 * max(dot(n, normalize(vec3(-0.45, 0.6, 0.65))), 0.0);
+      float rim = pow(1.0 - n.z, 3.0) * 0.6;
+      float spec = pow(max(dot(n, normalize(vec3(-0.35, 0.45, 0.82))), 0.0), 40.0) * 0.9;
+      float k = 1.0 - smoothstep(0.2, 0.55, vBlur);
+      vec3 glass = mix(vColor * vTwinkle, uFogColor, fog * 0.7) * (lit + rim) + spec;
+      float ga = smoothstep(1.0, 0.86, sqrt(rr)) * (1.0 - fog * fog) * near * op * vFade;
+      col = mix(col, glass, k);
+      a = mix(a, ga, k);
+    }
     gl_FragColor = vec4(col, a);
   }
 `

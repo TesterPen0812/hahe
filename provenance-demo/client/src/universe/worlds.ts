@@ -432,80 +432,88 @@ export function universeScene(def: UniverseDef, u: SceneUniforms, lowPower: bool
     }))
   }
   const tint = def.tint
-  scene.add(glowingPath(u, [{ curve: pathCurve, branch: 1, density: lowPower ? 60 : 120 }], [tint, tint, tint], 31, 110, h))
+  const walk = def.id === 'hybrid' ? HYBRID_PATH : pathCurve
+  scene.add(glowingPath(u, [{ curve: walk, branch: 1, density: lowPower ? 60 : 120 }], [tint, tint, tint], 31, 110, h))
   return scene
 }
 
 // ── The hybrid world: post-quantum, ordered, calm ──────────────────────────
 
+// Our world: a tunnel of hanging glass beads, quiet and exact, lit by one light ahead.
+// Gentle floor, nearly flat near the door so the threshold is level.
 const hybridHeight = (x: number, z: number) =>
-  entrance(x, z) * (1.2 * Math.sin(x * 0.06) * Math.cos(z * 0.04) + 0.7 * fbm(x * 0.035, z * 0.035, 3))
+  entrance(x, z) * (0.6 * fbm(x * 0.04, z * 0.04, 3) + 0.25 * Math.sin(x * 0.08))
 
-const HYBRID_FOG: RGB = [0.012, 0.09, 0.09]
+const HYBRID_FOG: RGB = [0.01, 0.06, 0.05]
+
+/** The walk inside our world: straight through the door, then winding toward the light. */
+export const HYBRID_PATH = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0, 0, -0.5), new THREE.Vector3(0, 0, -16), new THREE.Vector3(1.6, 0, -30),
+  new THREE.Vector3(-1.8, 0, -44), new THREE.Vector3(1.2, 0, -58), new THREE.Vector3(-0.6, 0, -72),
+  new THREE.Vector3(0.8, 0, -86),
+], false, 'centripetal')
+
+/** The tunnel's roof: high in the middle, falling away toward the walls. */
+const vault = (x: number) => 15 - 0.06 * x * x
 
 function buildHybrid(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
   const k = lowPower ? 0.45 : 1
   const fog = { fogColor: HYBRID_FOG }
-  scene.add(sky(
-    [0.001, 0.008, 0.022], [0.016, 0.085, 0.09], [0.002, 0.01, 0.012],
-    new THREE.Vector3(-0.42, 0.17, -1), [0.55, 0.8, 0.85], 0.13,
-    {
-      glow: [0.03, 0.17, 0.15],
-      aurora: 1.1,
-      band: [0.03, 0.07, 0.08],
-      ridge: { near: [0.003, 0.02, 0.025], far: [0.015, 0.085, 0.09], height: 0.045, seed: 7 },
-      sun: new THREE.Vector3(-0.2, 0.6, -0.8),
-      body: 'planet',
-      ring: [0.45, 1.0, 0.8],
-    },
-  ))
-  scene.add(stars(lowPower ? 700 : 1800, 4, [0.8, 1.0, 0.95]))
 
-  // The ground: a calm hex lattice that breathes and carries slow waves of verification.
+  // Near-black green air and one bright light hanging far down the tunnel.
+  scene.add(sky(
+    [0.002, 0.01, 0.009], [0.008, 0.035, 0.03], [0.004, 0.018, 0.015],
+    new THREE.Vector3(0.12, 0.2, -1), [1.5, 1.6, 1.5], 0.022,
+    { glow: [0.03, 0.12, 0.1], sun: new THREE.Vector3(0, 0, 1), body: 'moon' },
+  ))
+
+  // The floor: dark, sparse grains so the beads and the path carry the light.
   scene.add(particleField(u, {
-    count: Math.floor(110000 * k), x: [-75, 75], z: [-170, -1], height: hybridHeight, mode: 2, seed: 12, fog: [25, 150],
-    lattice: true, ...fog,
-    color: (r) => r() < 0.06 ? [0.7, 1.0, 0.9] : [0.04 + r() * 0.06, 0.32 + r() * 0.3, 0.28 + r() * 0.25],
-    size: (r) => 0.04 + r() * 0.035,
+    count: Math.floor(90000 * k), x: [-40, 40], z: [-150, -1], height: hybridHeight, mode: 0, seed: 12, fog: [14, 120], ...fog,
+    color: (r) => { if (r() < 0.05) return [0.5, 1.0, 0.85]; const b = 0.35 + r() * 0.65; return [0.08 * b, 0.5 * b, 0.4 * b] },
+    size: (r) => 0.04 + r() * r() * 0.08,
+    yJitter: (r) => r() * r() * 0.2,
   }))
 
-  // A colonnade of light pillars along the way: seals standing in good order.
-  const pr = rng(9)
-  const cols: number[] = [], cc: number[] = [], cs: number[] = []
-  for (let z = -14; z > -150; z -= 11) {
-    for (const sx of [-1, 1]) {
-      const x = sx * (7.5 + Math.max(0, -z - 14) * 0.02)
-      const base = hybridHeight(x, z)
-      const tall = 4.2
-      const n = lowPower ? 50 : 110
-      for (let i = 0; i < n; i++) {
-        const y = (i / n) * tall
-        cols.push(x + (pr() - 0.5) * 0.06, base + y, z + (pr() - 0.5) * 0.06)
-        const b = 0.35 + 0.4 * (i / n)
-        cc.push(0.3 * b, 1.0 * b, 0.75 * b)
-        cs.push(0.05 + pr() * 0.03)
-      }
-      // a bright capstone and a little pool of light at the foot
-      cols.push(x, base + tall + 0.25, z); cc.push(0.8, 1.6, 1.3); cs.push(0.28)
-      for (let i = 0; i < 14; i++) {
-        const a = pr() * Math.PI * 2, rr = 0.2 + pr() * 0.9
-        cols.push(x + Math.cos(a) * rr, base + 0.05, z + Math.sin(a) * rr); cc.push(0.1, 0.4, 0.3); cs.push(0.12)
-      }
+  // The tunnel: columns of glass beads hanging from the vault, thick along the walls and thinning
+  // toward the middle, so the walk runs down a lit nave. Bead sizes run from dust to marbles.
+  const br = rng(13), columns = Math.floor(3400 * k)
+  const bp: number[] = [], bc: number[] = [], bs: number[] = []
+  for (let c = 0; c < columns; c++) {
+    const z = -1 - br() * 150
+    const around = HYBRID_PATH.getPointAt(Math.min(1, Math.max(0, -z / 86))).x
+    const side = br() < 0.5 ? -1 : 1
+    const off = 2.0 + Math.pow(br(), 1.3) * 17
+    const x = around + side * off
+    const top = vault(off) + (br() - 0.5) * 3
+    if (top < 3) continue
+    const ground = hybridHeight(x, z)
+    const reach = top * (br() < 0.6 ? 1 : 0.45 + br() * 0.5)
+    const beads = Math.floor(reach * (7 + br() * 7))
+    const warm = 1 - Math.min(1, off / 18) // brighter toward the nave
+    for (let b = 0; b < beads; b++) {
+      const f = b / beads
+      const y = ground + top - f * reach
+      bp.push(x + (br() - 0.5) * 0.08, y, z + (br() - 0.5) * 0.08)
+      const big = br()
+      bs.push(big < 0.07 ? 0.1 + br() * 0.17 : big < 0.32 ? 0.045 + br() * 0.045 : 0.016 + br() * 0.024)
+      const w = (0.45 + br() * 0.6) * (0.55 + 0.6 * warm) * (0.6 + 0.4 * (1 - f))
+      bc.push((0.38 + br() * 0.2) * w, (0.95 + br() * 0.1) * w, (0.8 + br() * 0.12) * w)
     }
   }
-  scene.add(cloud(u, new Float32Array(cols), new Float32Array(cc), new Float32Array(cs), 10, [25, 150], 23, 1, fog))
+  scene.add(cloud(u, new Float32Array(bp), new Float32Array(bc), new Float32Array(bs), 13, [10, 120], 14, 1, fog))
 
-  // Motes rising slowly out of the ground, everywhere and unhurried.
-  const mr = rng(10), mn = Math.floor(2600 * k)
+  // Loose beads drifting in the air of the nave, lit by the light ahead.
+  const mr = rng(10), mn = Math.floor(4500 * k)
   const mp = new Float32Array(mn * 3), mc = new Float32Array(mn * 3), ms = new Float32Array(mn)
   for (let i = 0; i < mn; i++) {
-    const x = (mr() - 0.5) * 90, z = -2 - mr() * 120
-    mp.set([x, hybridHeight(x, z) + mr() * 0.5, z], i * 3)
-    const b = 0.5 + mr() * 0.7
-    mc.set([0.35 * b, 1.0 * b, 0.75 * b], i * 3)
-    ms[i] = 0.04 + mr() * 0.05
+    const z = -2 - mr() * 120, x = (mr() - 0.5) * 10
+    mp.set([x, hybridHeight(x, z) + 0.3 + mr() * 9, z], i * 3)
+    const b = 0.6 + mr() * 0.7
+    mc.set([0.5 * b, 1.0 * b, 0.88 * b], i * 3)
+    ms[i] = mr() < 0.1 ? 0.07 + mr() * 0.08 : 0.025 + mr() * 0.03
   }
-  scene.add(cloud(u, mp, mc, ms, 8, [10, 90], 24, 1, fog))
+  scene.add(cloud(u, mp, mc, ms, 8, [6, 90], 24, 0.8, fog))
 }
 
 export function looseParticles(u: SceneUniforms, pos: Float32Array, c: RGB, size: number, mode: number, seed: number, fog: [number, number], opacity = 1, style: FieldStyle = {}) {
