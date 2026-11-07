@@ -26,7 +26,7 @@ const lens = /* glsl */ `
     vBlur = clamp(coc / size, 0.0, 1.0);
     // Light conservation, with a gentle lift so discs read as luminous rather than faint.
     vEnergy = clamp(px * px / (size * size), 0.0, 1.0);
-    vEnergy = mix(vEnergy, pow(vEnergy, 0.72), vBlur);
+    vEnergy = mix(vEnergy, pow(vEnergy, 0.85), vBlur);
     return size;
   }
 `
@@ -301,7 +301,7 @@ export const pathFragment = /* glsl */ `
     float inside;
     float shape = spriteShape(gl_PointCoord, inside);
     if (inside < 0.5) discard;
-    float a = shape * vEnergy * vFade * (1.0 - smoothstep(uFogFar * 0.35, uFogFar, vDist)) * smoothstep(0.1, 0.9, vDist);
+    float a = shape * vEnergy * vFade * (1.0 - smoothstep(uFogFar * 0.35, uFogFar, vDist)) * smoothstep(0.6, 2.4, vDist);
     gl_FragColor = vec4(vColor, a);
   }
 `
@@ -333,6 +333,7 @@ export const skyFragment = /* glsl */ `
   uniform vec3 uSunDir;        // light falling on the body, in world space
   uniform float uBodyKind;     // 0 cratered moon, 1 gas giant with lattice + rings
   uniform vec3 uRingColor;
+  uniform float uAurora;       // 0 = none
   varying vec3 vDir;
 
   float h31(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
@@ -397,27 +398,32 @@ export const skyFragment = /* glsl */ `
       // the night side carries a faint glowing lattice
       float lon = atan(nrm.x, nrm.z);
       vec2 g = abs(fract(vec2(lon * 3.8197, lat * 3.8197 * 1.6)) - 0.5);
-      float grid = smoothstep(0.035, 0.0, min(g.x, g.y)) * (1.0 - day);
+      float grid = smoothstep(0.02, 0.0, min(g.x, g.y)) * (1.0 - day) * 0.5;
       body = surf * day + uRingColor * grid * 0.5 * sqrt(max(1.0 - rr, 0.0));
       body += uRingColor * pow(1.0 - sqrt(max(1.0 - rr, 0.0)), 3.0) * 0.6; // atmosphere rim
     }
     col = mix(col, body, disc);
     // halo: tight glow + broad scatter + a faint 22-degree ring around the moon
     float outside = 1.0 - disc;
-    col += uMoonColor * outside * (exp(-(ang - uMoonSize) * 40.0) * 0.35 + exp(-ang * 4.0) * 0.08);
-    if (uBodyKind < 0.5) {
-      float halo = exp(-pow((ang - 0.384) * 26.0, 2.0));
-      col += uMoonColor * halo * 0.035;
-    } else {
-      // a thin tilted ring system
-      vec3 rn = normalize(vec3(0.15, 1.0, 0.35));
-      vec3 rel = dir - md * ca;
-      float side = dot(rel, rn) / max(sin(uMoonSize), 1e-4);
-      float rad = length(rel) / max(sin(uMoonSize), 1e-4);
-      float ring = exp(-side * side * 900.0) * smoothstep(1.25, 1.4, rad) * (1.0 - smoothstep(2.1, 2.3, rad));
-      float behind = step(0.0, dot(rel, tv)) ;
-      ring *= mix(1.0, 1.0 - disc, behind) * (0.6 + 0.4 * sin(rad * 40.0));
-      col += uRingColor * ring * 0.55;
+    col += uMoonColor * outside * (exp(-(ang - uMoonSize) * 60.0) * 0.12 + exp(-ang * 6.0) * 0.025);
+    // Aurora: folded curtains of light hanging above the horizon, rays drifting along them.
+    if (uAurora > 0.0 && h > 0.0) {
+      vec3 acc = vec3(0.0);
+      for (int i = 0; i < 3; i++) {
+        float fi = float(i);
+        float fold = az * (1.4 + fi * 0.6) + sin(az * 3.0 + uTime * 0.05 + fi) * 0.8 + fi * 2.1;
+        float base = 0.07 + fi * 0.035 + 0.035 * sin(fold + uTime * 0.03);
+        float above = h - base;
+        float hem = smoothstep(-0.006, 0.004, above);
+        float rise = exp(-max(above, 0.0) * (16.0 - fi * 3.0));
+        float rays = n3(vec3(az * 70.0 + fi * 13.0, uTime * 0.12, fi)) * 0.7 + n3(vec3(az * 190.0, uTime * 0.3, fi + 4.0)) * 0.5;
+        float span = smoothstep(0.0, 0.5, sin(az * 0.9 + fi * 1.7 + 0.6) * 0.5 + 0.5);
+        float k = hem * rise * pow(rays, 2.2) * span;
+        vec3 c = mix(vec3(0.18, 1.0, 0.62), vec3(0.25, 0.45, 1.0), smoothstep(0.0, 0.12, above));
+        c = mix(c, vec3(0.6, 0.3, 0.9), smoothstep(0.1, 0.25, above));
+        acc += c * k * (0.5 - fi * 0.13);
+      }
+      col += acc * uAurora * (1.0 - disc * 0.85);
     }
 
     // Mountain silhouettes: a far hazy range and a nearer dark one.
@@ -449,7 +455,7 @@ export const starVertex = /* glsl */ `
     vBig = step(0.985, aSeed);
     vA = (0.25 + 0.75 * aSeed) * (0.75 + 0.25 * sin(uTime * (0.5 + aSeed * 2.0) + aSeed * 50.0));
     vC = aColor;
-    gl_PointSize = (1.0 + bright * 2.5 + vBig * 9.0) * uPixelRatio;
+    gl_PointSize = (1.3 + bright * 2.5 + vBig * 9.0) * uPixelRatio;
   }
 `
 
@@ -529,7 +535,7 @@ export const frameFragment = /* glsl */ `
     float outside = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0);
     if (outside < 0.0) discard;
     float line = exp(-outside * 420.0) * 1.4;
-    float halo = exp(-outside * 22.0) * 0.16 + exp(-outside * 6.0) * 0.05;
+    float halo = exp(-outside * 26.0) * 0.14 + exp(-outside * 7.0) * 0.02;
     // light rays fanning up and out from the threshold
     float bottom = c.y + halfDoor.y;
     float spread = abs(c.x) / max(bottom * 0.9 + halfDoor.x, 1e-3);

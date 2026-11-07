@@ -127,7 +127,7 @@ export class UniverseEngine {
     this.renderPass = new RenderPass(this.home, this.camera)
     this.composer = new EffectComposer(this.renderer)
     this.composer.addPass(this.renderPass)
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.lowPower ? 0.6 : 0.75, 0.62, 0.5)
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.lowPower ? 0.55 : 0.7, 0.5, 0.58)
     this.composer.addPass(this.bloom)
     // Tone map first, then finish in display space so grain and dither sit on the final image.
     this.composer.addPass(new OutputPass())

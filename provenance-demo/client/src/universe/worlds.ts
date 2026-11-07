@@ -131,6 +131,7 @@ export interface SkyExtras {
   sun?: THREE.Vector3
   body?: 'moon' | 'planet'
   ring?: RGB
+  aurora?: number
 }
 
 export function sky(
@@ -159,6 +160,7 @@ export function sky(
       uSunDir: { value: (x.sun ?? new THREE.Vector3(0.3, 0.4, 1)).clone().normalize() },
       uBodyKind: { value: x.body === 'planet' ? 1 : 0 },
       uRingColor: { value: new THREE.Color(...(x.ring ?? moonColor)) },
+      uAurora: { value: x.aurora ?? 0 },
     },
     side: THREE.BackSide,
     depthWrite: false,
@@ -236,7 +238,7 @@ export function glowingPath(
       piece.curve.getTangentAt(u0, tan)
       side.set(-tan.z, 0, tan.x).normalize()
       const roll = r()
-      const kd = roll < 0.74 ? 0 : roll < 0.94 ? 1 : 2
+      const kd = roll < 0.8 ? 0 : roll < 0.93 ? 1 : 2
       // Gaussian-ish spread: a hot narrow core with soft edges.
       const g = (r() + r() + r() - 1.5) / 1.5
       const spread = kd === 0 ? g * 0.16 : kd === 1 ? g * 1.1 : g * 0.5
@@ -245,7 +247,7 @@ export function glowingPath(
       t[i] = u0
       b[i] = piece.branch
       sd[i] = r()
-      sz[i] = kd === 0 ? 0.03 + r() * 0.05 : kd === 1 ? 0.12 + r() * 0.12 : 0.025 + r() * 0.03
+      sz[i] = kd === 0 ? 0.03 + r() * 0.045 : kd === 1 ? 0.06 + r() * 0.08 : 0.022 + r() * 0.025
       kind[i] = kd
     }
   })
@@ -438,19 +440,20 @@ export function universeScene(def: UniverseDef, u: SceneUniforms, lowPower: bool
 const hybridHeight = (x: number, z: number) =>
   entrance(x, z) * (1.2 * Math.sin(x * 0.06) * Math.cos(z * 0.04) + 0.7 * fbm(x * 0.035, z * 0.035, 3))
 
-const HYBRID_FOG: RGB = [0.02, 0.16, 0.15]
+const HYBRID_FOG: RGB = [0.012, 0.09, 0.09]
 
 function buildHybrid(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
   const k = lowPower ? 0.45 : 1
   const fog = { fogColor: HYBRID_FOG }
   scene.add(sky(
-    [0.002, 0.012, 0.03], [0.025, 0.13, 0.13], [0.002, 0.012, 0.014],
-    new THREE.Vector3(0.32, 0.2, -1), [0.55, 0.8, 0.85], 0.15,
+    [0.001, 0.008, 0.022], [0.016, 0.085, 0.09], [0.002, 0.01, 0.012],
+    new THREE.Vector3(-0.42, 0.17, -1), [0.55, 0.8, 0.85], 0.13,
     {
-      glow: [0.05, 0.3, 0.26],
+      glow: [0.03, 0.17, 0.15],
+      aurora: 1.1,
       band: [0.03, 0.07, 0.08],
       ridge: { near: [0.003, 0.02, 0.025], far: [0.015, 0.085, 0.09], height: 0.045, seed: 7 },
-      sun: new THREE.Vector3(0.9, 0.5, -0.6),
+      sun: new THREE.Vector3(-0.2, 0.6, -0.8),
       body: 'planet',
       ring: [0.45, 1.0, 0.8],
     },
@@ -464,32 +467,6 @@ function buildHybrid(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
     color: (r) => r() < 0.06 ? [0.7, 1.0, 0.9] : [0.04 + r() * 0.06, 0.32 + r() * 0.3, 0.28 + r() * 0.25],
     size: (r) => 0.04 + r() * 0.035,
   }))
-
-  // Aurora: three curtains, mint at the hem fading to blue and violet at the top.
-  const curtains = [
-    { z: -125, x0: -120, x1: 120, y0: 16, hgt: 26, amp: 16, freq: 0.035 },
-    { z: -95, x0: -110, x1: 40, y0: 22, hgt: 18, amp: 10, freq: 0.05 },
-    { z: -150, x0: -30, x1: 140, y0: 12, hgt: 30, amp: 20, freq: 0.03 },
-  ]
-  const ar = rng(8)
-  const per = Math.floor(9000 * k)
-  const ap = new Float32Array(per * curtains.length * 3), ac = new Float32Array(per * curtains.length * 3)
-  const as = new Float32Array(per * curtains.length)
-  let ai = 0
-  for (const c of curtains) {
-    for (let i = 0; i < per; i++, ai++) {
-      const x = c.x0 + ar() * (c.x1 - c.x0)
-      const v = Math.pow(ar(), 1.8) // dense at the hem
-      const y = c.y0 + v * c.hgt
-      ap.set([x, y, c.z + Math.sin(x * c.freq) * c.amp + (ar() - 0.5) * 1.5], ai * 3)
-      const edge = Math.min(1, Math.min(x - c.x0, c.x1 - x) / 25)
-      const b = (0.45 + ar() * 0.4) * edge * (1 - v * 0.6)
-      const g: RGB = v < 0.4 ? [0.25, 1.0, 0.6] : v < 0.75 ? [0.2, 0.6, 1.0] : [0.55, 0.35, 1.0]
-      ac.set([g[0] * b, g[1] * b, g[2] * b], ai * 3)
-      as[ai] = 0.25 + ar() * 0.35
-    }
-  }
-  scene.add(cloud(u, ap, ac, as, 5, [80, 300], 22, 0.5, fog))
 
   // A colonnade of light pillars along the way: seals standing in good order.
   const pr = rng(9)

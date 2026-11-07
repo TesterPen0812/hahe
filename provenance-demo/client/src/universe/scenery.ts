@@ -11,7 +11,7 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
   const fog = { fogColor: MEADOW_FOG }
   scene.add(sky(
     [0.002, 0.004, 0.018], [0.05, 0.07, 0.17], [0.004, 0.006, 0.016],
-    new THREE.Vector3(-0.42, 0.24, -1), [2.1, 2.05, 1.95], 0.034,
+    new THREE.Vector3(-0.42, 0.24, -1), [1.25, 1.22, 1.15], 0.03,
     {
       glow: [0.09, 0.11, 0.24],
       band: [0.05, 0.055, 0.09],
@@ -61,8 +61,8 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
   const fp: number[] = [], fc: number[] = [], fs: number[] = []
   const want = Math.floor(900 * k)
   for (let tries = 0, made = 0; made < want && tries < want * 12; tries++) {
-    const x = (fr() - 0.5) * 70, z = 12 - fr() * 110
-    if (fbm(x * 0.05 + 11, z * 0.05 - 3, 3) < 0.12 || Math.abs(x) < 1.2) continue
+    const x = (fr() - 0.5) * 44, z = 12 - fr() * 50
+    if (fbm(x * 0.05 + 11, z * 0.05 - 3, 3) < 0.18 || Math.abs(x) < 1.2) continue
     made++
     const base = homeHeight(x, z), tall = 0.35 + fr() * 0.55
     const c = palette[Math.floor(fr() * palette.length)]
@@ -77,11 +77,11 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
       const a = (p / petals) * Math.PI * 2, rr = 0.05 + fr() * 0.04
       fp.push(x + bend + Math.cos(a) * rr, base + tall + (fr() - 0.5) * 0.03, z + Math.sin(a) * rr)
       const b = 0.7 + fr() * 0.5
-      fc.push(c[0] * b, c[1] * b, c[2] * b); fs.push(0.04 + fr() * 0.03)
+      fc.push(c[0] * b, c[1] * b, c[2] * b); fs.push(0.045 + fr() * 0.03)
     }
-    fp.push(x + bend, base + tall + 0.02, z); fc.push(1.6, 1.5, 1.3); fs.push(0.06)
+    fp.push(x + bend, base + tall + 0.02, z); fc.push(1.3, 1.2, 1.0); fs.push(0.06)
   }
-  scene.add(cloud(u, new Float32Array(fp), new Float32Array(fc), new Float32Array(fs), 9, [10, 90], 52, 1, fog))
+  scene.add(cloud(u, new Float32Array(fp), new Float32Array(fc), new Float32Array(fs), 9, [4, 30], 52, 1, fog))
 
   // Fireflies drifting over the grass.
   const ff = rng(61), fn = Math.floor(420 * k)
@@ -90,7 +90,7 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
     const x = (ff() - 0.5) * 60, z = 12 - ff() * 95
     ffp.set([x, homeHeight(x, z) + 0.4 + ff() * 2.2, z], i * 3)
     const warm = ff() < 0.7
-    ffc.set(warm ? [1.4, 1.1, 0.45] : [0.7, 1.3, 0.8], i * 3)
+    ffc.set(warm ? [2.4, 1.8, 0.7] : [1.1, 2.0, 1.2], i * 3)
     ffs[i] = 0.05 + ff() * 0.04
   }
   scene.add(cloud(u, ffp, ffc, ffs, 4, [6, 80], 62, 1, fog))
@@ -98,7 +98,7 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
   // Dust hanging in the air.
   scene.add(particleField(u, {
     count: Math.floor(5000 * k), x: [-40, 40], z: [-110, 12], height: (x, z) => homeHeight(x, z) + 0.3, mode: 0, seed: 2,
-    fog: [10, 70], opacity: 0.35, ...fog,
+    fog: [10, 70], opacity: 0.22, ...fog,
     color: (r) => { const b = 0.4 + r() * 0.6; return [0.6 * b, 0.7 * b, 1.0 * b] },
     size: (r) => 0.04 + r() * 0.08,
     yJitter: (r) => r() * 8,
