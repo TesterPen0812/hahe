@@ -1,13 +1,62 @@
 # Provenance demo
 
-Workspace scaffold for shared verification code, a server, and a browser client.
-Source files are placeholders; application behavior and build commands still need implementation.
+Workspace for shared verification code, a server, and a browser client.
+The current client and API implement a minimal passkey test harness; other demo flows are placeholders.
+
+## Real iPhone passkey test
+
+From this directory, run `npm run dev:server` (127.0.0.1:3001) and
+`npm run dev:client -- --port 5173 --strictPort` (127.0.0.1:5173).
+The API loads `server/.env`; configure `PORT`, `RP_ID`, and `ORIGIN` there.
+For this demo the RP ID is `tahas-macbook-pro.tailc3868a.ts.net` and origin is
+`https://tahas-macbook-pro.tailc3868a.ts.net`. Taha runs `tailscale serve 5173` separately.
+
+1. Open `https://tahas-macbook-pro.tailc3868a.ts.net/passkey-test` in Safari on the iPhone (`/` also shows the harness).
+2. Tap **Register** and approve the passkey creation prompt on the physical phone.
+3. Tap **Sign test hash** and approve the passkey prompt again.
+4. Confirm the on-page Sign result and server `[passkeys] SIGN` log both show
+   `verified: true`, `userVerified: true`, and `challengeMatchesHash: true`.
+
+Credentials (public key, ID, transports, counter) persist in gitignored
+`server/data/passkeys.json`. Pending ceremonies expire after five minutes, are
+consumed once, and do not survive restarts. If a prompt fails, tap the button
+again to request fresh options. If already registered, use **Sign test hash**;
+registration excludes existing credentials. Mirroring may require switching to
+the physical phone to interact or approve verification.
+
+The hash challenge is the exact 32 bytes of SHA-256(`hello demo`), encoded as
+base64url for WebAuthn JSON. WebAuthn signs authenticator data plus the hash of
+client data containing that challenge; it does not directly sign the raw photo
+hash. User verification proves the authenticator's UV flag, which can reflect
+Face ID or a device passcode; the server cannot distinguish those methods.
+This fixed-hash experiment has no fresh nonce: authenticators whose counter stays
+at zero can replay an old assertion in a new ceremony for the same hash. Use it
+as a signing test, not a production login protocol.
+
+SimpleWebAuthn v14 uses `startRegistration({ optionsJSON })`,
+`startAuthentication({ optionsJSON })`, `registrationInfo.credential`, and the
+`credential` verification argument. This harness wraps options in
+`{ optionsJSON, ceremonyId }` and verification requests in `{ response, ceremonyId }`.
+
+Checks (from this directory):
+
+```sh
+npx --no-install tsc --noEmit -p .
+npm run build -w client
+npx --no-install tsx --test server/src/routes/passkeys.test.ts
+```
+
+The regression test uses a software authenticator and an isolated temporary
+credential file. Its success does not establish an iPhone or Face ID result.
+For the detached demo server, inspect `server/data/server.log` with
+`tail -f server/data/server.log`. Check tunnel routing with
+`curl --fail https://tahas-macbook-pro.tailc3868a.ts.net/api/health`.
 
 ## Setup
 
 1. Run `npm install` from this directory to initialize the three npm workspaces.
-2. Copy `.env.example` to `.env` and fill in the demo settings.
-3. Implement the shared modules, server routes, and client screens in the supplied files.
+2. Configure the passkey settings in `server/.env` as described above; `.env.example` lists the broader planned demo settings.
+3. Implement the remaining shared modules, server routes, and client screens in the supplied files.
 
 `server/keys/` and `server/data/` (including uploads) are local, gitignored directories.
 Recreate them in a fresh checkout before adding keys or data.
