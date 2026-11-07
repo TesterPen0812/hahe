@@ -101,5 +101,24 @@ export function createPasskeyRouter(
     console.log('[passkeys] SIGN', outcome);
     res.json(outcome);
   });
-  return router;
+  /** Upload-time check: did a registered passkey, with user verification, sign exactly this challenge? */
+  const verifyCapture = async (response: unknown, expectedChallenge: string): Promise<{ pass: boolean; reason: string }> => {
+    try {
+      const r = response as { id?: string };
+      const credential = credentials.find(c => c.id === r?.id);
+      if (!credential) return { pass: false, reason: 'Passkey is not registered on this server.' };
+      const result = await verifyAuthenticationResponse({
+        response: response as Parameters<typeof verifyAuthenticationResponse>[0]['response'],
+        expectedChallenge, expectedOrigin: origin, expectedRPID: rpID, credential, requireUserVerification: true,
+      });
+      if (!result.verified) return { pass: false, reason: 'Passkey signature did not verify.' };
+      credential.counter = result.authenticationInfo.newCounter;
+      persist();
+      return { pass: true, reason: 'Passkey signature verified against the registered passkey.' };
+    } catch (error) {
+      return { pass: false, reason: `Passkey signature check failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  };
+  const hasCredential = (id: string) => credentials.some(c => c.id === id);
+  return Object.assign(router, { verifyCapture, hasCredential });
 }
