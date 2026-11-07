@@ -6,5 +6,8 @@
     "shared",
     "server",
     "client"
-  ]
+  ],
+  "devDependencies": {
+    "tsx": "^4.23.15"
+  }
 }
