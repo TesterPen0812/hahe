@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@provenance-demo/shared": "^0.0.0",
     "@simplewebauthn/server": "^14.1.0",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^18.0.9",
@@ -16,5 +17,8 @@
     "@types/multer": "^2.3.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts"
   }
 }

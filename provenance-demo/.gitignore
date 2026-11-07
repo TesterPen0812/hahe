@@ -1,7 +1,22 @@
+# Dependencies
 node_modules/
-dist/
+
+# Secrets: each person keeps their own
 .env
 .env.*
 !.env.example
+
+# Demo keys and data, generated locally
 server/keys/
 server/data/
+*.db
+
+# Build output
+dist/
+client/dist/
+
+# Editor and OS clutter
+.DS_Store
+.vscode/
+.idea/
+*.log
