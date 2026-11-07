@@ -1,7 +1,9 @@
 # Provenance demo
 
 Workspace for shared verification code, a server, and a browser client.
-The current client and API implement a minimal passkey test harness; other demo flows are placeholders.
+The client and API include a capture/feed flow, world-aware verification, a
+passkey test harness, and a simulated Q-Day attacker. See [client/README.md](client/README.md)
+for the attacker route shapes and verification commands.
 
 ## Real iPhone passkey test
 

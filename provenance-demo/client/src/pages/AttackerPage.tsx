@@ -1,62 +1,122 @@
-// The quantum attacker console. Calls Person A's demo-only /api/attack routes (PROVISIONAL shapes).
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { ALG_NAMES, type TrustList, type WorldState } from '@provenance-demo/shared'
 import { api } from '../lib/api'
+import type { AttackResult, HybridAttackResult, RecoveryResult } from '../lib/attack'
 import { useWorld } from '../lib/world'
-import { WorldSwitch } from '../components/WorldSwitch'
+import { HybridComparison, LegacyComparison, type Attempt, type HybridAttempt } from '../components/AttackComparison'
+import './AttackerPage.css'
 
-type Step = { label: string; state: 'todo' | 'running' | 'done' | 'failed'; note?: string }
+type Busy = 'world' | 'recover' | 'legacy' | 'hybrid' | null
+const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
+function AttackerConsole({ world, setWorld }: { world: WorldState; setWorld: (mode: WorldState['mode']) => Promise<void> }) {
+  const [recovery, setRecovery] = useState<RecoveryResult | null>(null)
+  const [legacy, setLegacy] = useState<Attempt | null>(null)
+  const [hybrid, setHybrid] = useState<HybridAttempt | null>(null)
+  const [trust, setTrust] = useState<TrustList | null>(null)
+  const [busy, setBusy] = useState<Busy>(null)
+  const [error, setError] = useState('')
+  const qDay = world.mode === 'q-day'
+
+  useEffect(() => {
+    let alive = true
+    void api.trust().then(t => { if (alive) setTrust(t) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  const run = async (step: Exclude<Busy, null>, action: () => Promise<void>) => {
+    if (busy) return
+    setBusy(step)
+    setError('')
+    try { await action() }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)) }
+    finally { setBusy(null) }
+  }
+
+  const recover = () => run('recover', async () => {
+    setRecovery(null)
+    setLegacy(null)
+    setHybrid(null)
+    // This delay is presentation only. The server just loads the demo key.
+    const [result] = await Promise.all([api.post<RecoveryResult>('/attack/recover-key'), wait(2000)])
+    setRecovery(result)
+  })
+  const forgeLegacy = () => run('legacy', async () => {
+    const result = await api.post<AttackResult>('/attack/forge', { target: 'legacy' })
+    setLegacy({ result, item: await api.item(result.itemId) })
+  })
+  const forgeHybrid = () => run('hybrid', async () => {
+    const result = await api.post<HybridAttackResult>('/attack/forge', { target: 'hybrid' })
+    const [item, ...genuineItems] = await Promise.all([api.item(result.itemId), ...result.genuine.map(g => api.item(g.id))])
+    // Browser captures use device-<id>; seed-feed uses mara-iphone-15. Prefer
+    // the newest actual phone capture, and label any seeded fallback honestly.
+    const real = genuineItems.find(i => i.manifest?.kind === 'hybrid' && i.manifest.claim.deviceId.startsWith('device-'))
+    const genuine = real ?? genuineItems[0] ?? null
+    const supplied = result.genuine.find(g => g.id === genuine?.id)
+    setHybrid({ result, item, realPhoto: !!real, genuine: genuine && supplied ? {
+      ...genuine, verification: { ...genuine.verification, status: supplied.status, label: supplied.label },
+    } : null })
+  })
+
+  return <main className={`page attacker ${qDay ? 'is-qday' : ''}`}>
+    <header className="attack-header">
+      <p className="kicker">The quantum break · an interactive demonstration</p>
+      <div className="attack-title"><h1>Attacker · Q-Day</h1><span className="attack-simulated">Simulated</span></div>
+      <p className="lede">Simulated — stands in for Shor’s algorithm on a quantum computer.</p>
+      <p className="small muted">Real signatures. Real verification. The quantum key recovery is simulated.</p>
+    </header>
+
+    {!qDay && <aside className="attack-callout">
+      <div><strong>The attacker needs a quantum computer.</strong><p>Flip to Q-Day to simulate the moment RSA and elliptic-curve keys become forgeable.</p></div>
+      <button className="primary danger" disabled={!!busy} onClick={() => void run('world', () => setWorld('q-day'))}>{busy === 'world' ? 'Switching…' : 'Flip to Q-Day'}</button>
+    </aside>}
+    {qDay && <p className="small muted">Q-Day · {world.headlineYear} <span aria-hidden> / </span> RSA and Ed25519 are broken in this simulated world.</p>}
+    {error && <p className="status error" role="alert">{error} Retry the step when ready.</p>}
+
+    <ol className="attack-flow">
+      <li>
+        <span className="attack-number" aria-hidden>01</span>
+        <section aria-labelledby="steal-title" aria-busy={busy === 'recover'}>
+          <h2 id="steal-title">Steal the old camera’s lock</h2>
+          <p className="muted small">Simulate recovering a trusted camera’s classical RSA key.</p>
+          <button disabled={!qDay || !!busy} onClick={() => void recover()}>{busy === 'recover' ? 'Simulating recovery…' : recovery ? 'Recover again · simulated' : 'Recover key · simulated'}</button>
+          {busy === 'recover' && <div className="attack-progress" role="progressbar" aria-label="Simulated key recovery" aria-valuetext="Cosmetic progress, about two seconds"><span /></div>}
+          {recovery && <div className="attack-recovered" role="status">
+            <strong>{recovery.camera.name}</strong><span className="attack-key-alg">RSA-2048 · {ALG_NAMES[recovery.alg]}</span>
+            <p className="mono small">Public key fingerprint<br />{recovery.fingerprint}</p>
+            <ul className="small muted">{recovery.steps.map(step => <li key={step}>{step}</li>)}</ul>
+          </div>}
+        </section>
+      </li>
+      {recovery && <li>
+        <span className="attack-number" aria-hidden>02</span>
+        <section aria-labelledby="legacy-title" aria-busy={busy === 'legacy'}>
+          <h2 id="legacy-title">Forge an old-camera photo</h2>
+          <p className="muted small">Sign a visibly marked fake with the recovered RSA key. Publish it through the normal feed.</p>
+          {!legacy && <button disabled={!!busy} onClick={() => void forgeLegacy()}>{busy === 'legacy' ? 'Signing and publishing…' : 'Forge old-camera photo'}</button>}
+          {legacy && <>
+            <LegacyComparison {...legacy} trust={trust} />
+            <p className="small"><Link to={`/item/${legacy.item.id}`}>Open the forged item →</Link> <span className="muted">· also published in the feed</span></p>
+          </>}
+        </section>
+      </li>}
+      {legacy && <li>
+        <span className="attack-number" aria-hidden>03</span>
+        <section aria-labelledby="hybrid-title" aria-busy={busy === 'hybrid'}>
+          <h2 id="hybrid-title">Forge a photo like Taha’s</h2>
+          <p className="muted small">Attack a separately seeded demo phone with the same hybrid seals. Taha’s real phone keeps its own keys.</p>
+          <button disabled={!!busy} onClick={() => void forgeHybrid()}>{busy === 'hybrid' ? 'Trying both seals…' : hybrid ? 'Retry hybrid attempt' : 'Try to forge hybrid photo'}</button>
+          {hybrid && <HybridComparison {...hybrid} trust={trust} />}
+        </section>
+      </li>}
+    </ol>
+    <footer className="attack-footer small muted">Reset demo <code className="mono">npx tsx scripts/seed-feed.ts --reset</code></footer>
+  </main>
+}
 
 export default function AttackerPage() {
   const { world, set } = useWorld()
-  const [steps, setSteps] = useState<Step[]>([
-    { label: 'Recover the legacy camera’s RSA-2048 private key (simulated Shor’s algorithm)', state: 'todo' },
-    { label: 'Forge a fake photo and sign it with the recovered key', state: 'todo' },
-    { label: 'Try to forge one of our hybrid-signed photos', state: 'todo' },
-  ])
-  const [progress, setProgress] = useState(0)
-  const [busy, setBusy] = useState(false)
-  const update = (i: number, s: Partial<Step>) => setSteps(all => all.map((x, j) => (j === i ? { ...x, ...s } : x)))
-
-  const run = async () => {
-    setBusy(true)
-    try {
-      update(0, { state: 'running' })
-      for (let p = 0; p <= 100; p += 4) { setProgress(p); await wait(60) }
-      await api.post('/attack/recover-key')
-      update(0, { state: 'done', note: 'Private key recovered. (Simulation: the server hands it over.)' })
-      update(1, { state: 'running' })
-      await api.post('/attack/forge', { target: 'legacy' })
-      update(1, { state: 'done', note: 'Forged photo published to the feed.' })
-      update(2, { state: 'running' })
-      await api.post('/attack/forge', { target: 'hybrid' }).then(
-        () => update(2, { state: 'failed', note: 'Rejected: the post-quantum ML-DSA-65 seal can’t be forged.' }),
-        () => update(2, { state: 'failed', note: 'Rejected: the post-quantum ML-DSA-65 seal can’t be forged.' }))
-    } catch (e) {
-      const i = steps.findIndex(s => s.state === 'running')
-      update(i < 0 ? 0 : i, { state: 'failed', note: `Attack routes not available yet (Person A’s /api/attack): ${e instanceof Error ? e.message : String(e)}` })
-    } finally { setBusy(false) }
-  }
-
-  return (
-    <main className="page attacker">
-      <p className="kicker">Simulation · attacker console</p>
-      <h1>Quantum attacker</h1>
-      <WorldSwitch world={world} onSet={set} />
-      {world.mode !== 'q-day' && <p className="status">Switch to Q-Day first: today, nobody can recover the key.</p>}
-      <ol className="attack-steps">
-        {steps.map((s, i) => (
-          <li key={i} className={`attack-${s.state}`}>
-            <span>{s.label}</span>
-            {i === 0 && s.state === 'running' && <span className="bar"><span style={{ width: `${progress}%` }} /></span>}
-            {s.note && <p>{s.note}</p>}
-          </li>
-        ))}
-      </ol>
-      <button className="primary danger" disabled={busy || world.mode !== 'q-day'} onClick={() => void run()}>Run the attack</button>
-      <p className="muted small">Then watch the <Link to="/split">split screen</Link>.</p>
-    </main>
-  )
+  // A world change discards old verdicts and in-progress presentation state.
+  return <AttackerConsole key={`${world.mode}:${world.qDayAt}`} world={world} setWorld={set} />
 }

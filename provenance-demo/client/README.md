@@ -16,8 +16,34 @@ longer counts. Badge text always follows `verification.label`.
 
 The split screen (`/split`) puts **Today's apps** (naive) on the left and our
 world-aware verifier on the right. Naive requests use `?naive=1` on both list and
-detail endpoints; links from the left column preserve that mode. The attacker
-page keeps its unavailable-routes fallback until the demo attack API lands.
+detail endpoints; links from the left column preserve that mode.
+
+The attacker (`/attack`) is **simulated — stands in for Shor's algorithm on a
+quantum computer**. Flip to Q-Day, recover the legacy key, publish a marked
+RSA forgery, then try a hybrid forgery. Every badge uses the real API verdict.
+Recovery shows only the public key's SHA-256 fingerprint; no private key leaves
+the server. The two-second recovery animation is cosmetic.
+
+Demo-only JSON routes, all requiring Q-Day (otherwise `409 { error }`):
+
+- `POST /api/attack/recover-key` → `{ camera: { id, name }, alg, fingerprint,
+  steps, simulated: true }`. The server loads its demo RSA key; it does not
+  factor RSA. Recovery is remembered until restart or a new Q-Day flip.
+- `POST /api/attack/forge { target: 'legacy' }` → `{ itemId, ours, naive,
+  simulated: true, simulation }`. Requires recovery. `ours` and `naive` are
+  real `VerificationResult`s: grey/unknown versus green/camera-verified.
+- `POST /api/attack/forge { target: 'hybrid' }` → the same fields plus
+  `{ parts: [{ alg, forged }], genuine: [{ id, status, label }], steps }`.
+  A separately seeded demo phone (keys held only in server memory) supplies a
+  valid Ed25519 signature and classical ES256 assertion; ML-DSA-65 is replaced
+  with 3,309 random bytes. Both verifiers reject it. The API returns verified,
+  unedited existing hybrid captures newest first. The UI prefers the newest
+  browser capture (`device-*`, Taha's phone in this demo), with an honestly
+  labelled seeded fallback if none exists.
+
+Both forgeries use `createItem`, just like uploads. The RSA forgery is logged
+after Q-Day; the invalid hybrid forgery is stored in the feed but does not
+qualify for logging. Switching worlds clears the console's old results.
 
 Checks from `provenance-demo/`:
 
@@ -27,7 +53,13 @@ npm run build -w client
 npm run lint -w client
 npx tsx --tsconfig client/tsconfig.app.json --test client/tests/contract.test.ts
 npx tsx --test server/src/routes/passkeys.test.ts
+npx tsx scripts/smoke-attack.ts
 ```
+
+The attack smoke test requires the live API. It checks today guards, recovery,
+both forgeries and genuine verdicts, and restores the world to today in a
+`finally` block. It leaves its demo items in the feed. To clear and reseed the
+demo: `npx tsx scripts/seed-feed.ts --reset`.
 
 Client contract tests exercise rendering with real shared verifier results,
 including anchored and post-flip hybrid/legacy proofs and naive mode. Passkey
