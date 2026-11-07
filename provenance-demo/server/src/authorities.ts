@@ -5,7 +5,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import type { HybridKeys, LegacyCamera, RsaKeys, TrustedAuthority, TrustList } from '@provenance-demo/shared';
+import type { HybridKeys, LegacyCamera, MlDsaKeys, RsaKeys, TrustedAuthority, TrustedLog, TrustList } from '@provenance-demo/shared';
 
 export const KEYS_DIR = fileURLToPath(new URL('../keys', import.meta.url));
 
@@ -35,9 +35,20 @@ export interface LegacyCameraKeyFile extends RsaKeys {
   createdAt: string;
 }
 
-export const keyFilePath = (role: Role | 'legacy-camera') => path.join(KEYS_DIR, `${role}.json`);
+// The transparency log's dedicated signing key: ML-DSA-65 only (quantum-safe anchors).
+export const LOG_INFO = { id: 'demo-log', name: 'Demo Transparency Log' } as const;
 
-export interface Authorities extends Record<Role, AuthorityKeyFile> { legacyCamera: LegacyCameraKeyFile }
+export interface LogKeyFile extends MlDsaKeys {
+  id: string;
+  name: string;
+  role: 'log';
+  alg: 'ml-dsa-65';
+  createdAt: string;
+}
+
+export const keyFilePath = (role: Role | 'legacy-camera' | 'log') => path.join(KEYS_DIR, `${role}.json`);
+
+export interface Authorities extends Record<Role, AuthorityKeyFile> { legacyCamera: LegacyCameraKeyFile; log: LogKeyFile }
 
 let cache: Authorities | null = null;
 
@@ -52,6 +63,7 @@ export function loadAuthorities(): Authorities {
   const out = {} as Authorities;
   for (const role of Object.keys(AUTHORITY_INFO) as Role[]) out[role] = readKeyFile<AuthorityKeyFile>(keyFilePath(role));
   out.legacyCamera = readKeyFile<LegacyCameraKeyFile>(keyFilePath('legacy-camera'));
+  out.log = readKeyFile<LogKeyFile>(keyFilePath('log'));
   return (cache = out);
 }
 
@@ -61,5 +73,6 @@ const pub = (a: AuthorityKeyFile): TrustedAuthority => ({ id: a.id, name: a.name
 export function trustList(): TrustList {
   const a = loadAuthorities();
   const legacy: LegacyCamera = { id: a.legacyCamera.id, name: a.legacyCamera.name, alg: a.legacyCamera.alg, publicKey: a.legacyCamera.publicKey };
-  return { manufacturers: [pub(a.manufacturer)], issuers: [pub(a.issuer)], editors: [pub(a.editor)], legacyCameras: [legacy] };
+  const log: TrustedLog = { id: a.log.id, name: a.log.name, alg: a.log.alg, publicKey: a.log.publicKey };
+  return { manufacturers: [pub(a.manufacturer)], issuers: [pub(a.issuer)], editors: [pub(a.editor)], legacyCameras: [legacy], log };
 }

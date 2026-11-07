@@ -130,11 +130,29 @@ export interface LegacyCamera {
   publicKey: string;     // SPKI DER, base64url
 }
 
+// The transparency log's own signing key: ML-DSA-65 only, so log anchors stay quantum-safe.
+export interface TrustedLog {
+  id: string;            // e.g. "demo-log"
+  name: string;          // e.g. "Demo Transparency Log"
+  alg: 'ml-dsa-65';
+  publicKey: string;     // base64url
+}
+
 export interface TrustList {
   manufacturers: TrustedAuthority[];
   issuers: TrustedAuthority[];
   editors: TrustedAuthority[];
   legacyCameras: LegacyCamera[];
+  log: TrustedLog;
+}
+
+// A signed statement by the log: "I had `size` entries, ending in `rootHash`, at `timestamp`."
+// rootHash is the hash-chain head (entryHash of entry #size), so it commits to every earlier entry.
+export interface LogHead {
+  size: number;
+  rootHash: string;      // hex; "0"*64 for an empty log
+  timestamp: string;     // ISO
+  signature: LabelledSignature; // alg 'ml-dsa-65', by TrustList.log, over { size, rootHash, timestamp }
 }
 
 export interface LogEntry {
@@ -143,6 +161,9 @@ export interface LogEntry {
   prevHash: string;      // entryHash of the previous entry ("0"*64 for the first)
   timestamp: string;
   entryHash: string;     // sha256(prevHash + manifestHash + timestamp)
+  // The log head signed right after this entry was appended:
+  // size = seq, rootHash = entryHash, timestamp = timestamp. Makes the entry's time quantum-safe.
+  checkpoint: LogHead;
 }
 
 // ---------- World state (the demo's "today" vs "Q-Day" switch) ----------
@@ -224,6 +245,7 @@ export interface ItemSummary {
 // GET /api/items/:id    -> ItemSummary
 //   add ?naive=1 to either for the world-blind "naive verifier" (split screen)
 // GET /api/trust        -> TrustList
+// GET /api/log/head     -> LogHead  (current head, freshly signed)
 // POST /api/devices     { deviceId, publicKeys } -> DeviceCert
 // POST /api/devices/personhood { credentialId, publicKey? } -> PersonhoodCredential
 //   publicKey: the passkey's public key, base64url (COSE as SimpleWebAuthn returns it, or a raw

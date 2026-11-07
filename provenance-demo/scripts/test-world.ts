@@ -1,4 +1,4 @@
-// Task 4 check: world-aware verification + naive mode, in memory (no server, no DB).
+// Task 4 + 5 check: world-aware verification + naive mode, in memory (no server, no DB).
 // Every row is checked in three columns: today, after Q-Day, naive after Q-Day.
 import {
   canonicalBytes, claimChallenge, hashObject, hybridSign, issueDeviceCert, makeWorld, sha256Hex, signLegacyClaim,
@@ -11,16 +11,18 @@ import {
   makePhone, passkeyAssert, photoFrom, type Photo,
 } from './lib/fake-phone.js';
 import { SCENES, brighten } from './lib/png.js';
+import { FakeLog } from './lib/fake-log.js';
 
 // --- trust ---
 const manufacturer = makeAuthority('demo-manufacturer', 'Demo Phone Co.');
 const issuer = makeAuthority('demo-issuer', 'Demo ID Office');
 const editor = makeAuthority('demo-editor', 'Demo Photo Editor');
 const legacyCam = await makeLegacyCamera('legacy-cam-1');
+const fakeLog = new FakeLog();
 const pub = (a: typeof manufacturer) => ({ id: a.id, name: a.name, publicKeys: a.publicKeys });
 const trust: TrustList = {
   manufacturers: [pub(manufacturer)], issuers: [pub(issuer)], editors: [pub(editor)],
-  legacyCameras: [legacyTrustEntry(legacyCam)],
+  legacyCameras: [legacyTrustEntry(legacyCam)], log: fakeLog.trusted,
 };
 
 // --- worlds and times ---
@@ -30,11 +32,8 @@ const QDAY = makeWorld('q-day', qDayAt.toISOString(), 2035);
 const BEFORE = new Date(qDayAt.getTime() - 3600_000).toISOString();
 const AFTER = new Date(qDayAt.getTime() + 3600_000).toISOString();
 
-/** A self-consistent log entry for `m` at a given time. */
-function entryAt(m: Manifest, timestamp: string): LogEntry {
-  const manifestHash = hashObject(m), prevHash = sha256Hex('previous entry');
-  return { seq: 1, manifestHash, prevHash, timestamp, entryHash: sha256Hex(prevHash + manifestHash + timestamp) };
-}
+/** A genuine, log-signed entry for `m` at a given time. */
+const entryAt = (m: Manifest, timestamp: string): LogEntry => fakeLog.append(m, timestamp);
 
 const junk = (n: number) => toB64url(new Uint8Array(n).fill(7));
 const withJunk = (sig: HybridSignature, alg: 'ed25519' | 'ml-dsa-65'): HybridSignature =>
@@ -92,6 +91,23 @@ const certForgery: HybridManifest = (() => {
 // --- ours after Q-Day with only the ML-DSA half valid: broken Ed25519 part is ignored ---
 const pqOnly: HybridManifest = { ...oursAfter, claimSignature: withJunk(oursAfter.claimSignature, 'ed25519') };
 
+// --- attacker: backdated log entries for the RSA forgery (to fake "logged before Q-Day") ---
+type EntryMaker = (m: Manifest) => LogEntry;
+// (a) Hash-consistent entry, no valid log signature. SHA-256 needs no secret: anyone can make this.
+const unsignedBackdated: EntryMaker = (m) => {
+  const real = fakeLog.append(m, BEFORE);
+  return { ...real, checkpoint: { ...real.checkpoint, signature: { alg: 'ml-dsa-65', value: junk(3309) } } };
+};
+// (b) Signed with the attacker's own ML-DSA key (not the trusted log).
+const rogueLog = new FakeLog('demo-log', 'Demo Transparency Log');
+const rogueSignedBackdated: EntryMaker = (m) => rogueLog.append(m, BEFORE);
+// (c) A genuinely signed entry from AFTER Q-Day, with its timestamp edited to before Q-Day.
+const retimed: EntryMaker = (m) => {
+  const real = fakeLog.append(m, AFTER);
+  const entryHash = sha256Hex(real.prevHash + real.manifestHash + BEFORE);
+  return { ...real, timestamp: BEFORE, entryHash, checkpoint: { ...real.checkpoint, timestamp: BEFORE, rootHash: entryHash } };
+};
+
 // AI image: no seals.
 const ai = photoFrom(SCENES.synthetic(320, 240));
 
@@ -100,6 +116,7 @@ const ai = photoFrom(SCENES.synthetic(320, 240));
 interface Want { status: Status; presence?: PresenceLevel; label?: TrustLabel; reason?: string; brokenCheck?: string }
 interface Row {
   name: string; bytes: Uint8Array; manifest: Manifest | null; loggedAt: string | null;
+  entry?: EntryMaker;  // custom (forged) log entry instead of a genuine one at loggedAt
   today: Want; qday: Want; naive: Want;
 }
 
@@ -157,6 +174,25 @@ const rows: Row[] = [
     qday: { status: 'green', presence: 'device-only', label: 'device-verified', reason: 'Face ID proof is classical (ES256) and forgeable since Q-Day', brokenCheck: 'Person approved capture' },
     naive: { status: 'green', presence: 'verified-human' },
   },
+  // Task 5: the log anchor itself must be quantum-safe (ML-DSA-signed head).
+  {
+    name: 'RSA forgery + backdated unsigned entry', bytes: fake.bytes, manifest: rsaForgery, loggedAt: null, entry: unsignedBackdated,
+    today: { status: 'grey', reason: 'not signed by Demo Transparency Log' },
+    qday: { status: 'grey', reason: 'classical signature only; forgeable since Q-Day' },
+    naive: { status: 'grey', reason: 'not signed by Demo Transparency Log' },
+  },
+  {
+    name: 'RSA forgery + entry signed by rogue log', bytes: fake.bytes, manifest: rsaForgery, loggedAt: null, entry: rogueSignedBackdated,
+    today: { status: 'grey', reason: 'not signed by' },
+    qday: { status: 'grey', reason: 'classical signature only; forgeable since Q-Day' },
+    naive: { status: 'grey', reason: 'not signed by' },
+  },
+  {
+    name: 'RSA forgery + real entry, timestamp edited', bytes: fake.bytes, manifest: rsaForgery, loggedAt: null, entry: retimed,
+    today: { status: 'grey', reason: 'not signed by' },
+    qday: { status: 'grey', reason: 'classical signature only; forgeable since Q-Day' },
+    naive: { status: 'grey', reason: 'not signed by' },
+  },
   // extra: broken parts are ignored, not required, after Q-Day
   {
     name: 'Ours after flip, junk Ed25519, ML-DSA ok', bytes: park.bytes, manifest: pqOnly, loggedAt: AFTER,
@@ -180,7 +216,7 @@ const short = (r: VerificationResult) => `${r.status}/${r.presenceLevel}`;
 let failures = 0;
 console.log(`${'Photo'.padEnd(42)} ${'Today'.padEnd(22)} ${'After Q-Day'.padEnd(22)} Naive, after Q-Day`);
 for (const row of rows) {
-  const entry = row.manifest && row.loggedAt ? entryAt(row.manifest, row.loggedAt) : null;
+  const entry = !row.manifest ? null : row.entry ? row.entry(row.manifest) : row.loggedAt ? entryAt(row.manifest, row.loggedAt) : null;
   const [t, q, n] = await Promise.all([
     verifyItem(row.bytes, row.manifest, trust, entry, TODAY),
     verifyItem(row.bytes, row.manifest, trust, entry, QDAY),
