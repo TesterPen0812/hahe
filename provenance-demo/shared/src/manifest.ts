@@ -145,6 +145,23 @@ export interface LogEntry {
   entryHash: string;     // sha256(prevHash + manifestHash + timestamp)
 }
 
+// ---------- World state (the demo's "today" vs "Q-Day" switch) ----------
+
+export type WorldMode = 'today' | 'q-day';
+
+export interface WorldState {
+  mode: WorldMode;
+  // REAL timestamp (ISO) when the presenter flipped to Q-Day; null in "today".
+  // "Logged before Q-Day" always compares log timestamps against this, never against headlineYear.
+  qDayAt: string | null;
+  brokenAlgorithms: Alg[];   // [] today; rsa-pss-2048, ed25519, es256 in q-day. ml-dsa-65 is never broken.
+  headlineYear: number;      // story year for the UI only (e.g. 2035). Never used in verification.
+}
+
+// GET  /api/world                         -> WorldState   (cheap: poll every 1–2 s)
+// POST /api/world { mode, headlineYear? } -> WorldState
+//   mode "q-day" sets qDayAt = now (kept as-is if already in q-day); "today" clears it.
+
 // ---------- Verification result ----------
 
 export type Status = 'green' | 'amber' | 'grey';
@@ -157,10 +174,21 @@ export type PresenceLevel = 'verified-human' | 'device-only' | 'none';
 //   unknown         = grey
 export type TrustLabel = 'verified-human' | 'device-verified' | 'camera-verified' | 'unknown';
 
+// One part of a hybrid signature, as judged in the current world.
+export interface SealCheck {
+  alg: Alg;
+  valid: boolean;           // cryptographically valid
+  counted: boolean;         // did it count toward the result? (false = ignored: broken since Q-Day, not anchored)
+  brokenSinceQDay: boolean; // algorithm is broken in this world and the item isn't anchored before Q-Day
+}
+
 export interface Check {
   name: string;
   pass: boolean;
-  reason: string;        // plain English, shown in VerificationPanel
+  reason: string;           // plain English, shown in VerificationPanel
+  alg?: Alg;                // single-algorithm checks (es256 passkey, rsa-pss-2048 camera)
+  parts?: SealCheck[];      // hybrid checks: which seal held and which broke
+  brokenSinceQDay?: boolean; // this check relies on (or ignored) an algorithm broken since Q-Day
 }
 
 export interface VerificationResult {
@@ -168,6 +196,8 @@ export interface VerificationResult {
   presenceLevel: PresenceLevel;
   label: TrustLabel;
   kind: Manifest['kind'] | null;   // which kind of manifest was checked (null = none)
+  naive: boolean;                  // true = world-blind verifier (today's real-world tools)
+  anchoredBeforeQDay: boolean;     // q-day only: the log entry predates qDayAt, so classical signatures still count
   checks: Check[];
 }
 
@@ -190,8 +220,9 @@ export interface ItemSummary {
   verification: VerificationResult;
 }
 
-// GET /api/items        -> ItemSummary[]  (newest first)
+// GET /api/items        -> ItemSummary[]  (newest first), verified in the current world
 // GET /api/items/:id    -> ItemSummary
+//   add ?naive=1 to either for the world-blind "naive verifier" (split screen)
 // GET /api/trust        -> TrustList
 // POST /api/devices     { deviceId, publicKeys } -> DeviceCert
 // POST /api/devices/personhood { credentialId, publicKey? } -> PersonhoodCredential

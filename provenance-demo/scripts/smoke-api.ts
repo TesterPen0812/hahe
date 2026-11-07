@@ -70,7 +70,11 @@ const feed = await api<ItemSummary[]>('/api/items');
 console.log('\nFeed (newest first):');
 for (const i of feed) console.log(`  ${i.verification.status.padEnd(6)} ${i.verification.presenceLevel.padEnd(15)} ${i.id}${i.parentId ? ' (edit)' : ''}`);
 
-const pass = again.verification.status === 'green' && again.verification.presenceLevel === 'verified-human' && imgHash === claim.contentHash
+// After Q-Day a fresh upload isn't anchored, so its ES256 Face ID proof doesn't count:
+// still green on the ML-DSA seal, but presence drops to device-only.
+const world = await api<{ mode: string }>('/api/world');
+const wantPresence = world.mode === 'q-day' ? 'device-only' : 'verified-human';
+const pass = again.verification.status === 'green' && again.verification.presenceLevel === wantPresence && imgHash === claim.contentHash
   && personhood.passkeyPublicKey === passkey.publicKey;
-console.log(pass ? '\n✅ PASS: a phone-built manifest uploaded over HTTP verifies green.' : '\n❌ FAIL');
+console.log(pass ? `\n✅ PASS: a phone-built manifest uploaded over HTTP verifies green (${wantPresence}, world: ${world.mode}).` : '\n❌ FAIL');
 process.exit(pass ? 0 : 1);

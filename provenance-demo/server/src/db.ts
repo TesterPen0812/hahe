@@ -62,6 +62,15 @@ db.exec(`
     result     TEXT NOT NULL,           -- JSON DetectionResult
     created_at TEXT NOT NULL
   );
+
+  -- The demo's world switch. Exactly one row (id = 1).
+  CREATE TABLE IF NOT EXISTS world (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    mode          TEXT NOT NULL CHECK (mode IN ('today', 'q-day')),
+    q_day_at      TEXT,                 -- real ISO time the switch was flipped; NULL in "today"
+    headline_year INTEGER NOT NULL,     -- story year for the UI only
+    updated_at    TEXT NOT NULL
+  );
 `);
 
 // ---------- devices ----------
@@ -120,9 +129,9 @@ export function listItems(): ItemRow[] {
 export const imagePath = (row: ItemRow) => path.join(UPLOAD_DIR, row.image_file);
 export const readImage = (row: ItemRow): Uint8Array => new Uint8Array(readFileSync(imagePath(row)));
 
-/** Wipe all items, log entries, detections, devices and uploads (used by seed-feed --reset). Keeps passkeys. */
+/** Wipe items, log, detections, devices, uploads and the world switch (seed-feed --reset). Keeps passkeys. */
 export function resetData(): void {
-  db.exec('DELETE FROM detections; DELETE FROM log_entries; DELETE FROM items; DELETE FROM devices;');
+  db.exec('DELETE FROM detections; DELETE FROM log_entries; DELETE FROM items; DELETE FROM devices; DELETE FROM world;');
   rmSync(UPLOAD_DIR, { recursive: true, force: true });
   mkdirSync(UPLOAD_DIR, { recursive: true });
 }
