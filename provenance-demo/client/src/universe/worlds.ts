@@ -2,7 +2,8 @@ import * as THREE from 'three'
 import { fbm, rng } from './noise'
 import {
   TRAIL_LENGTH, fieldFragment, fieldVertex, frameFragment, pathFragment, pathVertex,
-  portalFragment, portalVertex, skyFragment, skyVertex,
+  portalFragment, portalVertex, skyFragment, skyVertex, sparkFragment, sparkVertex, spillFragment,
+  starFragment, starVertex,
 } from './shaders'
 
 export type RGB = [number, number, number]
@@ -14,6 +15,12 @@ export interface SceneUniforms {
   uSizeScale: { value: number }
   uTrail: { value: THREE.Vector4[] }
   uShock: { value: THREE.Vector4 }
+  /** Click pulse: x, z, start time, amplitude. */
+  uPulse: { value: THREE.Vector4 }
+  /** Lens: focal distance (m), aperture radius, largest bokeh disc (css px). */
+  uFocus: { value: number }
+  uAperture: { value: number }
+  uMaxBlur: { value: number }
 }
 
 export function sceneUniforms(): SceneUniforms {
@@ -23,10 +30,57 @@ export function sceneUniforms(): SceneUniforms {
     uSizeScale: { value: 900 },
     uTrail: { value: Array.from({ length: TRAIL_LENGTH }, () => new THREE.Vector4(0, 0, 99, 0)) },
     uShock: { value: new THREE.Vector4(0, 0, -99, 0) },
+    uPulse: { value: new THREE.Vector4(0, 0, -99, 0) },
+    uFocus: { value: 10 },
+    uAperture: { value: 0.07 },
+    uMaxBlur: { value: 44 },
   }
 }
 
-interface FieldOptions {
+export interface FieldStyle {
+  fogColor?: RGB
+  center?: THREE.Vector3
+}
+
+/** The material every particle cloud uses; `mode` picks its motion (see fieldVertex). */
+export function fieldMaterial(u: SceneUniforms, mode: number, fog: [number, number], opacity = 1, style: FieldStyle = {}) {
+  return new THREE.ShaderMaterial({
+    vertexShader: fieldVertex,
+    fragmentShader: fieldFragment,
+    uniforms: {
+      ...u,
+      uMode: { value: mode },
+      uFogNear: { value: fog[0] },
+      uFogFar: { value: fog[1] },
+      uOpacity: { value: opacity },
+      uFogColor: { value: new THREE.Color(...(style.fogColor ?? [0, 0, 0])) },
+      uCenter: { value: style.center?.clone() ?? new THREE.Vector3() },
+    },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  })
+}
+
+/** A Points cloud from explicit arrays (positions, colours, sizes). */
+export function cloud(
+  u: SceneUniforms, pos: Float32Array, col: Float32Array, size: Float32Array, mode: number,
+  fog: [number, number], seed: number, opacity = 1, style: FieldStyle = {},
+) {
+  const n = pos.length / 3, r = rng(seed)
+  const sd = new Float32Array(n)
+  for (let i = 0; i < n; i++) sd[i] = r()
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3))
+  g.setAttribute('aSize', new THREE.BufferAttribute(size, 1))
+  g.setAttribute('aSeed', new THREE.BufferAttribute(sd, 1))
+  const p = new THREE.Points(g, fieldMaterial(u, mode, fog, opacity, style))
+  p.frustumCulled = false
+  return p
+}
+
+interface FieldOptions extends FieldStyle {
   count: number
   x: [number, number]
   z: [number, number]
@@ -46,7 +100,6 @@ export function particleField(u: SceneUniforms, o: FieldOptions) {
   const pos = new Float32Array(o.count * 3)
   const col = new Float32Array(o.count * 3)
   const size = new Float32Array(o.count)
-  const seed = new Float32Array(o.count)
   const [x0, x1] = o.x, [z0, z1] = o.z
   // Hex-lattice spacing that fills the area with exactly `count` points.
   const spacing = o.lattice ? Math.sqrt(((x1 - x0) * (z1 - z0)) / (o.count * 0.866)) : 0
@@ -54,7 +107,6 @@ export function particleField(u: SceneUniforms, o: FieldOptions) {
   for (let i = 0; i < o.count; i++) {
     let x: number, z: number
     if (spacing && cols) {
-      // Hex lattice: ordered, but rows offset so it reads as structure rather than a grid.
       const row = Math.floor(i / cols), c = i % cols
       x = x0 + (c + (row % 2) * 0.5) * spacing
       z = z1 - row * spacing * 0.866
@@ -66,52 +118,52 @@ export function particleField(u: SceneUniforms, o: FieldOptions) {
     pos[i * 3] = x
     pos[i * 3 + 1] = o.height(x, z) + (o.yJitter ? o.yJitter(r) : 0)
     pos[i * 3 + 2] = z
-    const c = o.color(r, x, z)
-    col.set(c, i * 3)
+    col.set(o.color(r, x, z), i * 3)
     size[i] = o.size(r)
-    seed[i] = r()
   }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3))
-  g.setAttribute('aSize', new THREE.BufferAttribute(size, 1))
-  g.setAttribute('aSeed', new THREE.BufferAttribute(seed, 1))
-  const m = new THREE.ShaderMaterial({
-    vertexShader: fieldVertex,
-    fragmentShader: fieldFragment,
-    uniforms: {
-      ...u,
-      uMode: { value: o.mode },
-      uFogNear: { value: o.fog[0] },
-      uFogFar: { value: o.fog[1] },
-      uOpacity: { value: o.opacity ?? 1 },
-    },
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-  })
-  const points = new THREE.Points(g, m)
-  points.frustumCulled = false
-  return points
+  return cloud(u, pos, col, size, o.mode, o.fog, o.seed + 1000, o.opacity ?? 1, o)
 }
 
-export function sky(top: RGB, horizon: RGB, ground: RGB, moonDir: THREE.Vector3, moonColor: RGB, moonSize: number) {
+export interface SkyExtras {
+  glow?: RGB
+  band?: RGB
+  ridge?: { near: RGB; far: RGB; height: number; seed: number }
+  sun?: THREE.Vector3
+  body?: 'moon' | 'planet'
+  ring?: RGB
+}
+
+export function sky(
+  top: RGB, horizon: RGB, ground: RGB, moonDir: THREE.Vector3, moonColor: RGB, moonSize: number,
+  x: SkyExtras = {},
+) {
+  // Older callers passed a cosine-style size; anything tiny is converted to an angular radius.
+  const radius = moonSize < 0.02 ? Math.acos(1 - moonSize) * 0.7 : moonSize
   const m = new THREE.ShaderMaterial({
-    vertexShader: skyVertex.replace('vDir = normalize(position);',
-      'vDir = normalize((modelMatrix * vec4(position, 1.0)).xyz - cameraPosition);'),
+    vertexShader: skyVertex,
     fragmentShader: skyFragment,
     uniforms: {
+      uTime: { value: 0 },
       uTop: { value: new THREE.Color(...top) },
       uHorizon: { value: new THREE.Color(...horizon) },
       uGround: { value: new THREE.Color(...ground) },
+      uGlow: { value: new THREE.Color(...(x.glow ?? [0, 0, 0])) },
+      uBand: { value: new THREE.Color(...(x.band ?? [0, 0, 0])) },
+      uRidgeNear: { value: new THREE.Color(...(x.ridge?.near ?? [0, 0, 0])) },
+      uRidgeFar: { value: new THREE.Color(...(x.ridge?.far ?? [0, 0, 0])) },
+      uRidgeHeight: { value: x.ridge?.height ?? 0 },
+      uRidgeSeed: { value: x.ridge?.seed ?? 1 },
       uMoonDir: { value: moonDir.clone().normalize() },
       uMoonColor: { value: new THREE.Color(...moonColor) },
-      uMoonSize: { value: moonSize },
+      uMoonSize: { value: radius },
+      uSunDir: { value: (x.sun ?? new THREE.Vector3(0.3, 0.4, 1)).clone().normalize() },
+      uBodyKind: { value: x.body === 'planet' ? 1 : 0 },
+      uRingColor: { value: new THREE.Color(...(x.ring ?? moonColor)) },
     },
     side: THREE.BackSide,
     depthWrite: false,
   })
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(600, 48, 24), m)
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(600, 64, 32), m)
   mesh.renderOrder = -10
   mesh.frustumCulled = false
   return mesh
@@ -121,28 +173,36 @@ export function stars(count: number, seed: number, tint: RGB) {
   const r = rng(seed)
   const pos = new Float32Array(count * 3)
   const s = new Float32Array(count)
+  const col = new Float32Array(count * 3)
   for (let i = 0; i < count; i++) {
-    const th = r() * Math.PI * 2, y = 0.08 + Math.pow(r(), 0.7) * 0.9
-    const rad = Math.sqrt(1 - y * y)
-    pos.set([Math.cos(th) * rad * 500, y * 500, Math.sin(th) * rad * 500], i * 3)
+    // denser toward a band across the sky, like a galaxy seen edge-on
+    const inBand = r() < 0.45
+    let x: number, y: number, z: number
+    if (inBand) {
+      const a = r() * Math.PI * 2, w = (r() - 0.5) * 0.35
+      const axis = new THREE.Vector3(0.35, 0.25, 0.9).normalize()
+      const t1 = new THREE.Vector3(1, 0, 0).cross(axis).normalize(), t2 = axis.clone().cross(t1)
+      const v = t1.multiplyScalar(Math.cos(a)).add(t2.multiplyScalar(Math.sin(a))).addScaledVector(axis, w).normalize()
+      x = v.x; y = Math.abs(v.y) * 0.95 + 0.04; z = v.z
+    } else {
+      const th = r() * Math.PI * 2
+      y = 0.04 + Math.pow(r(), 0.7) * 0.94
+      const rad = Math.sqrt(1 - y * y)
+      x = Math.cos(th) * rad; z = Math.sin(th) * rad
+    }
+    pos.set([x * 500, y * 500, z * 500], i * 3)
     s[i] = r()
+    const k = r()
+    col.set(k < 0.15 ? [1.0, 0.8, 0.6] : k < 0.35 ? [0.7, 0.8, 1.0] : [1, 1, 1], i * 3)
   }
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
   g.setAttribute('aSeed', new THREE.BufferAttribute(s, 1))
+  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3))
   const m = new THREE.ShaderMaterial({
     uniforms: { uTime: { value: 0 }, uPixelRatio: { value: 1 }, uTint: { value: new THREE.Color(...tint) } },
-    vertexShader: /* glsl */ `
-      uniform float uTime; uniform float uPixelRatio; attribute float aSeed; varying float vA;
-      void main() {
-        vec4 mv = modelViewMatrix * vec4(position + cameraPosition, 1.0);
-        gl_Position = projectionMatrix * mv;
-        vA = (0.35 + 0.65 * aSeed) * (0.7 + 0.3 * sin(uTime * (0.5 + aSeed * 2.0) + aSeed * 50.0));
-        gl_PointSize = (1.0 + aSeed * 1.6) * uPixelRatio;
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform vec3 uTint; varying float vA;
-      void main() { float r = length(gl_PointCoord - 0.5) * 2.0; if (r > 1.0) discard; gl_FragColor = vec4(uTint, (1.0 - r) * vA); }`,
+    vertexShader: starVertex,
+    fragmentShader: starFragment,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   })
   const p = new THREE.Points(g, m)
@@ -153,45 +213,55 @@ export function stars(count: number, seed: number, tint: RGB) {
 
 export interface PathPiece { curve: THREE.Curve<THREE.Vector3>; branch: number; density: number }
 
+/**
+ * A stream of light along curves: a tight bright core, a wide faint spill of light on the
+ * ground around it, and sparks lifting off it.
+ */
 export function glowingPath(
   u: SceneUniforms, pieces: PathPiece[], tints: [RGB, RGB, RGB], seed: number, fogFar: number,
   height: (x: number, z: number) => number = () => 0,
 ) {
   const r = rng(seed)
-  const total = pieces.reduce((n, p) => n + Math.floor(p.curve.getLength() * p.density), 0)
+  const counts = pieces.map(p => Math.floor(p.curve.getLength() * p.density))
+  const total = counts.reduce((a, b) => a + b, 0)
   const pos = new Float32Array(total * 3)
   const t = new Float32Array(total), b = new Float32Array(total)
-  const sd = new Float32Array(total), sz = new Float32Array(total)
+  const sd = new Float32Array(total), sz = new Float32Array(total), kind = new Float32Array(total)
   const tmp = new THREE.Vector3(), tan = new THREE.Vector3(), side = new THREE.Vector3()
   let i = 0
-  for (const piece of pieces) {
-    const n = Math.floor(piece.curve.getLength() * piece.density)
-    for (let k = 0; k < n; k++, i++) {
+  pieces.forEach((piece, pi) => {
+    for (let k = 0; k < counts[pi]; k++, i++) {
       const u0 = r()
       piece.curve.getPointAt(u0, tmp)
       piece.curve.getTangentAt(u0, tan)
       side.set(-tan.z, 0, tan.x).normalize()
-      // A narrow core with a few strays, so it reads as a stream of light rather than a line.
-      const spread = r() < 0.85 ? (r() - 0.5) * 0.22 : (r() - 0.5) * 0.9
+      const roll = r()
+      const kd = roll < 0.74 ? 0 : roll < 0.94 ? 1 : 2
+      // Gaussian-ish spread: a hot narrow core with soft edges.
+      const g = (r() + r() + r() - 1.5) / 1.5
+      const spread = kd === 0 ? g * 0.16 : kd === 1 ? g * 1.1 : g * 0.5
       const px = tmp.x + side.x * spread, pz = tmp.z + side.z * spread
-      pos.set([px, height(px, pz) + 0.05 + r() * 0.06, pz], i * 3)
+      pos.set([px, height(px, pz) + 0.04 + r() * (kd === 1 ? 0.02 : 0.06), pz], i * 3)
       t[i] = u0
       b[i] = piece.branch
       sd[i] = r()
-      sz[i] = 0.05 + r() * 0.07
+      sz[i] = kd === 0 ? 0.03 + r() * 0.05 : kd === 1 ? 0.12 + r() * 0.12 : 0.025 + r() * 0.03
+      kind[i] = kd
     }
-  }
+  })
   const g = new THREE.BufferGeometry()
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
   g.setAttribute('aT', new THREE.BufferAttribute(t, 1))
   g.setAttribute('aBranch', new THREE.BufferAttribute(b, 1))
   g.setAttribute('aSeed', new THREE.BufferAttribute(sd, 1))
   g.setAttribute('aSize', new THREE.BufferAttribute(sz, 1))
+  g.setAttribute('aKind', new THREE.BufferAttribute(kind, 1))
   const m = new THREE.ShaderMaterial({
     vertexShader: pathVertex,
     fragmentShader: pathFragment,
     uniforms: {
-      uTime: u.uTime, uPixelRatio: u.uPixelRatio, uSizeScale: u.uSizeScale, uShock: u.uShock,
+      uTime: u.uTime, uPixelRatio: u.uPixelRatio, uSizeScale: u.uSizeScale, uShock: u.uShock, uPulse: u.uPulse,
+      uFocus: u.uFocus, uAperture: u.uAperture, uMaxBlur: u.uMaxBlur,
       uTintA: { value: new THREE.Color(...tints[0]) },
       uTintB: { value: new THREE.Color(...tints[1]) },
       uTintC: { value: new THREE.Color(...tints[2]) },
@@ -207,7 +277,10 @@ export function glowingPath(
 
 export const DOOR = { width: 4.2, height: 7.2 }
 
-/** A doorway: an opaque window showing another universe, plus an additive glowing frame. */
+/**
+ * A doorway: an opaque window showing another universe, an additive glowing frame,
+ * light spilling onto the ground in front, and sparks lifting off the frame.
+ */
 export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
   const group = new THREE.Group()
   const contentMat = new THREE.ShaderMaterial({
@@ -225,21 +298,55 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
   const content = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width, DOOR.height), contentMat)
   content.position.y = DOOR.height / 2
   const fw = DOOR.width * 3.2, fh = DOOR.height * 1.9
+  const shared = {
+    uOpen: contentMat.uniforms.uOpen,
+    uHover: contentMat.uniforms.uHover,
+    uTint: contentMat.uniforms.uTint,
+    uTime: contentMat.uniforms.uTime,
+  }
   const frameMat = new THREE.ShaderMaterial({
     vertexShader: portalVertex,
     fragmentShader: frameFragment,
-    uniforms: {
-      uOpen: contentMat.uniforms.uOpen,
-      uHover: contentMat.uniforms.uHover,
-      uTint: contentMat.uniforms.uTint,
-      uDoor: { value: new THREE.Vector2(DOOR.width / 2 / fw, DOOR.height / 2 / fh) },
-    },
+    uniforms: { ...shared, uDoor: { value: new THREE.Vector2(DOOR.width / 2 / fw, DOOR.height / 2 / fh) } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   })
   const frame = new THREE.Mesh(new THREE.PlaneGeometry(fw, fh), frameMat)
   frame.position.set(0, DOOR.height / 2, 0.01)
   frame.renderOrder = 5
-  group.add(content, frame)
+
+  // Light pooled on the ground, fanning out toward the visitor.
+  const spillMat = new THREE.ShaderMaterial({
+    vertexShader: portalVertex, fragmentShader: spillFragment, uniforms: shared,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  })
+  const spill = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width * 4, 16), spillMat)
+  spill.rotation.x = -Math.PI / 2
+  spill.position.set(0, 0.06, 8)
+  spill.renderOrder = 4
+
+  // Sparks rising off the frame's edges and threshold.
+  const n = 260, r = rng(Math.floor(tint[0] * 97 + tint[1] * 31))
+  const sp = new Float32Array(n * 3), ss = new Float32Array(n)
+  for (let i = 0; i < n; i++) {
+    const e = r()
+    const x = e < 0.35 ? -DOOR.width / 2 : e < 0.7 ? DOOR.width / 2 : (r() - 0.5) * DOOR.width
+    const y = e < 0.7 ? r() * DOOR.height : 0
+    sp.set([x + (r() - 0.5) * 0.15, y, 0.1 + (r() - 0.5) * 0.3], i * 3)
+    ss[i] = r()
+  }
+  const sg = new THREE.BufferGeometry()
+  sg.setAttribute('position', new THREE.BufferAttribute(sp, 3))
+  sg.setAttribute('aSeed', new THREE.BufferAttribute(ss, 1))
+  const sparkMat = new THREE.ShaderMaterial({
+    vertexShader: sparkVertex, fragmentShader: sparkFragment,
+    uniforms: { ...shared, uScale: { value: 70 * Math.min(window.devicePixelRatio || 1, 1.75) } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  })
+  const sparks = new THREE.Points(sg, sparkMat)
+  sparks.frustumCulled = false
+  sparks.renderOrder = 6
+
+  group.add(content, frame, spill, sparks)
   return { group, content, contentMat }
 }
 
@@ -249,7 +356,7 @@ export function homeHeight(x: number, z: number) {
   return 2.2 * fbm(x * 0.03 + 3.1, z * 0.03 - 1.7, 4) + 0.5 * fbm(x * 0.11 + 9, z * 0.11, 3)
 }
 
-// ── The three universes past Q-Day ─────────────────────────────────────────
+// ── The universes past Q-Day ───────────────────────────────────────────────
 
 export interface UniverseDef {
   id: 'rsa' | 'hybrid' | 'unsigned'
@@ -300,7 +407,6 @@ export function universeScene(def: UniverseDef, u: SceneUniforms, lowPower: bool
       color: (r) => r() < 0.12 ? [1.0, 0.62 + r() * 0.2, 0.25] : [0.55 + r() * 0.4, 0.12 + r() * 0.12, 0.04],
       size: (r) => 0.04 + r() * 0.06,
     }))
-    // A broken ring hanging in the sky: the old lock, cracked open.
     const ringCount = Math.floor(5000 * k), rr = rng(5)
     const ring = new Float32Array(ringCount * 3)
     for (let i = 0; i < ringCount; i++) {
@@ -310,23 +416,8 @@ export function universeScene(def: UniverseDef, u: SceneUniforms, lowPower: bool
     }
     scene.add(looseParticles(u, ring, [1.0, 0.45, 0.15], 0.25, 1, 21, [60, 220]))
   } else if (def.id === 'hybrid') {
-    h = (x, z) => entrance(x, z) * (1.6 * Math.sin(x * 0.07) * Math.cos(z * 0.045) + 0.9 * fbm(x * 0.04, z * 0.04, 3))
-    scene.add(sky([0.0, 0.015, 0.02], [0.01, 0.12, 0.1], [0.0, 0.01, 0.01], new THREE.Vector3(-0.3, 0.35, -1), [0.3, 0.45, 0.4], 0.003))
-    scene.add(particleField(u, {
-      count: Math.floor(100000 * k), x: [-70, 70], z: [-160, -1], height: h, mode: 2, seed: 12, fog: [25, 140],
-      lattice: true,
-      color: (r) => r() < 0.08 ? [0.75, 1.0, 0.9] : [0.06 + r() * 0.1, 0.45 + r() * 0.4, 0.3 + r() * 0.35],
-      size: (r) => 0.045 + r() * 0.04,
-    }))
-    // Aurora curtains: the quantum-safe layer, steady overhead.
-    const n = Math.floor(14000 * k), ar = rng(8)
-    const au = new Float32Array(n * 3)
-    for (let i = 0; i < n; i++) {
-      const x = -90 + ar() * 180
-      au.set([x, 18 + ar() * 16, -110 + Math.sin(x * 0.05) * 18 + (ar() - 0.5) * 3], i * 3)
-    }
-    scene.add(looseParticles(u, au, [0.3, 1.0, 0.7], 0.35, 2, 22, [80, 260], 0.55))
-    scene.add(stars(lowPower ? 600 : 1400, 4, [0.8, 1.0, 0.95]))
+    h = hybridHeight
+    buildHybrid(scene, u, lowPower)
   } else {
     h = (x, z) => entrance(x, z) * 0.5 * fbm(x * 0.03, z * 0.03, 2)
     scene.add(sky([0.05, 0.05, 0.06], [0.11, 0.11, 0.125], [0.05, 0.05, 0.06], new THREE.Vector3(0, 0.2, -1), [0.1, 0.1, 0.11], 0.012))
@@ -338,30 +429,114 @@ export function universeScene(def: UniverseDef, u: SceneUniforms, lowPower: bool
     }))
   }
   const tint = def.tint
-  scene.add(glowingPath(u, [{ curve: pathCurve, branch: 1, density: lowPower ? 60 : 110 }], [tint, tint, tint], 31, 90, h))
+  scene.add(glowingPath(u, [{ curve: pathCurve, branch: 1, density: lowPower ? 60 : 120 }], [tint, tint, tint], 31, 110, h))
   return scene
 }
 
-export function looseParticles(u: SceneUniforms, pos: Float32Array, c: RGB, size: number, mode: number, seed: number, fog: [number, number], opacity = 1) {
+// ── The hybrid world: post-quantum, ordered, calm ──────────────────────────
+
+const hybridHeight = (x: number, z: number) =>
+  entrance(x, z) * (1.2 * Math.sin(x * 0.06) * Math.cos(z * 0.04) + 0.7 * fbm(x * 0.035, z * 0.035, 3))
+
+const HYBRID_FOG: RGB = [0.02, 0.16, 0.15]
+
+function buildHybrid(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
+  const k = lowPower ? 0.45 : 1
+  const fog = { fogColor: HYBRID_FOG }
+  scene.add(sky(
+    [0.002, 0.012, 0.03], [0.025, 0.13, 0.13], [0.002, 0.012, 0.014],
+    new THREE.Vector3(0.32, 0.2, -1), [0.55, 0.8, 0.85], 0.15,
+    {
+      glow: [0.05, 0.3, 0.26],
+      band: [0.03, 0.07, 0.08],
+      ridge: { near: [0.003, 0.02, 0.025], far: [0.015, 0.085, 0.09], height: 0.045, seed: 7 },
+      sun: new THREE.Vector3(0.9, 0.5, -0.6),
+      body: 'planet',
+      ring: [0.45, 1.0, 0.8],
+    },
+  ))
+  scene.add(stars(lowPower ? 700 : 1800, 4, [0.8, 1.0, 0.95]))
+
+  // The ground: a calm hex lattice that breathes and carries slow waves of verification.
+  scene.add(particleField(u, {
+    count: Math.floor(110000 * k), x: [-75, 75], z: [-170, -1], height: hybridHeight, mode: 2, seed: 12, fog: [25, 150],
+    lattice: true, ...fog,
+    color: (r) => r() < 0.06 ? [0.7, 1.0, 0.9] : [0.04 + r() * 0.06, 0.32 + r() * 0.3, 0.28 + r() * 0.25],
+    size: (r) => 0.04 + r() * 0.035,
+  }))
+
+  // Aurora: three curtains, mint at the hem fading to blue and violet at the top.
+  const curtains = [
+    { z: -125, x0: -120, x1: 120, y0: 16, hgt: 26, amp: 16, freq: 0.035 },
+    { z: -95, x0: -110, x1: 40, y0: 22, hgt: 18, amp: 10, freq: 0.05 },
+    { z: -150, x0: -30, x1: 140, y0: 12, hgt: 30, amp: 20, freq: 0.03 },
+  ]
+  const ar = rng(8)
+  const per = Math.floor(9000 * k)
+  const ap = new Float32Array(per * curtains.length * 3), ac = new Float32Array(per * curtains.length * 3)
+  const as = new Float32Array(per * curtains.length)
+  let ai = 0
+  for (const c of curtains) {
+    for (let i = 0; i < per; i++, ai++) {
+      const x = c.x0 + ar() * (c.x1 - c.x0)
+      const v = Math.pow(ar(), 1.8) // dense at the hem
+      const y = c.y0 + v * c.hgt
+      ap.set([x, y, c.z + Math.sin(x * c.freq) * c.amp + (ar() - 0.5) * 1.5], ai * 3)
+      const edge = Math.min(1, Math.min(x - c.x0, c.x1 - x) / 25)
+      const b = (0.45 + ar() * 0.4) * edge * (1 - v * 0.6)
+      const g: RGB = v < 0.4 ? [0.25, 1.0, 0.6] : v < 0.75 ? [0.2, 0.6, 1.0] : [0.55, 0.35, 1.0]
+      ac.set([g[0] * b, g[1] * b, g[2] * b], ai * 3)
+      as[ai] = 0.25 + ar() * 0.35
+    }
+  }
+  scene.add(cloud(u, ap, ac, as, 5, [80, 300], 22, 0.5, fog))
+
+  // A colonnade of light pillars along the way: seals standing in good order.
+  const pr = rng(9)
+  const cols: number[] = [], cc: number[] = [], cs: number[] = []
+  for (let z = -14; z > -150; z -= 11) {
+    for (const sx of [-1, 1]) {
+      const x = sx * (7.5 + Math.max(0, -z - 14) * 0.02)
+      const base = hybridHeight(x, z)
+      const tall = 4.2
+      const n = lowPower ? 50 : 110
+      for (let i = 0; i < n; i++) {
+        const y = (i / n) * tall
+        cols.push(x + (pr() - 0.5) * 0.06, base + y, z + (pr() - 0.5) * 0.06)
+        const b = 0.35 + 0.4 * (i / n)
+        cc.push(0.3 * b, 1.0 * b, 0.75 * b)
+        cs.push(0.05 + pr() * 0.03)
+      }
+      // a bright capstone and a little pool of light at the foot
+      cols.push(x, base + tall + 0.25, z); cc.push(0.8, 1.6, 1.3); cs.push(0.28)
+      for (let i = 0; i < 14; i++) {
+        const a = pr() * Math.PI * 2, rr = 0.2 + pr() * 0.9
+        cols.push(x + Math.cos(a) * rr, base + 0.05, z + Math.sin(a) * rr); cc.push(0.1, 0.4, 0.3); cs.push(0.12)
+      }
+    }
+  }
+  scene.add(cloud(u, new Float32Array(cols), new Float32Array(cc), new Float32Array(cs), 10, [25, 150], 23, 1, fog))
+
+  // Motes rising slowly out of the ground, everywhere and unhurried.
+  const mr = rng(10), mn = Math.floor(2600 * k)
+  const mp = new Float32Array(mn * 3), mc = new Float32Array(mn * 3), ms = new Float32Array(mn)
+  for (let i = 0; i < mn; i++) {
+    const x = (mr() - 0.5) * 90, z = -2 - mr() * 120
+    mp.set([x, hybridHeight(x, z) + mr() * 0.5, z], i * 3)
+    const b = 0.5 + mr() * 0.7
+    mc.set([0.35 * b, 1.0 * b, 0.75 * b], i * 3)
+    ms[i] = 0.04 + mr() * 0.05
+  }
+  scene.add(cloud(u, mp, mc, ms, 8, [10, 90], 24, 1, fog))
+}
+
+export function looseParticles(u: SceneUniforms, pos: Float32Array, c: RGB, size: number, mode: number, seed: number, fog: [number, number], opacity = 1, style: FieldStyle = {}) {
   const n = pos.length / 3, r = rng(seed)
-  const col = new Float32Array(n * 3), sz = new Float32Array(n), sd = new Float32Array(n)
+  const col = new Float32Array(n * 3), sz = new Float32Array(n)
   for (let i = 0; i < n; i++) {
     const b = 0.5 + r() * 0.8
     col.set([c[0] * b, c[1] * b, c[2] * b], i * 3)
     sz[i] = size * (0.5 + r())
-    sd[i] = r()
   }
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3))
-  g.setAttribute('aSize', new THREE.BufferAttribute(sz, 1))
-  g.setAttribute('aSeed', new THREE.BufferAttribute(sd, 1))
-  const m = new THREE.ShaderMaterial({
-    vertexShader: fieldVertex, fragmentShader: fieldFragment,
-    uniforms: { ...u, uMode: { value: mode }, uFogNear: { value: fog[0] }, uFogFar: { value: fog[1] }, uOpacity: { value: opacity } },
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  })
-  const p = new THREE.Points(g, m)
-  p.frustumCulled = false
-  return p
+  return cloud(u, pos, col, sz, mode, fog, seed + 7, opacity, style)
 }
