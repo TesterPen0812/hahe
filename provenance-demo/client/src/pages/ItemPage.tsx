@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import type { ItemSummary, TrustList } from '@provenance-demo/shared'
 import { api } from '../lib/api'
 import { useWorld } from '../lib/world'
@@ -9,11 +9,19 @@ import { WorldSwitch } from '../components/WorldSwitch'
 
 export default function ItemPage() {
   const { id = '' } = useParams()
+  const [searchParams] = useSearchParams()
+  const naive = searchParams.get('naive') === '1'
   const { world, set } = useWorld()
   const [item, setItem] = useState<ItemSummary | null>(null)
   const [trust, setTrust] = useState<TrustList | null>(null)
   const [error, setError] = useState('')
-  useEffect(() => { api.item(id).then(setItem).catch(e => setError(String(e))) }, [id, world.mode])
+  useEffect(() => {
+    let alive = true
+    api.item(id, { naive }).then(result => {
+      if (alive) { setItem(result); setError('') }
+    }).catch(e => { if (alive) setError(String(e)) })
+    return () => { alive = false }
+  }, [id, naive, world.mode])
   useEffect(() => { api.trust().then(setTrust).catch(e => setError(String(e))) }, [])
 
   if (error) return <main className="page"><p className="status error">{error}</p></main>
@@ -28,7 +36,7 @@ export default function ItemPage() {
         </figure>
         <div>
           <WorldSwitch world={world} onSet={set} />
-          <VerificationPanel item={item} world={world} trust={trust} />
+          <VerificationPanel item={item} trust={trust} />
           <p className="mono small muted">SHA-256 {item.contentHash}</p>
         </div>
       </div>

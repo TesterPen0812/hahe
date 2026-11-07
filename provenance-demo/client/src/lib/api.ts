@@ -12,8 +12,8 @@ const json = (method: string, body: unknown): RequestInit => ({
 })
 
 export const api = {
-  items: () => call<ItemSummary[]>('/items'),
-  item: (id: string) => call<ItemSummary>(`/items/${id}`),
+  items: (options: { naive?: boolean } = {}) => call<ItemSummary[]>(`/items${options.naive ? '?naive=1' : ''}`),
+  item: (id: string, options: { naive?: boolean } = {}) => call<ItemSummary>(`/items/${id}${options.naive ? '?naive=1' : ''}`),
   upload: (form: FormData) => call<ItemSummary>('/items', { method: 'POST', body: form }),
   trust: () => call<TrustList>('/trust'),
   registerDevice: (deviceId: string, publicKeys: HybridPublicKeys) =>
