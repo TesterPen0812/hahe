@@ -1,7 +1,7 @@
-// Task 1 + 2 check: verifyItem gives the right colour, presence and label for each case.
+// Task 1 + 2 check (today's world): verifyItem gives the right colour, presence and label for each case.
 // Runs fully in memory (no server, no DB).
 import {
-  hashObject, sha256Hex, verifyItem, claimChallenge, toB64url,
+  hashObject, sha256Hex, verifyItem, claimChallenge, toB64url, todayWorld,
   type HybridManifest, type LegacyManifest, type LogEntry, type Manifest, type PresenceLevel,
   type Status, type TrustLabel, type TrustList,
 } from '../shared/src/index.js';
@@ -107,7 +107,7 @@ const cases: Case[] = [
 let failures = 0;
 for (const c of cases) {
   const entry = c.manifest && c.logged ? log(c.manifest) : null;
-  const r = await verifyItem(c.bytes, c.manifest, trust, entry);
+  const r = await verifyItem(c.bytes, c.manifest, trust, entry, todayWorld());
   const failed = r.checks.filter((k) => !k.pass);
   const ok = r.status === c.want
     && (!c.presence || r.presenceLevel === c.presence)

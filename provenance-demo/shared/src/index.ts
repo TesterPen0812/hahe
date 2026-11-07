@@ -7,4 +7,5 @@ export * from './rsa.js';
 export * from './legacy.js';
 export * from './dhash.js';
 export * from './world.js';
+export * from './policy.js';
 export * from './verify.js';

@@ -32,12 +32,16 @@ router.post('/items', upload.single('image'), async (req, res) => {
   res.status(201).json(item);
 });
 
-router.get('/items', async (_req, res) => {
-  res.json(await Promise.all(listItems().map(toSummary)));
+// ?naive=1 -> world-blind verifier (trusts any valid signature), for the split screen.
+const optsFrom = (q: unknown) => ({ naive: (q as Record<string, unknown>)?.naive === '1' || (q as Record<string, unknown>)?.naive === 'true' });
+
+router.get('/items', async (req, res) => {
+  const opts = optsFrom(req.query);
+  res.json(await Promise.all(listItems().map((row) => toSummary(row, opts))));
 });
 
 router.get('/items/:id', async (req, res) => {
-  const item = await getSummary(req.params.id);
+  const item = await getSummary(req.params.id, optsFrom(req.query));
   if (!item) return res.status(404).json({ error: 'Item not found.' });
   res.json(item);
 });
