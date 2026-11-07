@@ -17,6 +17,9 @@
     "fsevents@2.3.3": true
   },
   "devDependencies": {
-    "tsx": "^4.23.15"
-  }
+    "@types/node": "^26.6.6",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.3"
+  },
+  "type": "module"
 }

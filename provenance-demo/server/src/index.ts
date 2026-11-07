@@ -1,29 +1,51 @@
-import dotenv from 'dotenv';
-import express from 'express';
+// Express API server. Routes live under /api; the Vite dev server proxies /api here.
+import { config } from 'dotenv';
+import express, { type ErrorRequestHandler, type Router } from 'express';
+import { fileURLToPath } from 'node:url';
+import { loadAuthorities } from './authorities.js';
+import { verifyChain } from './log.js';
+import trustRouter from './routes/trust.js';
+import devicesRouter from './routes/devices.js';
+import itemsRouter from './routes/items.js';
+import { worldRouter } from './routes/world.js';
 
-dotenv.config({ path: new URL('../.env', import.meta.url) });
+config({ path: fileURLToPath(new URL('../.env', import.meta.url)), quiet: true });
 
-const { RP_ID, ORIGIN, PORT = '3001' } = process.env;
-if (!RP_ID || !ORIGIN) throw new Error('RP_ID and ORIGIN must be configured');
+loadAuthorities(); // fail fast with a helpful message if keys are missing
 
-const { createPasskeyRouter } = await import('./routes/passkeys.js');
-const { createDevicesRouter } = await import('./routes/devices.js');
-const { createItemsRouter } = await import('./routes/items.js');
-const { trustRouter } = await import('./routes/trust.js');
-const { worldRouter } = await import('./routes/world.js');
-
-const passkeys = createPasskeyRouter(RP_ID, ORIGIN);
 const app = express();
-app.use(express.json({ limit: '2mb' }));
-app.get('/api/health', (_req, res) => res.json({ status: 'OK' }));
-app.use('/api/passkeys', passkeys);
-app.use('/api/devices', createDevicesRouter(passkeys.hasCredential));
-app.use('/api/items', createItemsRouter(passkeys.verifyCapture));
-app.use('/api/trust', trustRouter);
-app.use('/api/world', worldRouter);
-app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  const message = error instanceof Error ? error.message : 'Unknown error';
-  console.error('[api] Request failed:', message);
-  res.status(400).json({ error: message });
+app.use(express.json({ limit: '1mb' }));
+
+const api = express.Router();
+api.use(trustRouter, devicesRouter, itemsRouter);
+api.use('/world', worldRouter);
+
+// Optional routers (some owned by Person B, some still placeholders).
+// Mounted only if the file exports a router as `default` or `router`.
+const OPTIONAL = ['passkeys', 'edits', 'lookup', 'detect'];
+for (const name of OPTIONAL) {
+  try {
+    const mod = (await import(`./routes/${name}.js`)) as { default?: unknown; router?: unknown };
+    const r = (mod.default ?? mod.router) as Router | undefined;
+    if (typeof r === 'function') { api.use(r); console.log(`  mounted routes/${name}.ts`); }
+    else console.log(`  skipped routes/${name}.ts (no router exported yet)`);
+  } catch (err) {
+    console.warn(`  skipped routes/${name}.ts (failed to load: ${(err as Error).message})`);
+  }
+}
+
+app.use('/api', api);
+app.use('/api', (_req, res) => { res.status(404).json({ error: 'Not found.' }); });
+
+const onError: ErrorRequestHandler = (err, _req, res, _next) => {
+  console.error(err);
+  const status = typeof err?.status === 'number' ? err.status : 500;
+  res.status(status).json({ error: status === 500 ? 'Internal server error.' : String(err.message ?? err) });
+};
+app.use(onError);
+
+const port = Number(process.env.PORT) || 3001;
+app.listen(port, () => {
+  const chain = verifyChain();
+  console.log(`Provenance server on http://localhost:${port}/api  (log: ${chain.size} entries, ${chain.ok ? 'chain ok' : `CHAIN BROKEN at ${chain.brokenAt}`})`);
 });
-app.listen(Number(PORT), '127.0.0.1', () => console.log(`Provenance API listening on 127.0.0.1:${PORT}`));

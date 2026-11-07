@@ -1,31 +1,65 @@
-// Demo authorities: the institutions a hackathon can't have (camera maker, ID issuer, editing tool).
-// Minimal stand-in written by Person B so the core loop runs end to end; Person A may replace it.
-// Keys are generated once and kept in server/keys/ (gitignored).
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { generateHybridKeys, type HybridKeys, type TrustList, type TrustedAuthority } from '@provenance-demo/shared';
+// The simulated authorities (manufacturer, ID issuer, photo editor) and the legacy camera.
+// Hybrid key pairs live in server/keys/<role>.json, the legacy camera's RSA key in
+// server/keys/legacy-camera.json (all gitignored),
+// created by `npx tsx scripts/gen-authorities.ts`.
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import type { HybridKeys, LegacyCamera, RsaKeys, TrustedAuthority, TrustList } from '@provenance-demo/shared';
 
-const dir = new URL('../keys/', import.meta.url);
-const file = new URL('authorities.json', dir);
+export const KEYS_DIR = fileURLToPath(new URL('../keys', import.meta.url));
 
-type Authorities = { manufacturer: HybridKeys; issuer: HybridKeys; editor: HybridKeys };
+export type Role = 'manufacturer' | 'issuer' | 'editor';
 
-function load(): Authorities {
-  if (existsSync(file)) return JSON.parse(readFileSync(file, 'utf8'));
-  mkdirSync(dir, { recursive: true });
-  const fresh = { manufacturer: generateHybridKeys(), issuer: generateHybridKeys(), editor: generateHybridKeys() };
-  writeFileSync(file, JSON.stringify(fresh, null, 2), { mode: 0o600 });
-  console.log('[authorities] Generated new demo authority keys in server/keys/');
-  return fresh;
+export const AUTHORITY_INFO: Record<Role, { id: string; name: string }> = {
+  manufacturer: { id: 'demo-manufacturer', name: 'Demo Phone Co.' },
+  issuer: { id: 'demo-issuer', name: 'Demo ID Office' },
+  editor: { id: 'demo-editor', name: 'Demo Photo Editor' },
+};
+
+export interface AuthorityKeyFile extends HybridKeys {
+  id: string;
+  name: string;
+  role: Role;
+  createdAt: string;
 }
 
-export const keys = load();
+// The legacy camera: classical-only RSA-PSS-2048, trusted directly by its public key.
+export const LEGACY_CAMERA_INFO = { id: 'legacy-cam-1', name: 'Classic Camera Co. RSA camera' } as const;
 
-export const ids = { manufacturer: 'demo-manufacturer', issuer: 'demo-issuer', editor: 'demo-editor' } as const;
+export interface LegacyCameraKeyFile extends RsaKeys {
+  id: string;
+  name: string;
+  role: 'legacy-camera';
+  alg: 'rsa-pss-2048';
+  createdAt: string;
+}
 
-const authority = (id: string, name: string, k: HybridKeys): TrustedAuthority => ({ id, name, publicKeys: k.publicKeys });
+export const keyFilePath = (role: Role | 'legacy-camera') => path.join(KEYS_DIR, `${role}.json`);
 
-export const trustList: TrustList = {
-  manufacturers: [authority(ids.manufacturer, 'Demo Camera Co.', keys.manufacturer)],
-  issuers: [authority(ids.issuer, 'Demo Personhood Issuer', keys.issuer)],
-  editors: [authority(ids.editor, 'Demo Editor', keys.editor)],
-};
+export interface Authorities extends Record<Role, AuthorityKeyFile> { legacyCamera: LegacyCameraKeyFile }
+
+let cache: Authorities | null = null;
+
+function readKeyFile<T>(file: string): T {
+  if (!existsSync(file)) throw new Error(`Missing ${file}. Run: npx tsx scripts/gen-authorities.ts`);
+  return JSON.parse(readFileSync(file, 'utf8')) as T;
+}
+
+/** All authorities and the legacy camera, including secret keys. Server-side only. */
+export function loadAuthorities(): Authorities {
+  if (cache) return cache;
+  const out = {} as Authorities;
+  for (const role of Object.keys(AUTHORITY_INFO) as Role[]) out[role] = readKeyFile<AuthorityKeyFile>(keyFilePath(role));
+  out.legacyCamera = readKeyFile<LegacyCameraKeyFile>(keyFilePath('legacy-camera'));
+  return (cache = out);
+}
+
+const pub = (a: AuthorityKeyFile): TrustedAuthority => ({ id: a.id, name: a.name, publicKeys: a.publicKeys });
+
+/** The public trust list: what any verifier (server or browser) checks against. */
+export function trustList(): TrustList {
+  const a = loadAuthorities();
+  const legacy: LegacyCamera = { id: a.legacyCamera.id, name: a.legacyCamera.name, alg: a.legacyCamera.alg, publicKey: a.legacyCamera.publicKey };
+  return { manufacturers: [pub(a.manufacturer)], issuers: [pub(a.issuer)], editors: [pub(a.editor)], legacyCameras: [legacy] };
+}

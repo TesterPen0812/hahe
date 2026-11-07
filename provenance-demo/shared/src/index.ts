@@ -2,5 +2,8 @@ export * from './manifest.js';
 export * from './canonical.js';
 export * from './hybrid.js';
 export * from './certs.js';
+export * from './passkey.js';
+export * from './rsa.js';
+export * from './legacy.js';
 export * from './dhash.js';
 export * from './verify.js';

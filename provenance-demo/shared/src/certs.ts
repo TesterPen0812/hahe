@@ -3,9 +3,9 @@
 //  - Personhood credential: an issuer says "this passkey belongs to a verified human".
 //  - Edit entry: an editing tool says "I turned image A into image B by doing X".
 import { canonicalBytes, withoutSignature } from './canonical.js';
-import { hybridSign, hybridVerify, type HybridKeys } from './hybrid.js';
+import { describeHybrid, hybridSign, hybridVerify, type HybridKeys } from './hybrid.js';
 import type {
-  DeviceCert, PersonhoodCredential, EditEntry, TrustedAuthority, HybridPublicKeys,
+  DeviceCert, PersonhoodCredential, EditEntry, TrustedAuthority, HybridPublicKeys, HybridSignature,
 } from './manifest.js';
 
 export function issueDeviceCert(
@@ -16,9 +16,9 @@ export function issueDeviceCert(
 }
 
 export function issuePersonhoodCredential(
-  credentialId: string, issuer: string, issuerKeys: HybridKeys,
+  credentialId: string, passkeyPublicKey: string, issuer: string, issuerKeys: HybridKeys,
 ): PersonhoodCredential {
-  const body = { credentialId, issuedAt: new Date().toISOString(), issuer };
+  const body = { credentialId, passkeyAlg: 'es256' as const, passkeyPublicKey, issuedAt: new Date().toISOString(), issuer };
   return { ...body, signature: hybridSign('personhood', canonicalBytes(body), issuerKeys) };
 }
 
@@ -33,25 +33,24 @@ export interface CredCheck { pass: boolean; reason: string; authority?: TrustedA
 
 function checkSignedBy(
   context: 'device-cert' | 'personhood' | 'edit',
-  cred: { issuer: string; signature: DeviceCert['signature'] },
+  cred: { issuer: string; signature: HybridSignature },
   trusted: TrustedAuthority[],
   what: string,
 ): CredCheck {
   const authority = trusted.find((a) => a.id === cred.issuer);
   if (!authority) return { pass: false, reason: `${what} was issued by "${cred.issuer}", which is not on the trust list.` };
   const r = hybridVerify(context, canonicalBytes(withoutSignature(cred)), cred.signature, authority.publicKeys);
-  if (!r.ok) {
-    const broken = [!r.ed25519 && 'Ed25519', !r.mlDsa65 && 'ML-DSA-65'].filter(Boolean).join(' and ');
-    return { pass: false, reason: `${what} signature from ${authority.name} is invalid (${broken} failed).` };
-  }
-  return { pass: true, reason: `${what} is signed by ${authority.name}, a trusted authority.`, authority };
+  if (!r.ok) return { pass: false, reason: `${what} signature from ${authority.name} is invalid (${describeHybrid(r)}).` };
+  return { pass: true, reason: `${what} is signed by ${authority.name}, a trusted authority (Ed25519 + ML-DSA-65).`, authority };
 }
 
 export const verifyDeviceCert = (c: DeviceCert, manufacturers: TrustedAuthority[]) =>
   checkSignedBy('device-cert', c, manufacturers, 'Device certificate');
 
-export const verifyPersonhood = (c: PersonhoodCredential, issuers: TrustedAuthority[]) =>
-  checkSignedBy('personhood', c, issuers, 'Personhood credential');
+export function verifyPersonhood(c: PersonhoodCredential, issuers: TrustedAuthority[]): CredCheck {
+  if (c.passkeyAlg !== 'es256') return { pass: false, reason: `Personhood credential is for an unsupported passkey algorithm "${String(c.passkeyAlg)}".` };
+  return checkSignedBy('personhood', c, issuers, 'Personhood credential');
+}
 
 export const verifyEditEntry = (e: EditEntry, editors: TrustedAuthority[]) =>
   checkSignedBy('edit', e, editors, `Edit "${e.action}"`);
