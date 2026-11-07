@@ -1,3 +1,3 @@
-# hahi's
+# hahe!
 
 Our hackathon coding project.
