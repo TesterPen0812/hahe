@@ -38,6 +38,7 @@ export interface DeviceCert {
 
 export interface PersonhoodCredential {
   credentialId: string;         // the passkey credential ID (base64url)
+  passkeyPublicKey: string;     // the passkey's P-256 public key, uncompressed point 0x04||x||y (base64url)
   issuedAt: string;
   issuer: string;               // authority id, e.g. "demo-issuer"
   signature: HybridSignature;   // issuer's signature over everything above
@@ -132,6 +133,7 @@ export interface ItemSummary {
   parentId: string | null;  // set when this item is an edit of another
   createdAt: string;
   manifest: Manifest | null;
+  logEntry: LogEntry | null; // the transparency-log entry for this manifest, if any
   verification: VerificationResult;
 }
 
@@ -139,7 +141,9 @@ export interface ItemSummary {
 // GET /api/items/:id    -> ItemSummary
 // GET /api/trust        -> TrustList
 // POST /api/devices     { deviceId, publicKeys } -> DeviceCert
-// POST /api/devices/personhood { credentialId } -> PersonhoodCredential
+// POST /api/devices/personhood { credentialId, publicKey? } -> PersonhoodCredential
+//   publicKey: the passkey's public key, base64url (COSE as SimpleWebAuthn returns it, or a raw
+//   65-byte P-256 point). If omitted, the server looks it up in the `passkeys` table.
 // POST /api/items/:id/edits (multipart: image, action, contentAltering, tool, dHash?) -> ItemSummary
 // GET /api/lookup?dHash=...&contentHash=... -> { matches: (ItemSummary & { distance: number })[] }
 // POST /api/detect/:id  -> DetectionResult

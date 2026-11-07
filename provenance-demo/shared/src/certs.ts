@@ -16,9 +16,9 @@ export function issueDeviceCert(
 }
 
 export function issuePersonhoodCredential(
-  credentialId: string, issuer: string, issuerKeys: HybridKeys,
+  credentialId: string, passkeyPublicKey: string, issuer: string, issuerKeys: HybridKeys,
 ): PersonhoodCredential {
-  const body = { credentialId, issuedAt: new Date().toISOString(), issuer };
+  const body = { credentialId, passkeyPublicKey, issuedAt: new Date().toISOString(), issuer };
   return { ...body, signature: hybridSign('personhood', canonicalBytes(body), issuerKeys) };
 }
 
