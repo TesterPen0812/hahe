@@ -6,10 +6,11 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { TRAIL_LENGTH, WAKE_STAMPS, finishShader } from './shaders'
 import {
-  DOOR, UNIVERSES, type RGB, glowingPath, homeHeight, portal, sceneUniforms,
+  DOOR, UNIVERSES, type RGB, cloud, gateWall, glowingPath, homeHeight, portal, sceneUniforms,
   universeScene, type SceneUniforms, type UniverseDef,
 } from './worlds'
 import { buildMeadow, qdayGate } from './scenery'
+import { buildGallery, type Gallery, type GalleryPhoto } from './gallery'
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
@@ -43,6 +44,8 @@ interface Universe {
   base: number
   open: number
   hover: number
+  rtScale: number
+  wall: THREE.Points
 }
 
 const v2 = (x: number, z: number) => new THREE.Vector3(x, 0, z)
@@ -63,6 +66,7 @@ export class UniverseEngine {
   private gateD: number
   private gateCurtain: THREE.Points
   private homePath: THREE.Points
+  private gallery: Gallery | null = null
 
   // travel state
   private seg = -1
@@ -172,6 +176,14 @@ export class UniverseEngine {
     this.flash = Math.max(this.flash, 0.22)
   }
 
+  /** Hang real photos from the feed along the path to our door; Q-Day's wave tests their seals. */
+  setGallery(photos: GalleryPhoto[]) {
+    if (this.gallery) { this.home.remove(this.gallery.group); this.gallery.dispose(); this.gallery = null }
+    if (!photos.length || !this.universes[0]) return
+    this.gallery = buildGallery(photos, this.universes[0].curve)
+    this.home.add(this.gallery.group)
+  }
+
   /** Walk back to the fork. */
   back() { this.target = { seg: -1, d: this.L0 } }
 
@@ -193,6 +205,7 @@ export class UniverseEngine {
         else mat?.dispose()
       })
     }
+    this.gallery?.dispose()
     this.universes.forEach(u => u.rt.dispose())
     this.composer.dispose()
     this.renderer.dispose()
@@ -225,9 +238,18 @@ export class UniverseEngine {
       door.group.lookAt(end.x - tan.x, base, end.z - tan.z) // +z faces the visitor; -z leads into the universe
       door.group.updateMatrixWorld(true)
       this.home.add(door.group)
+      // the long wall of dust the round gate is cut into, placed in world space
+      const w = gateWall(def.tint, this.lowPower)
+      const tmp = new THREE.Vector3()
+      for (let k = 0; k < w.pos.length; k += 3) {
+        tmp.set(w.pos[k], w.pos[k + 1], w.pos[k + 2]).applyMatrix4(door.group.matrixWorld)
+        w.pos.set([tmp.x, tmp.y, tmp.z], k)
+      }
+      const wall = cloud(this.homeU, w.pos, w.col, w.size, 9, [10, 95], 61, 0)
+      this.home.add(wall)
       const u = sceneUniforms()
       this.universes.push({
-        def, u, rt, door, curve, base, open: 0, hover: 0,
+        def, u, rt, door, curve, base, open: 0, hover: 0, rtScale: RT_SCALE, wall,
         len: curve.getLength(),
         scene: universeScene(def, u, this.lowPower),
         cam: new THREE.PerspectiveCamera(55, 1, 0.05, 900),
@@ -532,7 +554,17 @@ export class UniverseEngine {
       m.uOpen.value = u.open
       m.uHover.value = u.hover
       m.uTime.value = t
+      // Walking up to the door, the opening widens until it fills the view, so stepping
+      // through is one continuous move instead of a cut.
+      const e = this.seg !== i ? 0 : this.d >= u.len ? 1 : THREE.MathUtils.smoothstep(this.d, u.len - 8, u.len - 0.3)
+      m.uEnter.value = e
+      u.door.content.scale.setScalar(1 + e * e * 4)
+      ;(u.wall.material as THREE.ShaderMaterial).uniforms.uOpacity.value = u.open * (1 - e * 0.7)
+      // render the world behind the door at full resolution once it's about to fill the screen
+      const rtWant = this.seg === i && this.d > u.len - 10 ? 1 : RT_SCALE
+      if (rtWant !== u.rtScale) { u.rtScale = rtWant; this.resize() }
     })
+    if (this.gallery) this.gallery.update(t, this.qdayAt, this.trunk.getPointAt(this.gateD / this.L0))
     const gains = this.homePath.material as THREE.ShaderMaterial
     const g = gains.uniforms.uBranchGain.value as THREE.Vector3
     const sel = this.seg >= 0 ? this.seg : this.hovered
@@ -549,7 +581,7 @@ export class UniverseEngine {
     const all = [this.homeU, ...this.universes.map(u => u.u)]
     for (const u of all) u.uTime.value = t
     this.homeU.uPixelRatio.value = pr
-    this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * RT_SCALE })
+    this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * u.rtScale })
     this.updateLens(inside)
 
     // Pointer trail goes to whichever world the camera is in.
@@ -705,7 +737,7 @@ export class UniverseEngine {
     const phase: 'trunk' | 'fork' | 'branch' | 'inside' = inside >= 0 ? 'inside' : this.seg >= 0 ? 'branch' : this.atFork() ? 'fork' : 'trunk'
     if (inside !== this.wasInside) {
       if (inside >= 0) {
-        this.flash = 0.55
+        this.flash = 0.12
         this.flashColor.setRGB(...this.universes[inside].def.tint)
       }
       this.wasInside = inside
@@ -770,7 +802,7 @@ export class UniverseEngine {
     for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uSizeScale.value = sizeScale
     this.finish.uniforms.uAspect.value = w / h
     for (const u of this.universes) {
-      u.rt.setSize(Math.ceil(w * pr * RT_SCALE), Math.ceil(h * pr * RT_SCALE))
+      u.rt.setSize(Math.ceil(w * pr * u.rtScale), Math.ceil(h * pr * u.rtScale))
       ;(u.door.contentMat.uniforms.uRes.value as THREE.Vector2).set(w * pr, h * pr)
     }
   }

@@ -46,6 +46,19 @@ export default function UniversePage() {
       return
     }
     engine.current = e
+    // Real photos from the feed line the path to our door: old-camera (RSA) beside our app's (hybrid).
+    api.items().then(items => {
+      const pick = (kind: 'legacy' | 'hybrid') => items
+        .filter(i => i.verification.kind === kind && i.verification.status === 'green').slice(0, 4)
+        .map(i => ({ url: i.imageUrl, kind }))
+      const legacy = pick('legacy'), hybrid = pick('hybrid')
+      const photos = []
+      for (let i = 0; i < Math.max(legacy.length, hybrid.length); i++) {
+        if (legacy[i]) photos.push(legacy[i])
+        if (hybrid[i]) photos.push(hybrid[i])
+      }
+      if (engine.current === e) e.setGallery(photos)
+    }).catch(() => {})
     root.current?.querySelectorAll<HTMLElement>('[data-pin]').forEach(el => e.setLabel(el.dataset.pin as LabelId, el))
     return () => { e.dispose(); engine.current = null }
   }, [failed])
@@ -85,7 +98,7 @@ export default function UniversePage() {
 
       <div className={`uv-qday ${qday ? 'on' : ''}`} role="status">
         <strong>Q-Day · {world.headlineYear}</strong>
-        <span>Quantum computers have broken RSA and elliptic-curve signatures.</span>
+        <span>Quantum computers have broken RSA and elliptic-curve signatures. Watch the seals: only the post-quantum ones hold.</span>
       </div>
 
       <section className={`uv-intro ${state.started ? 'gone' : ''}`}>

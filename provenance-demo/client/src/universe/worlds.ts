@@ -280,7 +280,9 @@ export function glowingPath(
   return p
 }
 
-export const DOOR = { width: 4.2, height: 7.2 }
+/** The gate is round: a circle of radius width/2 whose top is at `height`. */
+export const DOOR = { width: 6.0, height: 6.3 }
+const GATE_R = DOOR.width / 2, GATE_Y = DOOR.height - DOOR.width / 2
 
 /**
  * A doorway: an opaque window showing another universe, an additive glowing frame,
@@ -298,25 +300,28 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
       uHover: { value: 0 },
       uTime: { value: 0 },
       uTint: { value: new THREE.Color(...tint) },
+      uEnter: { value: 0 },
+      uSize: { value: new THREE.Vector2(DOOR.width, DOOR.width) },
     },
   })
-  const content = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width, DOOR.height), contentMat)
-  content.position.y = DOOR.height / 2
-  const fw = DOOR.width * 3.2, fh = DOOR.height * 1.9
+  const content = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width, DOOR.width), contentMat)
+  content.position.y = GATE_Y
+  const fw = DOOR.width * 2.6, fh = fw
   const shared = {
     uOpen: contentMat.uniforms.uOpen,
     uHover: contentMat.uniforms.uHover,
     uTint: contentMat.uniforms.uTint,
     uTime: contentMat.uniforms.uTime,
+    uEnter: contentMat.uniforms.uEnter,
   }
   const frameMat = new THREE.ShaderMaterial({
     vertexShader: portalVertex,
     fragmentShader: frameFragment,
-    uniforms: { ...shared, uDoor: { value: new THREE.Vector2(DOOR.width / 2 / fw, DOOR.height / 2 / fh) } },
+    uniforms: { ...shared, uDoor: { value: new THREE.Vector2(GATE_R, 0) }, uPlane: { value: new THREE.Vector2(fw, fh) } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   })
   const frame = new THREE.Mesh(new THREE.PlaneGeometry(fw, fh), frameMat)
-  frame.position.set(0, DOOR.height / 2, 0.01)
+  frame.position.set(0, GATE_Y, 0.01)
   frame.renderOrder = 5
 
   // Light pooled on the ground, fanning out toward the visitor.
@@ -333,9 +338,9 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
   const n = 260, r = rng(Math.floor(tint[0] * 97 + tint[1] * 31))
   const sp = new Float32Array(n * 3), ss = new Float32Array(n)
   for (let i = 0; i < n; i++) {
-    const e = r()
-    const x = e < 0.35 ? -DOOR.width / 2 : e < 0.7 ? DOOR.width / 2 : (r() - 0.5) * DOOR.width
-    const y = e < 0.7 ? r() * DOOR.height : 0
+    // sparks drift off the rim
+    const a = r() * Math.PI * 2
+    const x = Math.cos(a) * GATE_R, y = GATE_Y + Math.sin(a) * GATE_R
     sp.set([x + (r() - 0.5) * 0.15, y, 0.1 + (r() - 0.5) * 0.3], i * 3)
     ss[i] = r()
   }
@@ -353,7 +358,38 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
 
   group.add(content, frame, sparks)
   spillMat.dispose(); spill.geometry.dispose()
-  return { group, content, contentMat }
+  return { group, content, frame, contentMat }
+}
+
+/**
+ * The wall the moon gate is cut into: a long low wall of dust, lit by the other world's light,
+ * with a bright ring of beads around the opening. Positions are in the door's own frame.
+ */
+export function gateWall(tint: RGB, lowPower: boolean) {
+  const r = rng(Math.floor(tint[1] * 131) + 5), n = lowPower ? 4500 : 11000
+  const pos: number[] = [], col: number[] = [], size: number[] = []
+  const halfLen = 14
+  for (let i = 0; i < n; i++) {
+    const rim = i < n * 0.22
+    let x: number, y: number
+    if (rim) {
+      const a = r() * Math.PI * 2, rr = GATE_R + 0.06 + Math.pow(r(), 2) * 0.45
+      x = Math.cos(a) * rr; y = GATE_Y + Math.sin(a) * rr
+      if (y < 0) continue
+    } else {
+      x = (r() - 0.5) * 2 * halfLen
+      const top = 7.4 - Math.pow(Math.abs(x) / halfLen, 2) * 3.2 + Math.sin(x * 0.7) * 0.15
+      y = r() * top
+      if (Math.hypot(x, y - GATE_Y) < GATE_R + 0.1) continue
+    }
+    const z = (r() - 0.5) * (rim ? 0.25 : 0.7)
+    pos.push(x, y, z)
+    const edge = 1 - Math.abs(x) / halfLen
+    const b = rim ? 0.9 + r() * 0.8 : (0.12 + r() * 0.28) * (0.4 + 0.6 * edge) * (y > 6.6 - Math.pow(Math.abs(x) / halfLen, 2) * 3.2 ? 1.8 : 1)
+    col.push(tint[0] * b * 0.8 + b * 0.2, tint[1] * b * 0.8 + b * 0.2, tint[2] * b * 0.8 + b * 0.2)
+    size.push(rim ? 0.035 + r() * 0.04 : 0.03 + r() * 0.05)
+  }
+  return { pos: new Float32Array(pos), col: new Float32Array(col), size: new Float32Array(size) }
 }
 
 // ── The home meadow (today) ────────────────────────────────────────────────
