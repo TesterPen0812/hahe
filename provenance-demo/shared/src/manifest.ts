@@ -145,6 +145,23 @@ export interface LogEntry {
   entryHash: string;     // sha256(prevHash + manifestHash + timestamp)
 }
 
+// ---------- World state (the demo's "today" vs "Q-Day" switch) ----------
+
+export type WorldMode = 'today' | 'q-day';
+
+export interface WorldState {
+  mode: WorldMode;
+  // REAL timestamp (ISO) when the presenter flipped to Q-Day; null in "today".
+  // "Logged before Q-Day" always compares log timestamps against this, never against headlineYear.
+  qDayAt: string | null;
+  brokenAlgorithms: Alg[];   // [] today; rsa-pss-2048, ed25519, es256 in q-day. ml-dsa-65 is never broken.
+  headlineYear: number;      // story year for the UI only (e.g. 2035). Never used in verification.
+}
+
+// GET  /api/world                         -> WorldState   (cheap: poll every 1–2 s)
+// POST /api/world { mode, headlineYear? } -> WorldState
+//   mode "q-day" sets qDayAt = now (kept as-is if already in q-day); "today" clears it.
+
 // ---------- Verification result ----------
 
 export type Status = 'green' | 'amber' | 'grey';

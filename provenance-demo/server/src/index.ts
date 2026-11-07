@@ -7,6 +7,8 @@ import { verifyChain } from './log.js';
 import trustRouter from './routes/trust.js';
 import devicesRouter from './routes/devices.js';
 import itemsRouter from './routes/items.js';
+import worldRouter from './routes/world.js';
+import { getWorld } from './world.js';
 
 config({ path: fileURLToPath(new URL('../.env', import.meta.url)), quiet: true });
 
@@ -16,7 +18,7 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 const api = express.Router();
-api.use(trustRouter, devicesRouter, itemsRouter);
+api.use(trustRouter, devicesRouter, itemsRouter, worldRouter);
 
 // Optional routers (some owned by Person B, some still placeholders).
 // Mounted only if the file exports a router as `default` or `router`.
@@ -45,5 +47,6 @@ app.use(onError);
 const port = Number(process.env.PORT) || 3001;
 app.listen(port, () => {
   const chain = verifyChain();
-  console.log(`Provenance server on http://localhost:${port}/api  (log: ${chain.size} entries, ${chain.ok ? 'chain ok' : `CHAIN BROKEN at ${chain.brokenAt}`})`);
+  const world = getWorld();
+  console.log(`Provenance server on http://localhost:${port}/api  (log: ${chain.size} entries, ${chain.ok ? 'chain ok' : `CHAIN BROKEN at ${chain.brokenAt}`}; world: ${world.mode}${world.qDayAt ? ` since ${world.qDayAt}` : ''})`);
 });
