@@ -19,9 +19,9 @@ For this demo the RP ID is `tahas-macbook-pro.tailc3868a.ts.net` and origin is
 4. Confirm the on-page Sign result and server `[passkeys] SIGN` log both show
    `verified: true`, `userVerified: true`, and `challengeMatchesHash: true`.
 
-Credentials (public key, ID, transports, counter) persist in gitignored
-`server/data/passkeys.json`. Pending ceremonies expire after five minutes, are
-consumed once, and do not survive restarts. If a prompt fails, tap the button
+Credentials (public key, ID, transports, counter) persist in the `passkeys` table
+in gitignored `server/data/provenance.db`. Pending ceremonies expire after five
+minutes, are consumed once, and do not survive restarts. If a prompt fails, tap the button
 again to request fresh options. If already registered, use **Sign test hash**;
 registration excludes existing credentials. Mirroring may require switching to
 the physical phone to interact or approve verification.
@@ -48,13 +48,27 @@ npm run build -w client
 npx --no-install tsx --test server/src/routes/passkeys.test.ts
 ```
 
-The regression test uses a software authenticator and an isolated temporary
-credential file. Its success does not establish an iPhone or Face ID result.
+The regression test uses a software authenticator and isolated in-memory SQLite.
+Its success does not establish an iPhone or Face ID result.
 For the detached demo server, inspect `server/data/server.log` with
 `tail -f server/data/server.log`. Check tunnel routing with
 `curl --fail https://tahas-macbook-pro.tailc3868a.ts.net/api/health`.
 
 ## Setup
+
+The phone's `/setup` screen checks its cached credential ID against
+`GET /api/passkeys/status?credentialId=…` and only says it is ready after the
+server confirms `{ registered: true }`. Unknown IDs clear only local credential,
+public-key and personhood caches; the phone's device signing keys stay intact.
+Older personhood/public-key caches also supply IDs for this check. A duplicate
+passkey error alone never establishes readiness: if no local credential can be
+confirmed, Setup explains how to remove the site's orphaned passkey in iOS
+Settings → Passwords (or the Passwords app), then retry. Registration excludes
+only IDs actually present in the server's database.
+
+Capture checks registration before offering **Seal with Face ID**. A missing
+server registration shows a link back to Setup. The check runs during preparation
+so the Face ID call remains directly on the final tap in Safari.
 
 1. Run `npm install` from this directory to initialize the three npm workspaces.
 2. Configure the passkey settings in `server/.env` as described above; `.env.example` lists the broader planned demo settings.

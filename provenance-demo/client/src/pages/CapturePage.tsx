@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 import { prepareCapture, sealCapture, uploadForm, type PreparedCapture } from '../lib/buildManifest'
 import { startMotion } from '../lib/motion'
 import { Marker } from '../components/Marker'
+import { PasskeySetupError } from '../lib/passkeySession'
 
 type Phase = 'idle' | 'preparing' | 'ready' | 'sealing' | 'uploading' | 'done' | 'error'
 
@@ -16,9 +17,10 @@ export default function CapturePage() {
   const [prepared, setPrepared] = useState<PreparedCapture | null>(null)
   const [result, setResult] = useState<ItemSummary | null>(null)
   const [error, setError] = useState('')
+  const [needsSetup, setNeedsSetup] = useState(false)
 
   const takePhoto = async () => {
-    setError(''); setResult(null)
+    setError(''); setResult(null); setNeedsSetup(false)
     input.current?.click()                      // open the camera first, on the tap
     stopMotion.current = await startMotion()    // then record motion while the camera is up
   }
@@ -47,7 +49,11 @@ export default function CapturePage() {
     } catch (err) { fail(err) }
   }
 
-  const fail = (err: unknown) => { setError(err instanceof Error ? `${err.name}: ${err.message}` : String(err)); setPhase('error') }
+  const fail = (err: unknown) => {
+    setNeedsSetup(err instanceof PasskeySetupError)
+    setError(err instanceof Error ? err.message : String(err))
+    setPhase('error')
+  }
 
   return (
     <main className="page capture">
@@ -69,7 +75,7 @@ export default function CapturePage() {
       {phase === 'preparing' && <p className="status">Fingerprinting and sealing with the device keys…</p>}
       {phase === 'sealing' && <p className="status">Approve with Face ID…</p>}
       {phase === 'uploading' && <p className="status">Sending to the feed…</p>}
-      {phase === 'error' && <p className="status error">{error}</p>}
+      {phase === 'error' && <p className="status error" role="alert">{error}{needsSetup && <>. <Link to="/setup">Go to Setup</Link>.</>}</p>}
 
       {phase === 'done' && result && (
         <div className="capture-done">

@@ -135,6 +135,17 @@ test('API uses naive=1 on list and detail requests and propagates HTTP errors', 
   await assert.rejects(api.item('missing', { naive: true }), /Item not found/)
 })
 
+test('passkey status asks this server about the exact cached ID without HTTP caching', async t => {
+  let requested = ''
+  t.mock.method(globalThis, 'fetch', async (input: string, init?: RequestInit) => {
+    requested = input
+    assert.equal(init?.cache, 'no-store')
+    return new Response('{"registered":false}')
+  })
+  assert.deepEqual(await api.passkeyStatus('credential+/='), { registered: false })
+  assert.equal(requested, '/api/passkeys/status?credentialId=credential%2B%2F%3D')
+})
+
 test('badges follow label even when presence remains verified-human on a grey result', () => {
   const unknown = renderToStaticMarkup(createElement(Marker, { status: 'grey', label: 'unknown' }))
   assert.match(unknown, /Unknown origin/)

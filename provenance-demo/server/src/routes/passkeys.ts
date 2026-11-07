@@ -15,6 +15,14 @@ export function createPasskeyRouter(
   database: Database.Database = db,
 ) {
   const router = Router();
+  router.get('/passkeys/status', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    const id = req.query.credentialId;
+    if (typeof id !== 'string' || !/^[A-Za-z0-9_-]+$/.test(id) || id.length > 2048) {
+      return res.status(400).json({ error: 'credentialId must be a base64url string.' });
+    }
+    res.json({ registered: !!database.prepare('SELECT 1 FROM passkeys WHERE credential_id = ?').get(id) });
+  });
   const credentials = (): WebAuthnCredential[] =>
     (database.prepare('SELECT * FROM passkeys').all() as PasskeyRow[]).map(c => ({
       id: c.credential_id,

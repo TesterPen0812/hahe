@@ -44,10 +44,19 @@ test('registration persists; hash authentication verifies and rejects invalid as
     });
     return { status: res.status, body: await res.json() };
   };
+  const status = async (credentialId?: string) => {
+    const res = await fetch(`http://127.0.0.1:${address.port}/api/passkeys/status${credentialId === undefined ? '' : `?credentialId=${encodeURIComponent(credentialId)}`}`);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    return { status: res.status, body: await res.json() };
+  };
   try {
+    assert.deepEqual(await status(id), { status: 200, body: { registered: false } });
+    assert.equal((await status()).status, 400);
+    assert.equal((await status('bad id')).status, 400);
     assert.equal((await post('auth/options', { hashHex: 'bad' })).status, 400);
     assert.equal((await post('auth/options', { hashHex: '00'.repeat(32) })).status, 400);
     const registration = (await post('register/options')).body;
+    assert.deepEqual(registration.optionsJSON.excludeCredentials, []); // No orphaned phone credential can be excluded.
     assert.equal(registration.optionsJSON.authenticatorSelection.userVerification, 'required');
     assert.deepEqual(registration.optionsJSON.pubKeyCredParams, [{ alg: -7, type: 'public-key' }]);
     const clientDataJSON = b64(Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge: registration.optionsJSON.challenge, origin })));
@@ -66,6 +75,8 @@ test('registration persists; hash authentication verifies and rejects invalid as
     assert.deepEqual(JSON.parse(saved.transports), ['internal']);
     assert.ok(Number.isFinite(Date.parse(saved.created_at)));
     router = createPasskeyRouter(rpID, origin, database); // Reload the persisted public key.
+    assert.deepEqual(await status(id), { status: 200, body: { registered: true } });
+    assert.deepEqual(await status(b64(randomBytes(32))), { status: 200, body: { registered: false } });
     assert.equal((await post('register/options')).body.optionsJSON.excludeCredentials[0].id, id);
     const hashHex = hash('hello demo').toString('hex');
     const assertion = (challenge: string, flags = 5, assertionOrigin = origin, counter = 1) => {

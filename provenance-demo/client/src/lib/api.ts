@@ -21,6 +21,7 @@ export const api = {
   personhood: (credentialId: string, publicKey?: string) =>
     call<PersonhoodCredential>('/devices/personhood', json('POST', { credentialId, publicKey })),
   world: () => call<WorldState>('/world'),
+  passkeyStatus: (credentialId: string) => call<{ registered: boolean }>(`/passkeys/status?credentialId=${encodeURIComponent(credentialId)}`, { cache: 'no-store' }),
   setWorld: (mode: WorldState['mode']) => call<WorldState>('/world', json('POST', { mode })),
   post: <T>(path: string, body: unknown = {}) => call<T>(path, json('POST', body)),
 }

@@ -62,7 +62,7 @@ Checks from `provenance-demo/`:
 cd client && npx tsc -b && cd ..
 npm run build -w client
 npm run lint -w client
-npx tsx --tsconfig client/tsconfig.app.json --test client/tests/contract.test.ts
+npx tsx --tsconfig client/tsconfig.app.json --test client/tests/*.test.ts
 npx tsx --test server/src/routes/passkeys.test.ts
 npx tsx scripts/smoke-attack.ts
 ```
@@ -75,5 +75,7 @@ reseed with `seed-feed.ts --reset` when keeping real phone uploads.
 
 Client contract tests exercise rendering with real shared verifier results,
 including anchored and post-flip hybrid/legacy proofs and naive mode. Passkey
-tests use a software authenticator with in-memory SQLite. Physical iPhone Safari
-and Face ID capture testing remains a separate check.
+session tests cover stale-cache cleanup, legacy-cache migration, server loss and
+wrapped duplicate errors. Server passkey tests use a software authenticator with
+in-memory SQLite and check registration status and exclusion lists. Physical
+iPhone Safari and Face ID capture testing remains a separate check.
