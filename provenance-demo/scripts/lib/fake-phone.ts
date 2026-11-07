@@ -5,9 +5,10 @@ import { p256 } from '@noble/curves/nist.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes, randomBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import {
-  canonicalBytes, claimChallenge, dHashFromRgba, generateHybridKeys, hybridSign, issueDeviceCert,
-  issuePersonhoodCredential, sha256Hex, signEditEntry, toB64url,
-  type CaptureClaim, type DeviceCert, type HybridKeys, type Manifest, type PasskeyAssertion, type PersonhoodCredential,
+  canonicalBytes, claimChallenge, dHashFromRgba, generateHybridKeys, generateRsaPssKeys, hybridSign, issueDeviceCert,
+  issuePersonhoodCredential, sha256Hex, signEditEntry, signLegacyClaim, toB64url,
+  type CaptureClaim, type DeviceCert, type HybridKeys, type HybridManifest, type LegacyCamera, type LegacyManifest,
+  type PasskeyAssertion, type PersonhoodCredential, type RsaKeys,
 } from '../../shared/src/index.js';
 import { encodePng, type Picture } from './png.js';
 
@@ -78,7 +79,7 @@ export function photoFrom(p: Picture): Photo {
 export function capture(
   phone: Phone, passkey: Passkey, personhood: PersonhoodCredential, photo: Photo,
   opts: { capturedAt?: string } = {},
-): Manifest {
+): HybridManifest {
   const claim: CaptureClaim = {
     contentHash: sha256Hex(photo.bytes),
     dHash: photo.dHash,
@@ -87,6 +88,7 @@ export function capture(
     motion: Array.from({ length: 8 }, (_, i) => ({ t: i * 50, x: 0.02 * Math.sin(i), y: -0.01 * Math.cos(i), z: 9.81 })),
   };
   return {
+    kind: 'hybrid',
     claim,
     claimSignature: hybridSign('claim', canonicalBytes(claim), phone.keys),
     deviceCert: phone.cert,
@@ -98,12 +100,30 @@ export function capture(
 
 /** Append a signed edit entry turning the manifest's latest image into `edited`. */
 export function addEdit(
-  manifest: Manifest, edited: Photo, action: string, contentAltering: boolean, editor: Authority,
-): Manifest {
+  manifest: HybridManifest, edited: Photo, action: string, contentAltering: boolean, editor: Authority,
+): HybridManifest {
   const parentHash = manifest.edits.length ? manifest.edits[manifest.edits.length - 1].outputHash : manifest.claim.contentHash;
   const entry = signEditEntry({
     parentHash, outputHash: sha256Hex(edited.bytes), action, contentAltering, tool: 'Demo Photo Editor 1.0',
     editedAt: new Date().toISOString(),
   }, editor.id, editor);
   return { ...manifest, edits: [...manifest.edits, entry] };
+}
+
+// ---------- legacy classical-only camera ----------
+
+export interface LegacyCam extends RsaKeys { id: string; name: string }
+
+export async function makeLegacyCamera(id = 'legacy-cam-1', name = 'Classic Camera Co. RSA camera'): Promise<LegacyCam> {
+  return { id, name, ...(await generateRsaPssKeys()) };
+}
+
+/** The trust-list entry for a legacy camera (public key only). */
+export const legacyTrustEntry = (c: LegacyCam): LegacyCamera => ({ id: c.id, name: c.name, alg: 'rsa-pss-2048', publicKey: c.publicKey });
+
+export function legacyCapture(camera: LegacyCam, photo: Photo, opts: { capturedAt?: string } = {}): Promise<LegacyManifest> {
+  return signLegacyClaim({
+    contentHash: sha256Hex(photo.bytes), dHash: photo.dHash,
+    capturedAt: opts.capturedAt ?? new Date().toISOString(), cameraId: camera.id,
+  }, camera.secretKey);
 }

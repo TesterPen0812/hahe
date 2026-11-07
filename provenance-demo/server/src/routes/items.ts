@@ -16,8 +16,11 @@ router.post('/items', upload.single('image'), async (req, res) => {
   const raw = req.body?.manifest;
   if (typeof raw === 'string' && raw.trim() !== '') {
     try { manifest = JSON.parse(raw) as Manifest; } catch { return res.status(400).json({ error: '"manifest" is not valid JSON.' }); }
-    if (!manifest || typeof manifest !== 'object' || !manifest.claim) return res.status(400).json({ error: '"manifest" must be a Manifest object.' });
-    if (!Array.isArray(manifest.edits)) manifest.edits = [];
+    // Shape is checked by verifyItem (bad shapes verify grey); here just the basics.
+    // Never modify the manifest: its hash must match what the client signed and logged.
+    if (!manifest || typeof manifest !== 'object' || !manifest.claim || (manifest.kind !== 'hybrid' && manifest.kind !== 'legacy')) {
+      return res.status(400).json({ error: '"manifest" must be a Manifest object with kind "hybrid" or "legacy".' });
+    }
   }
 
   const item = await createItem({

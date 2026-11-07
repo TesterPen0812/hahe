@@ -43,6 +43,7 @@ console.log(`Personhood key matches passkey: ${personhood.passkeyPublicKey === p
 const photo = photoFrom(brighten(SCENES.harbour(), 10));
 const claim: CaptureClaim = { contentHash: sha256Hex(photo.bytes), dHash: photo.dHash, capturedAt: new Date().toISOString(), deviceId, motion: [] };
 const manifest: Manifest = {
+  kind: 'hybrid',
   claim,
   claimSignature: hybridSign('claim', canonicalBytes(claim), deviceKeys),
   deviceCert: cert,

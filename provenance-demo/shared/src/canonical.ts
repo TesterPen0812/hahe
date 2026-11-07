@@ -3,7 +3,7 @@
 // No Node-only APIs, so this also runs in the browser.
 import canonicalize from 'canonicalize';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, concatBytes, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { CaptureClaim } from './manifest.js';
 
 export { bytesToHex, hexToBytes, utf8ToBytes };
@@ -35,6 +35,14 @@ export function hashObject(value: unknown): string {
  */
 export function claimChallenge(claim: CaptureClaim): string {
   return toB64url(hexToBytes(hashObject(claim)));
+}
+
+/** What a signature is for. Part of the signed bytes, so signatures can't be reused across purposes. */
+export type SigContext = 'claim' | 'device-cert' | 'personhood' | 'edit' | 'legacy-claim';
+
+/** Signed bytes = "provenance-demo/<context>/v1" + 0x00 + message. */
+export function domainSeparated(context: SigContext, msg: Uint8Array): Uint8Array {
+  return concatBytes(utf8ToBytes(`provenance-demo/${context}/v1`), new Uint8Array([0]), msg);
 }
 
 /** Drop the `signature` field, giving the part of a credential that gets signed. */

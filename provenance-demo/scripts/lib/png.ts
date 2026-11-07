@@ -70,6 +70,20 @@ export const SCENES = {
     if (y > 0.65) return [mix(110, 70, y), mix(170, 130, y), 70];
     return [140, 190, 240];
   }),
+  mountains: (w = 480, h = 360) => paint(w, h, (x, y) => {
+    const ridge1 = 0.45 + 0.15 * Math.abs(Math.sin(x * 7)) - 0.1 * Math.sin(x * 3);
+    const ridge2 = 0.6 + 0.08 * Math.sin(x * 13 + 1);
+    if (y > ridge2) return [mix(70, 40, y), mix(100, 70, y), 60];      // forest
+    if (y > ridge1) return y < ridge1 + 0.03 ? [245, 245, 250] : [110, 115, 140]; // snowy peaks
+    return [mix(120, 200, y * 2), mix(170, 220, y * 2), 250];          // sky
+  }),
+  lighthouse: (w = 480, h = 360) => paint(w, h, (x, y) => {
+    const tower = Math.abs(x - 0.62) < 0.035 + (y - 0.25) * 0.05 && y > 0.25 && y < 0.7;
+    if (tower) return Math.floor(y * 12) % 2 ? [220, 40, 40] : [245, 245, 240];
+    if (Math.abs(x - 0.62) < 0.04 && y > 0.18 && y <= 0.25) return [255, 230, 120];
+    if (y > 0.7) return x > 0.45 && x < 0.8 && y < 0.78 ? [90, 80, 70] : [30, 70, 120 + 20 * Math.sin(x * 50)];
+    return [mix(40, 120, y * 1.4), mix(50, 140, y * 1.4), mix(110, 200, y * 1.4)];
+  }),
   synthetic: (w = 480, h = 360) => paint(w, h, (x, y) => {  // "too perfect" AI-looking swirl
     const a = Math.atan2(y - 0.5, x - 0.5), r = Math.hypot(x - 0.5, y - 0.5);
     const t = Math.sin(a * 5 + r * 30);

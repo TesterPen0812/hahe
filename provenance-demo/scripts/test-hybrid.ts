@@ -30,6 +30,15 @@ console.log('Tampered claim:  ', bad);
 const wrongContext = hybridVerify('device-cert', msg, sig, keys.publicKeys);
 console.log('Wrong context:   ', wrongContext);
 
-const pass = good.ok && sameBytes.ok && !bad.ed25519 && !bad.mlDsa65 && !wrongContext.ed25519 && !wrongContext.mlDsa65;
-console.log(pass ? '\n✅ PASS: both signatures verify, one changed byte breaks both, and contexts are separated.' : '\n❌ FAIL');
+// Labels: each part says which algorithm made it.
+console.log('Labels:          ', sig.map((p) => p.alg));
+
+// Stripping the post-quantum part must fail, not silently fall back to Ed25519 only.
+const stripped = hybridVerify('claim', msg, sig.filter((p) => p.alg !== 'ml-dsa-65'), keys.publicKeys);
+console.log('ML-DSA stripped: ', stripped.ok, stripped.parts);
+
+const noneValid = (r: typeof bad) => r.parts.every((p) => !p.valid);
+const pass = good.ok && sameBytes.ok && noneValid(bad) && noneValid(wrongContext) && !stripped.ok
+  && sig.map((p) => p.alg).join() === 'ed25519,ml-dsa-65';
+console.log(pass ? '\n✅ PASS: both labelled parts verify, one changed byte breaks both, contexts are separated, and the PQ part cannot be stripped.' : '\n❌ FAIL');
 process.exit(pass ? 0 : 1);
