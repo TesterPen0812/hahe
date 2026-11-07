@@ -14,7 +14,7 @@ async function post<T>(path: string, body: unknown = {}): Promise<T> {
   return result
 }
 
-export default function App() {
+export default function PasskeyTestPage() {
   const [busy, setBusy] = useState(false)
   const [logs, setLogs] = useState<string[]>([])
   const log = (message: string) => setLogs(lines => [...lines, `${new Date().toLocaleTimeString()} ${message}`])
@@ -53,7 +53,7 @@ export default function App() {
     }
   }
   return (
-    <main>
+    <main className="harness">
       <h1>Passkey test</h1>
       <p>On this iPhone, register a passkey, then sign the SHA-256 hash of <code>hello demo</code>.</p>
       <p>Approve each passkey prompt. If mirroring cannot complete verification, use the iPhone directly.</p>
