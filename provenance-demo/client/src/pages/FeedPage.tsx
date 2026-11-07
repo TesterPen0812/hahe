@@ -6,7 +6,7 @@ import { FeedCard } from '../components/FeedCard'
 import { WorldSwitch } from '../components/WorldSwitch'
 
 export default function FeedPage() {
-  const { world, set } = useWorld()
+  const { world, set, reset, resetCount } = useWorld()
   const [items, setItems] = useState<ItemSummary[]>([])
   const [trust, setTrust] = useState<TrustList | null>(null)
   const [error, setError] = useState('')
@@ -29,7 +29,7 @@ export default function FeedPage() {
     tick()
     const t = setInterval(tick, 2500)
     return () => { alive = false; clearInterval(t) }
-  }, [world.mode])   // re-verify (refetch) whenever the world flips
+  }, [world.mode, world.qDayAt, resetCount])
 
   const counts = { green: 0, amber: 0, grey: 0 }
   items.forEach(i => counts[i.verification.status]++)
@@ -42,7 +42,7 @@ export default function FeedPage() {
           <h1>Good morning, Mara.</h1>
           <p className="lede">{items.length ? `${counts.green} verified, ${counts.amber} edited, ${counts.grey} of unknown origin overnight.` : 'Nothing in your briefing yet.'}</p>
         </div>
-        <WorldSwitch world={world} onSet={set} />
+        <WorldSwitch world={world} onSet={set} onReset={reset} />
       </header>
       {error && <p className="status error">Can’t reach the server: {error}</p>}
       <section className="grid">

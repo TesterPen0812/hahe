@@ -1,6 +1,10 @@
 // DEMO SIMULATION — stands in for Shor's algorithm on a quantum computer.
 // All secrets stay in this process; only public fingerprints and real verdicts leave it.
 import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, readFileSync, renameSync } from 'node:fs';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import { inflateSync } from 'node:zlib';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import {
   canonicalBytes, claimChallenge, domainSeparated, fromB64url, hybridVerify, sha256Hex, toB64url,
@@ -9,9 +13,25 @@ import {
 import { capture, legacyCapture, makePasskey, makePersonhood, makePhone, passkeyAssert, photoFrom } from '../../scripts/lib/fake-phone.js';
 import { SCENES, paintBox } from '../../scripts/lib/png.js';
 import { loadAuthorities } from './authorities.js';
-import { getItem, listItems, saveDevice } from './db.js';
+import { db, getItem, getPasskey, imagePath, listItems, saveDevice, type ItemRow } from './db.js';
 import { createItem, getSummary, toSummary } from './items-service.js';
-import { getWorld } from './world.js';
+import { getWorld, setWorld } from './world.js';
+
+// Owned by the attack demo. Insert-time tracking survives restarts and captures
+// even an attempt whose verification fails after the item has been stored.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS attack_items (item_id TEXT PRIMARY KEY);
+  CREATE TABLE IF NOT EXISTS attack_epoch (id INTEGER PRIMARY KEY CHECK (id = 1), generation INTEGER NOT NULL);
+  INSERT OR IGNORE INTO attack_epoch VALUES (1, 0);
+  CREATE TRIGGER IF NOT EXISTS attack_today_insert AFTER INSERT ON world WHEN NEW.mode = 'today'
+    BEGIN UPDATE attack_epoch SET generation = generation + 1 WHERE id = 1; END;
+  CREATE TRIGGER IF NOT EXISTS attack_today_update AFTER UPDATE ON world WHEN NEW.mode = 'today'
+    BEGIN UPDATE attack_epoch SET generation = generation + 1 WHERE id = 1; END;
+  CREATE TRIGGER IF NOT EXISTS attack_track_item AFTER INSERT ON items
+    WHEN json_extract(NEW.manifest, '$.demoAttack') = 'q-day-console-v1'
+    BEGIN INSERT OR IGNORE INTO attack_items VALUES (NEW.id); END;
+`);
+const attackMarker = { demoAttack: 'q-day-console-v1' };
 
 export const SIMULATION = "Simulated — stands in for Shor's algorithm on a quantum computer";
 export const NEED_Q_DAY = 'The attacker needs a quantum computer — flip to Q-Day first';
@@ -44,8 +64,22 @@ class AttackError extends Error {
 let recoveredInWorld: string | null = null;
 export function requireQDay(): string {
   const world = getWorld();
-  if (world.mode !== 'q-day' || !world.qDayAt) throw new AttackError(409, NEED_Q_DAY);
-  return world.qDayAt;
+  if (world.mode !== 'q-day' || !world.qDayAt) {
+    recoveredInWorld = null;
+    throw new AttackError(409, NEED_Q_DAY);
+  }
+  // The generation changes even for today → Q-Day within the same millisecond,
+  // and for flips made by other processes without hitting an attack endpoint.
+  const { generation } = db.prepare('SELECT generation FROM attack_epoch WHERE id = 1').get() as { generation: number };
+  const epoch = `${world.qDayAt}:${generation}`;
+  if (recoveredInWorld !== epoch) recoveredInWorld = null;
+  return epoch;
+}
+
+function requireRecovery(): string {
+  const epoch = requireQDay();
+  if (recoveredInWorld !== epoch) throw new AttackError(409, 'Recover the legacy camera key first.');
+  return epoch;
 }
 
 export function recoverKey(): RecoveryResult {
@@ -66,7 +100,7 @@ export function recoverKey(): RecoveryResult {
 }
 
 // A plainly marked procedural fake. The FORGED pixels are part of the signed bytes.
-function forgedPhoto() {
+function forgedPicture() {
   const glyphs = [
     ['11111', '10000', '10000', '11110', '10000', '10000', '10000'], // F
     ['01110', '10001', '10001', '10001', '10001', '10001', '01110'], // O
@@ -79,9 +113,78 @@ function forgedPhoto() {
   glyphs.forEach((rows, letter) => rows.forEach((row, y) => [...row].forEach((pixel, x) => {
     if (pixel === '1') pic = paintBox(pic, (64 + letter * 60 + x * 10) / 480, (145 + y * 10) / 360, 10 / 480, 10 / 360, [255, 210, 195]);
   })));
+  return pic;
+}
+
+function forgedPhoto() {
+  const pic = forgedPicture();
   // Distinguish repeated attempts without relying on millisecond timestamps.
   pic.rgba.set(randomBytes(3), 0);
   return photoFrom(pic);
+}
+
+// Old legacy attempts have no manifest marker. Match the complete procedural
+// FORGED image, allowing only the three randomized RGB bytes of its first pixel.
+// This intentionally recognises only our tiny encoder's exact PNG format.
+const oldForgeryPixels = Buffer.from(forgedPicture().rgba);
+function isOldLegacyForgery(row: ItemRow): boolean {
+  try {
+    const png = readFileSync(imagePath(row));
+    if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a'
+      || png.readUInt32BE(16) !== 480 || png.readUInt32BE(20) !== 360
+      || png.subarray(37, 41).toString() !== 'IDAT') return false;
+    const raw = inflateSync(png.subarray(41, 41 + png.readUInt32BE(33)), { maxOutputLength: 360 * 1921 });
+    if (raw.length !== 360 * 1921) return false;
+    for (let y = 0; y < 360; y++) {
+      if (raw[y * 1921] !== 0) return false;
+      const skip = y === 0 ? 3 : 0;
+      if (!raw.subarray(y * 1921 + 1 + skip, (y + 1) * 1921)
+        .equals(oldForgeryPixels.subarray(y * 1920 + skip, (y + 1) * 1920))) return false;
+    }
+    return true;
+  } catch { return false; }
+}
+
+export function resetDemo() {
+  const tracked = new Set((db.prepare('SELECT item_id FROM attack_items').all() as { item_id: string }[]).map(r => r.item_id));
+  const rows = listItems().filter(row => {
+    const m = row.manifest ? JSON.parse(row.manifest) : null;
+    // Never remove any photo associated with a real, registered passkey.
+    if (m?.kind === 'hybrid' && typeof m.passkey?.id === 'string' && getPasskey(m.passkey.id)) return false;
+    return tracked.has(row.id)
+      || (m?.kind === 'hybrid' && typeof m.claim?.deviceId === 'string' && m.claim.deviceId.startsWith('attack-demo-'))
+      || (m?.kind === 'legacy' && isOldLegacyForgery(row));
+  });
+  // Trash only confirmed demo files; keep them recoverable and outside uploads.
+  const trash = path.join(homedir(), '.Trash');
+  mkdirSync(trash, { recursive: true });
+  const moved: { from: string; to: string }[] = [];
+  // log_entries.item_id is a historical pointer. Keep every log row byte-for-byte
+  // intact, including that pointer, after removing its disposable image/item.
+  // Foreign keys are suspended only on this connection for this synchronous
+  // transaction, then restored before another request can run.
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      for (const row of rows) {
+        const from = imagePath(row);
+        const to = path.join(trash, `provenance-attack-${randomUUID()}-${path.basename(row.image_file)}`);
+        try { renameSync(from, to); moved.push({ from, to }); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+        db.prepare('DELETE FROM detections WHERE item_id = ?').run(row.id);
+        db.prepare('DELETE FROM items WHERE id = ?').run(row.id);
+      }
+      db.prepare('DELETE FROM attack_items').run();
+      setWorld('today');
+    })();
+  } catch (error) {
+    // A failed DB/file operation must leave retained rows with their images.
+    for (const { from, to } of moved.reverse()) renameSync(to, from);
+    throw error;
+  } finally { db.pragma('foreign_keys = ON'); }
+  recoveredInWorld = null;
+  target = undefined;
+  return { removed: rows.length, world: getWorld() };
 }
 
 async function verdicts(item: ItemSummary): Promise<AttackResult> {
@@ -92,13 +195,12 @@ async function verdicts(item: ItemSummary): Promise<AttackResult> {
 }
 
 export async function forgeLegacy(): Promise<AttackResult> {
-  const epoch = requireQDay();
-  if (recoveredInWorld !== epoch) throw new AttackError(409, 'Recover the legacy camera key first.');
+  const epoch = requireRecovery();
   const photo = forgedPhoto();
   const manifest = await legacyCapture(loadAuthorities().legacyCamera, photo);
   // Refuse if the presenter changed worlds while RSA signing was in flight.
   if (requireQDay() !== epoch) throw new AttackError(409, 'Q-Day changed — recover the key again.');
-  return verdicts(await createItem({ ...photo, manifest }));
+  return verdicts(await createItem({ ...photo, manifest: { ...manifest, ...attackMarker } }));
 }
 
 // seed-feed.ts intentionally discards its phone's secrets. Seed a separate demo
@@ -111,13 +213,13 @@ async function seedTarget() {
   const passkey = makePasskey();
   const personhood = makePersonhood(passkey, issuer);
   const photo = photoFrom(SCENES.harbour());
-  const genuine = await createItem({ ...photo, manifest: capture(phone, passkey, personhood, photo) });
+  const genuine = await createItem({ ...photo, manifest: { ...capture(phone, passkey, personhood, photo), ...attackMarker } });
   return { phone, passkey, personhood, genuineId: genuine.id };
 }
 let target: ReturnType<typeof seedTarget> | undefined;
 
 export async function forgeHybrid(): Promise<HybridAttackResult> {
-  const epoch = requireQDay();
+  const epoch = requireRecovery();
   if (target && !getItem((await target).genuineId)) target = undefined; // seed reset
   const { phone, passkey, personhood } = await (target ??= seedTarget());
   const photo = forgedPhoto();
@@ -136,7 +238,7 @@ export async function forgeHybrid(): Promise<HybridAttackResult> {
     passkey: passkeyAssert(passkey, claimChallenge(claim)),
   };
   if (requireQDay() !== epoch) throw new AttackError(409, 'Q-Day changed — try the attack again.');
-  const item = await createItem({ ...photo, manifest });
+  const item = await createItem({ ...photo, manifest: { ...manifest, ...attackMarker } });
   const parts = hybridVerify('claim', canonicalBytes(claim), manifest.claimSignature, phone.cert.publicKeys).parts;
   const genuine = [];
   for (const row of listItems()) {

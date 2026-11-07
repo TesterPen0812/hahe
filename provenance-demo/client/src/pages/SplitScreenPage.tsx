@@ -7,7 +7,7 @@ import { FeedCard } from '../components/FeedCard'
 import { WorldSwitch } from '../components/WorldSwitch'
 
 export default function SplitScreenPage() {
-  const { world, set } = useWorld()
+  const { world, set, reset, resetCount } = useWorld()
   const [naive, setNaive] = useState<ItemSummary[]>([])
   const [ours, setOurs] = useState<ItemSummary[]>([])
   const [trust, setTrust] = useState<TrustList | null>(null)
@@ -21,10 +21,10 @@ export default function SplitScreenPage() {
     tick()
     const t = setInterval(tick, 2500)
     return () => { alive = false; clearInterval(t) }
-  }, [world.mode])
+  }, [world.mode, world.qDayAt, resetCount])
   return (
     <main className={`page split ${world.mode === 'q-day' ? 'is-qday' : ''}`}>
-      <WorldSwitch world={world} onSet={set} />
+      <WorldSwitch world={world} onSet={set} onReset={reset} />
       {error && <p className="status error" role="alert">Could not load comparison: {error}</p>}
       <div className="split-cols">
         <section><h2>Today’s apps</h2><p className="muted small">Naive verifier · trusts any valid signature</p><div className="grid">{naive.map(i => <FeedCard key={i.id} item={i} trust={trust} />)}</div></section>

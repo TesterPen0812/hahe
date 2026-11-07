@@ -7,6 +7,7 @@ export type { WorldMode, WorldState } from '@provenance-demo/shared'
 /** Polls the server so every screen flips together when the presenter switches worlds. */
 export function useWorld(pollMs = 1500) {
   const [world, setWorld] = useState<WorldState>(() => todayWorld())
+  const [resetCount, setResetCount] = useState(0)
   const revision = useRef(0)
   const saving = useRef(false)
   useEffect(() => {
@@ -28,5 +29,14 @@ export function useWorld(pollMs = 1500) {
     try { setWorld(await api.setWorld(mode)) }
     finally { saving.current = false }
   }
-  return { world, set }
+  const reset = async () => {
+    revision.current++
+    saving.current = true
+    try {
+      await api.post('/attack/reset')
+      setWorld(await api.world())
+      setResetCount(count => count + 1)
+    } finally { saving.current = false }
+  }
+  return { world, set, reset, resetCount }
 }

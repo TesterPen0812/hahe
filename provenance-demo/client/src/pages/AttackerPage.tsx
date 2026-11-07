@@ -5,12 +5,13 @@ import { api } from '../lib/api'
 import type { AttackResult, HybridAttackResult, RecoveryResult } from '../lib/attack'
 import { useWorld } from '../lib/world'
 import { HybridComparison, LegacyComparison, type Attempt, type HybridAttempt } from '../components/AttackComparison'
+import { ResetDemoButton } from '../components/ResetDemoButton'
 import './AttackerPage.css'
 
 type Busy = 'world' | 'recover' | 'legacy' | 'hybrid' | null
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
-function AttackerConsole({ world, setWorld }: { world: WorldState; setWorld: (mode: WorldState['mode']) => Promise<void> }) {
+function AttackerConsole({ world, setWorld, reset }: { world: WorldState; setWorld: (mode: WorldState['mode']) => Promise<void>; reset: () => Promise<void> }) {
   const [recovery, setRecovery] = useState<RecoveryResult | null>(null)
   const [legacy, setLegacy] = useState<Attempt | null>(null)
   const [hybrid, setHybrid] = useState<HybridAttempt | null>(null)
@@ -65,6 +66,7 @@ function AttackerConsole({ world, setWorld }: { world: WorldState; setWorld: (mo
       <div className="attack-title"><h1>Attacker · Q-Day</h1><span className="attack-simulated">Simulated</span></div>
       <p className="lede">Simulated — stands in for Shor’s algorithm on a quantum computer.</p>
       <p className="small muted">Real signatures. Real verification. The quantum key recovery is simulated.</p>
+      <ResetDemoButton onReset={reset} disabled={!!busy} />
     </header>
 
     {!qDay && <aside className="attack-callout">
@@ -111,12 +113,12 @@ function AttackerConsole({ world, setWorld }: { world: WorldState; setWorld: (mo
         </section>
       </li>}
     </ol>
-    <footer className="attack-footer small muted">Reset demo <code className="mono">npx tsx scripts/seed-feed.ts --reset</code></footer>
+    <footer className="attack-footer small muted">Use Reset demo before another run to clear the attack items and start in Today.</footer>
   </main>
 }
 
 export default function AttackerPage() {
-  const { world, set } = useWorld()
+  const { world, set, reset, resetCount } = useWorld()
   // A world change discards old verdicts and in-progress presentation state.
-  return <AttackerConsole key={`${world.mode}:${world.qDayAt}`} world={world} setWorld={set} />
+  return <AttackerConsole key={`${world.mode}:${world.qDayAt}:${resetCount}`} world={world} setWorld={set} reset={reset} />
 }

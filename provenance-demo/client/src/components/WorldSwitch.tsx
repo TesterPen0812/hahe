@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import type { WorldState } from '../lib/world'
+import { ResetDemoButton } from './ResetDemoButton'
 
-export function WorldSwitch({ world, onSet }: { world: WorldState; onSet: (m: WorldState['mode']) => Promise<void> }) {
+export function WorldSwitch({ world, onSet, onReset }: { world: WorldState; onSet: (m: WorldState['mode']) => Promise<void>; onReset?: () => Promise<void> }) {
   const q = world.mode === 'q-day'
   const [pending, setPending] = useState(false)
   const [error, setError] = useState('')
@@ -18,6 +19,7 @@ export function WorldSwitch({ world, onSet }: { world: WorldState; onSet: (m: Wo
         <button className={!q ? 'on' : ''} aria-pressed={!q} disabled={pending} onClick={() => void switchTo('today')}>Today</button>
         <button className={q ? 'on' : ''} aria-pressed={q} disabled={pending} onClick={() => void switchTo('q-day')}>Q-Day{q ? ` · ${world.headlineYear}` : ''}</button>
       </div>
+      {onReset && <ResetDemoButton onReset={onReset} disabled={pending} />}
       {q && (
         <div className="world-banner" role="status">
           <strong>Q-Day · {world.headlineYear}.</strong> A quantum computer has broken RSA and elliptic-curve signatures. Classical seals can now be forged; pre-Q-Day log anchors still count.
