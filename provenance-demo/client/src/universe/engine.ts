@@ -4,12 +4,12 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
-import { TRAIL_LENGTH, finishShader } from './shaders'
+import { TRAIL_LENGTH, WAKE_STAMPS, finishShader } from './shaders'
 import {
-  DOOR, UNIVERSES, type RGB, glowingPath, homeHeight, looseParticles, particleField, portal, sceneUniforms,
-  sky, stars, universeScene, type SceneUniforms, type UniverseDef,
+  DOOR, UNIVERSES, type RGB, glowingPath, homeHeight, portal, sceneUniforms,
+  universeScene, type SceneUniforms, type UniverseDef,
 } from './worlds'
-import { rng } from './noise'
+import { buildMeadow, qdayGate } from './scenery'
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
@@ -77,6 +77,12 @@ export class UniverseEngine {
   private flashColor = new THREE.Color(1, 1, 1)
   private wasInside = -1
 
+  private exposure = 0.95
+  private wake = Array.from({ length: WAKE_STAMPS }, () => new THREE.Vector4(-9, -9, 0, 0))
+  private wasDown = false
+  private flashedQday = -1
+  private zoom = 0
+
   // pointer
   private ndc = new THREE.Vector2(0, 0)
   private look = new THREE.Vector2(0, 0)
@@ -110,7 +116,7 @@ export class UniverseEngine {
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' })
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping
-    this.renderer.toneMappingExposure = 0.95
+    this.renderer.toneMappingExposure = this.exposure
     this.renderer.setClearColor(0x020308, 1)
 
     this.L0 = this.trunk.getLength()
@@ -124,12 +130,14 @@ export class UniverseEngine {
     this.renderPass = new RenderPass(this.home, this.camera)
     this.composer = new EffectComposer(this.renderer)
     this.composer.addPass(this.renderPass)
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.lowPower ? 0.45 : 0.55, 0.45, 0.42)
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.lowPower ? 0.55 : 0.7, 0.5, 0.58)
     this.composer.addPass(this.bloom)
+    // Tone map first, then finish in display space so grain and dither sit on the final image.
+    this.composer.addPass(new OutputPass())
     this.finish = new ShaderPass(finishShader)
     this.finish.uniforms.uFlashColor.value = this.flashColor
+    this.finish.uniforms.uWake.value = this.wake
     this.composer.addPass(this.finish)
-    this.composer.addPass(new OutputPass())
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
     this.resizeObserver.observe(host)
@@ -194,30 +202,7 @@ export class UniverseEngine {
   // ── scene construction ───────────────────────────────────────────────────
 
   private buildHome() {
-    const k = this.lowPower ? 0.45 : 1
-    this.home.add(sky([0.003, 0.006, 0.022], [0.04, 0.06, 0.15], [0.006, 0.008, 0.02], new THREE.Vector3(-0.42, 0.3, -1), [0.42, 0.46, 0.56], 0.0016))
-    this.home.add(stars(this.lowPower ? 900 : 2200, 3, [0.85, 0.9, 1.0]))
-    this.home.add(particleField(this.homeU, {
-      count: Math.floor(160000 * k), x: [-75, 75], z: [-150, 14], height: homeHeight, mode: 0, seed: 1, fog: [18, 120],
-      color: (r) => {
-        const f = r()
-        if (f < 0.035) return [1.0, 0.72, 0.45]
-        if (f < 0.06) return [0.95, 0.5, 0.62]
-        if (f < 0.08) return [0.72, 0.86, 1.0]
-        const b = 0.35 + r() * 0.65
-        return [(0.07 + r() * 0.08) * b, (0.12 + r() * 0.1) * b, (0.3 + r() * 0.32) * b]
-      },
-      size: (r) => (r() < 0.08 ? 0.09 + r() * 0.06 : 0.035 + r() * 0.045),
-      yJitter: (r) => r() * r() * 0.35,
-    }))
-    // Dust hanging in the air.
-    this.home.add(particleField(this.homeU, {
-      count: Math.floor(6000 * k), x: [-40, 40], z: [-110, 12], height: (x, z) => homeHeight(x, z) + 0.3, mode: 0, seed: 2,
-      fog: [10, 70], opacity: 0.4,
-      color: (r) => { const b = 0.4 + r() * 0.6; return [0.6 * b, 0.7 * b, 1.0 * b] },
-      size: (r) => 0.05 + r() * 0.12,
-      yJitter: (r) => r() * 8,
-    }))
+    buildMeadow(this.home, this.homeU, this.lowPower)
   }
 
   private buildUniverses() {
@@ -251,20 +236,13 @@ export class UniverseEngine {
   }
 
   private buildGate() {
-    // A thin shimmering curtain across the path: the moment Q-Day arrives.
+    // A great ring of light over the path: the moment Q-Day arrives.
     const p = this.trunk.getPointAt(this.gateD / this.L0)
-    const tan = this.trunk.getTangentAt(this.gateD / this.L0)
-    const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize()
-    const n = this.lowPower ? 5000 : 12000, r = rng(77)
-    const pos = new Float32Array(n * 3)
-    for (let i = 0; i < n; i++) {
-      const s = (r() - 0.5) * 30, y = Math.pow(r(), 1.6) * 11
-      const x = p.x + side.x * s, z = p.z + side.z * s + (r() - 0.5) * 0.3
-      pos.set([x, homeHeight(x, z) + y, z], i * 3)
-    }
-    const curtain = looseParticles(this.homeU, pos, [0.7, 0.66, 1.0], 0.06, 0, 78, [12, 90], 0.55)
-    this.home.add(curtain)
-    return curtain
+    const tan = this.trunk.getTangentAt(this.gateD / this.L0).setY(0).normalize()
+    const center = new THREE.Vector3(p.x, homeHeight(p.x, p.z) + 4.6, p.z)
+    const gate = qdayGate(this.homeU, center, tan, this.lowPower)
+    this.home.add(gate)
+    return gate
   }
 
   private buildPaths() {
@@ -272,12 +250,12 @@ export class UniverseEngine {
     const gate = this.trunk.getPointAt(this.gateD / this.L0)
     const tan = this.trunk.getTangentAt(this.gateD / this.L0)
     const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize()
-    const dens = this.lowPower ? 50 : 95
+    const dens = this.lowPower ? 70 : 140
     const path = glowingPath(this.homeU, [
       { curve: this.trunk, branch: 0, density: dens },
       ...this.universes.map((u, i) => ({ curve: u.curve, branch: i + 1, density: dens })),
       // the Q-Day threshold line across the path
-      { curve: new THREE.LineCurve3(gate.clone().addScaledVector(side, -6), gate.clone().addScaledVector(side, 6)), branch: 0, density: 30 },
+      { curve: new THREE.LineCurve3(gate.clone().addScaledVector(side, -5.6), gate.clone().addScaledVector(side, 5.6)), branch: 0, density: 60 },
     ], [0, 1, 2].map(i => (this.universes[i] ?? this.universes[0]).def.tint) as [RGB, RGB, RGB], 9, 130, homeHeight)
     void fork
     this.home.add(path)
@@ -552,6 +530,7 @@ export class UniverseEngine {
     for (const u of all) u.uTime.value = t
     this.homeU.uPixelRatio.value = pr
     this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * RT_SCALE })
+    this.updateLens(inside)
 
     // Pointer trail goes to whichever world the camera is in.
     const now = performance.now()
@@ -564,9 +543,35 @@ export class UniverseEngine {
         else arr[i].set(0, 0, 99, 0)
       }
     }
-    this.finish.uniforms.uTime.value = t
+    // A click (press without drag) sends a ring of light across the ground.
+    const pressed = this.down !== null
+    if (pressed && !this.wasDown) {
+      const hit = this.groundHit()
+      if (hit) active.uPulse.value.set(hit.x, hit.z, t, this.reducedMotion ? 0.4 : 1)
+    }
+    this.wasDown = pressed
+    this.updateWake(now, inside)
+
+    // Q-Day lands with a cold violet flash and a jolt of zoom.
+    if (this.qdayAt >= 0 && this.flashedQday !== this.qdayAt) {
+      this.flashedQday = this.qdayAt
+      this.flash = Math.max(this.flash, this.reducedMotion ? 0.12 : 0.3)
+      this.flashColor.setRGB(0.62, 0.55, 1.0)
+      this.zoom = this.reducedMotion ? 0 : 1
+    }
+    if (this.flash > 0.5) this.zoom = this.reducedMotion ? 0 : 1 // crossing a doorway
+    this.zoom = Math.max(0, this.zoom - dt * 1.6)
+
+    // The eye adapts: a crossing over-exposes for a moment, then settles.
+    const want = (inside >= 0 ? 1.05 : 0.95) + this.flash * 1.2
+    this.exposure += (want - this.exposure) * Math.min(1, dt * (want > this.exposure ? 8 : 1.4))
+    this.renderer.toneMappingExposure = this.exposure
+
+    const f = this.finish.uniforms
+    f.uTime.value = t
     this.flash = Math.max(0, this.flash - dt * 1.4)
-    this.finish.uniforms.uFlash.value = this.flash
+    f.uFlash.value = this.flash * 0.8
+    f.uZoom.value = this.zoom * this.zoom
     for (const s of this.home.children) {
       const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
       if (m?.uniforms?.uPixelRatio && !('uSizeScale' in m.uniforms)) m.uniforms.uPixelRatio.value = pr
@@ -575,8 +580,58 @@ export class UniverseEngine {
     for (const u of this.universes) {
       for (const s of u.scene.children) {
         const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
+        if (m?.uniforms?.uPixelRatio && !('uSizeScale' in m.uniforms)) m.uniforms.uPixelRatio.value = pr
         if (m?.uniforms?.uTime && !('uSizeScale' in m.uniforms)) m.uniforms.uTime.value = t
       }
+    }
+  }
+
+  /** Focus the lens on what the visitor is walking toward: the path ahead, then the door. */
+  private tmpV = new THREE.Vector3()
+  private updateLens(inside: number) {
+    const aperture = this.lowPower ? 0.05 : 0.075
+    const maxBlur = this.lowPower ? 22 : 44
+    let focus = 8
+    if (inside < 0) {
+      const sel = this.seg >= 0 ? this.seg : this.pastGate() ? Math.min(this.hovered ?? Math.floor(this.universes.length / 2), this.universes.length - 1) : -1
+      if (sel >= 0) {
+        const g = this.universes[sel].door.group.position
+        this.tmpV.set(g.x, g.y + DOOR.height * 0.45, g.z)
+        focus = THREE.MathUtils.clamp(this.camera.position.distanceTo(this.tmpV), 4, 40)
+      }
+    }
+    const h = this.homeU
+    h.uFocus.value += (focus - h.uFocus.value) * 0.06
+    h.uAperture.value = aperture
+    h.uMaxBlur.value = maxBlur
+    this.universes.forEach((u, i) => {
+      u.u.uFocus.value = i === inside ? 10 : 18
+      u.u.uAperture.value = aperture
+      u.u.uMaxBlur.value = i === inside ? maxBlur : maxBlur * 0.5
+    })
+  }
+
+  /** Project recent pointer stamps to the screen for the finishing pass's lingering ripple. */
+  private updateWake(now: number, inside: number) {
+    const cam = inside >= 0 ? this.universes[inside].cam : this.camera
+    const strength = this.reducedMotion ? 0 : 1
+    let prev: THREE.Vector3 | null = null, prevT = 0
+    for (let i = WAKE_STAMPS - 1; i >= 0; i--) {
+      const e = this.trail[i]
+      const w = this.wake[i]
+      if (!e) { w.set(-9, -9, 0, 0); prev = null; continue }
+      const y = inside >= 0 ? 0 : homeHeight(e.x, e.z)
+      const sp = new THREE.Vector3(e.x, y, e.z).project(cam)
+      const uv = new THREE.Vector3((sp.x + 1) / 2, (sp.y + 1) / 2, 0)
+      const age = (now - e.t) / 1000
+      if (prev && sp.z < 1) {
+        const dtS = Math.max((e.t - prevT) / 1000, 0.016)
+        const k = Math.exp(-age * 1.6) * strength
+        const vx = THREE.MathUtils.clamp((uv.x - prev.x) / dtS, -3, 3) * k
+        const vy = THREE.MathUtils.clamp((uv.y - prev.y) / dtS, -3, 3) * k
+        w.set(uv.x, uv.y, vx, vy)
+      } else w.set(uv.x, uv.y, 0, 0)
+      prev = uv; prevT = e.t
     }
   }
 
@@ -690,6 +745,7 @@ export class UniverseEngine {
     this.composer.setSize(w, h)
     const sizeScale = h / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2))
     for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uSizeScale.value = sizeScale
+    this.finish.uniforms.uAspect.value = w / h
     for (const u of this.universes) {
       u.rt.setSize(Math.ceil(w * pr * RT_SCALE), Math.ceil(h * pr * RT_SCALE))
       ;(u.door.contentMat.uniforms.uRes.value as THREE.Vector2).set(w * pr, h * pr)
