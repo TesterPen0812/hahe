@@ -154,3 +154,46 @@
 @media (prefers-reduced-motion: reduce) {
   .uv-mouse::after, .uv-panel { animation: none; }
 }
+
+/* ── live demo inside a world ──────────────────────────────────────── */
+.uv-live {
+  display: flex; gap: 10px; align-items: flex-start; font-size: 13px; line-height: 1.45; color: var(--muted);
+  padding: 10px 12px; border-radius: 12px; margin: 0 0 14px;
+  background: rgba(var(--tint), 0.06); border: 1px solid rgba(var(--tint), 0.18);
+}
+.uv-live strong { color: rgb(var(--tint)); font-weight: 600; }
+.uv-live-url { display: block; color: var(--ink); font-size: 12px; margin-top: 2px; }
+.uv-live-dot {
+  flex: none; width: 8px; height: 8px; margin-top: 6px; border-radius: 50%; background: rgb(var(--tint));
+  box-shadow: 0 0 0 0 rgba(var(--tint), .6); animation: uv-live 1.8s infinite;
+}
+@keyframes uv-live { 70% { box-shadow: 0 0 0 9px rgba(var(--tint), 0) } 100% { box-shadow: 0 0 0 0 rgba(var(--tint), 0) } }
+
+.uv-arrival {
+  display: grid; grid-template-columns: 96px 1fr; gap: 12px; align-items: center; margin: 0 0 14px; padding: 10px;
+  border-radius: 14px; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--line);
+  animation: uv-arrive .7s cubic-bezier(.2, .8, .2, 1) both;
+}
+.uv-arrival-green { border-color: rgba(63, 191, 127, .55); box-shadow: 0 0 40px rgba(63, 191, 127, .18); }
+.uv-arrival-amber { border-color: rgba(227, 163, 59, .55); }
+.uv-arrival img { width: 96px; height: 96px; object-fit: cover; border-radius: 10px; display: block; }
+.uv-arrival-kicker { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+.uv-arrival-note { font-size: 12px; color: var(--muted); margin: 6px 0 0; line-height: 1.4; }
+@keyframes uv-arrive { from { opacity: 0; transform: translateY(-10px) scale(.97) } to { opacity: 1; transform: none } }
+
+.uv-forge { margin: 0 0 16px; padding: 0 0 16px; border-bottom: 1px solid var(--line); }
+.uv-forge h3 { font-family: var(--serif); font-weight: 500; font-size: 19px; margin: 0 0 6px; text-transform: none; letter-spacing: 0; }
+.uv-forge p { font-size: 13px; color: var(--muted); line-height: 1.45; margin: 0 0 10px; }
+.uv-forge-btn, .uv-forge-again {
+  font: inherit; font-size: 13px; cursor: pointer; padding: 8px 14px; border-radius: 999px;
+  color: #1a0904; background: #ff8a5c; border: 0; font-weight: 600;
+}
+.uv-forge-again { background: rgba(255, 255, 255, .08); color: var(--ink); font-weight: 400; border: 1px solid var(--line); }
+.uv-forge-line { display: flex; gap: 8px; align-items: center; }
+.uv-spin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,.2); border-top-color: #ff8a5c; animation: uv-spin .8s linear infinite; flex: none; }
+@keyframes uv-spin { to { transform: rotate(360deg) } }
+.uv-verdicts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.uv-verdicts > div { padding: 10px; border-radius: 12px; background: rgba(255,255,255,.04); border: 1px solid var(--line); }
+.uv-verdicts p { margin: 6px 0 0; font-size: 12px; }
+.uv-verdict-k { font-size: 10px !important; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 6px !important; }
+.uv-verdicts .uv-forge-again { grid-column: 1 / -1; justify-self: start; }

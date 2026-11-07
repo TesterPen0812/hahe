@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { ItemSummary, TrustList } from '@provenance-demo/shared'
+import type { TrustList } from '@provenance-demo/shared'
 import { api } from '../lib/api'
 import { useWorld } from '../lib/world'
-import { FeedCard } from '../components/FeedCard'
-import { UniverseEngine, type EngineState, type LabelId } from './engine'
-import { UNIVERSES } from './worlds'
+import { LivePanel } from './LivePanel'
+import { ACTIVE_UNIVERSES as UNIVERSES, UniverseEngine, type EngineState, type LabelId } from './engine'
 import './universe.css'
 
-const LETTERS = ['A', 'B', 'C']
+const SINGLE = UNIVERSES.length === 1
+const LETTERS = SINGLE ? ['→'] : ['A', 'B', 'C']
 const INITIAL: EngineState = { phase: 'trunk', branch: null, hovered: null, qday: false, started: false }
 
 function webglAvailable() {
@@ -16,46 +16,6 @@ function webglAvailable() {
     const c = document.createElement('canvas')
     return !!(c.getContext('webgl2') || c.getContext('webgl'))
   } catch { return false }
-}
-
-/** In the universe where nobody signed, every photo is just a guess. */
-function unsigned(item: ItemSummary): ItemSummary {
-  return {
-    ...item,
-    manifest: null,
-    verification: { ...item.verification, status: 'grey', label: 'unknown', kind: null, checks: [] },
-  } as ItemSummary
-}
-
-function UniverseFeed({ index, trust }: { index: number; trust: TrustList | null }) {
-  const [items, setItems] = useState<ItemSummary[] | null>(null)
-  const [error, setError] = useState('')
-  useEffect(() => {
-    let alive = true
-    const load = () => api.items({ naive: index === 0 }).then(list => {
-      if (alive) { setItems(index === 2 ? list.map(unsigned) : list); setError('') }
-    }).catch(e => alive && setError(String(e)))
-    load()
-    const t = setInterval(load, 3000)
-    return () => { alive = false; clearInterval(t) }
-  }, [index])
-  if (error) return <p className="uv-empty">Can’t reach the server: {error}</p>
-  if (!items) return <p className="uv-empty">Loading this world’s feed…</p>
-  if (!items.length) return <p className="uv-empty">No photos in this world yet.</p>
-  const counts = { green: 0, amber: 0, grey: 0 }
-  items.forEach(i => counts[i.verification.status]++)
-  return (
-    <>
-      <p className="uv-counts">
-        <span className="c-green">{counts.green} verified</span>
-        <span className="c-amber">{counts.amber} edited</span>
-        <span className="c-grey">{counts.grey} unknown</span>
-      </p>
-      <div className="uv-grid">
-        {items.slice(0, 9).map(i => <FeedCard key={i.id} item={i} trust={trust} />)}
-      </div>
-    </>
-  )
 }
 
 export default function UniversePage() {
@@ -135,7 +95,9 @@ export default function UniversePage() {
       </section>
 
       <div className={`uv-prompt ${state.phase === 'fork' ? 'on' : ''}`}>
-        Choose a reality <span>1 · 2 · 3, or click a door</span>
+        {SINGLE
+          ? <>Step into the world that went hybrid <span>keep scrolling, or click the door</span></>
+          : <>Choose a reality <span>1 · 2 · 3, or click a door</span></>}
       </div>
 
       {/* labels pinned to points in the 3D scene */}
@@ -157,17 +119,11 @@ export default function UniversePage() {
 
       {def && inside !== null && (
         <aside className="uv-panel" key={def.id}>
-          <p className="uv-kicker">Universe {LETTERS[inside]} · after Q-Day</p>
+          <p className="uv-kicker">{SINGLE ? 'Our world' : `Universe ${LETTERS[inside]}`} · after Q-Day</p>
           <h2>{def.title}</h2>
           <p className="uv-line">{def.line}</p>
           <p className="uv-rule">{def.rule}</p>
-          <UniverseFeed index={inside} trust={trust} />
-          {inside < 2 && (
-            <p className="uv-tip">
-              {inside === 0 ? 'Every forgery here shows green.' : 'Forgeries here turn grey.'}{' '}
-              <Link to="/attack">Plant a forgery →</Link>
-            </p>
-          )}
+          <LivePanel def={def} trust={trust} onArrival={status => engine.current?.celebrate(status)} />
           <div className="uv-actions">
             <button type="button" onClick={() => engine.current?.back()}>← Back to the fork</button>
             <button type="button" onClick={() => engine.current?.rewind()}>Rewind to today</button>

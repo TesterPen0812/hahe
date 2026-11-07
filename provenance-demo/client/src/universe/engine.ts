@@ -6,7 +6,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { TRAIL_LENGTH, finishShader } from './shaders'
 import {
-  DOOR, UNIVERSES, glowingPath, homeHeight, looseParticles, particleField, portal, sceneUniforms,
+  DOOR, UNIVERSES, type RGB, glowingPath, homeHeight, looseParticles, particleField, portal, sceneUniforms,
   sky, stars, universeScene, type SceneUniforms, type UniverseDef,
 } from './worlds'
 import { rng } from './noise'
@@ -24,6 +24,9 @@ export interface EngineCallbacks {
   onQDay: (crossed: boolean) => void
 }
 export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2'
+
+/** The worlds behind the gate. For now there is one door: into the world that went hybrid. */
+export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
 
 const EYE = 1.7
 const TRAIL_MS = 35
@@ -154,6 +157,13 @@ export class UniverseEngine {
     this.target = { seg: branch, d: this.universes[branch].len + 14 }
   }
 
+  /** A short glow when a new photo lands in the world the visitor is standing in. */
+  celebrate(status: 'green' | 'amber' | 'grey') {
+    const c = status === 'green' ? [0.3, 1, 0.6] : status === 'amber' ? [1, 0.7, 0.25] : [0.7, 0.72, 0.8]
+    this.flashColor.setRGB(c[0], c[1], c[2])
+    this.flash = Math.max(this.flash, 0.22)
+  }
+
   /** Walk back to the fork. */
   back() { this.target = { seg: -1, d: this.L0 } }
 
@@ -213,12 +223,13 @@ export class UniverseEngine {
   private buildUniverses() {
     // Branches fan out from the end of the trunk (the fork) to three doors.
     const fork = this.trunk.getPointAt(1)
-    const ends = [
-      [v2(fork.x, fork.z), v2(-3.2, -64), v2(-9, -72), v2(-13, -82)],
-      [v2(fork.x, fork.z), v2(0, -66), v2(0, -76), v2(0, -88)],
-      [v2(fork.x, fork.z), v2(3.2, -64), v2(9, -72), v2(13, -82)],
-    ]
-    UNIVERSES.forEach((def, i) => {
+    const fan = {
+      rsa: [v2(fork.x, fork.z), v2(-3.2, -64), v2(-9, -72), v2(-13, -82)],
+      hybrid: [v2(fork.x, fork.z), v2(0, -66), v2(0, -76), v2(0, -88)],
+      unsigned: [v2(fork.x, fork.z), v2(3.2, -64), v2(9, -72), v2(13, -82)],
+    }
+    const ends = ACTIVE_UNIVERSES.map(u => fan[u.id])
+    ACTIVE_UNIVERSES.forEach((def, i) => {
       const curve = new THREE.CatmullRomCurve3(ends[i], false, 'centripetal')
       const end = curve.getPointAt(1)
       const tan = curve.getTangentAt(1).setY(0).normalize()
@@ -267,7 +278,7 @@ export class UniverseEngine {
       ...this.universes.map((u, i) => ({ curve: u.curve, branch: i + 1, density: dens })),
       // the Q-Day threshold line across the path
       { curve: new THREE.LineCurve3(gate.clone().addScaledVector(side, -6), gate.clone().addScaledVector(side, 6)), branch: 0, density: 30 },
-    ], [UNIVERSES[0].tint, UNIVERSES[1].tint, UNIVERSES[2].tint], 9, 130, homeHeight)
+    ], [0, 1, 2].map(i => (this.universes[i] ?? this.universes[0]).def.tint) as [RGB, RGB, RGB], 9, 130, homeHeight)
     void fork
     this.home.add(path)
     return path
@@ -286,9 +297,10 @@ export class UniverseEngine {
     const k = e.key.toLowerCase()
     if (['w', 's', 'arrowup', 'arrowdown'].includes(k)) { this.keys.add(k); this.target = null; e.preventDefault() }
     if (this.atFork() || this.seg >= 0) {
-      if (k === '1' || k === '2' || k === '3') this.choose(Number(k) - 1)
-      if (k === 'arrowleft') this.hovered = Math.max(0, (this.hovered ?? 1) - 1)
-      if (k === 'arrowright') this.hovered = Math.min(2, (this.hovered ?? 1) + 1)
+      const n = Number(k)
+      if (n >= 1 && n <= this.universes.length) this.choose(n - 1)
+      if (k === 'arrowleft') this.hovered = Math.max(0, (this.hovered ?? 0) - 1)
+      if (k === 'arrowright') this.hovered = Math.min(this.universes.length - 1, (this.hovered ?? 0) + 1)
       if (k === 'enter' && this.hovered !== null) this.choose(this.hovered)
     }
     if (k === 'escape' && this.seg >= 0) this.back()
@@ -378,6 +390,8 @@ export class UniverseEngine {
     if (this.seg < 0) {
       if (r < 0) { r = 0; this.v = Math.max(0, this.v) }
       if (r >= this.L0) {
+        // With a single door there is nothing to choose: keep walking straight through it.
+        if (this.selected === null && this.universes.length === 1) this.selected = 0
         const b = this.selected
         if (b !== null && this.universes[b].open > 0.6) { this.seg = b; this.d = r - this.L0 }
         else { this.d = this.L0; this.v = Math.min(0, this.v) }
@@ -446,7 +460,7 @@ export class UniverseEngine {
   private placeCamera(blend: number) {
     const seg = this.seg, d = this.d
     // On a portrait screen the camera stands back from the fork so all three doors fit.
-    const pull = seg < 0 && this.camera.aspect < 0.8 ? THREE.MathUtils.smoothstep(d, this.L0 - 20, this.L0) * 15 : 0
+    const pull = seg < 0 && this.camera.aspect < 0.8 && this.universes.length > 1 ? THREE.MathUtils.smoothstep(d, this.L0 - 20, this.L0) * 15 : 0
     const pos = this.pointAt(seg, d - pull)
     pos.y = this.groundAt(seg, d - pull) + EYE + Math.sin(this.d * 1.6) * 0.025 * Math.min(1, Math.abs(this.v) / 4)
 
@@ -456,7 +470,8 @@ export class UniverseEngine {
       ahead.y = this.groundAt(-1, Math.min(d + 7, this.L0)) + EYE - 0.55
       // Near the fork, turn to take in all three doors.
       const k = THREE.MathUtils.smoothstep(d, this.L0 - 14, this.L0)
-      const focus = new THREE.Vector3(0, this.universes[1].base + 2.6, -84)
+      const mid = this.universes[Math.floor(this.universes.length / 2)]
+      const focus = new THREE.Vector3(mid.door.group.position.x, mid.base + 2.6, mid.door.group.position.z + 4)
       target = ahead.lerp(focus, k * 0.85)
     } else {
       const u = this.universes[seg]
@@ -583,8 +598,8 @@ export class UniverseEngine {
       today: { p: this.at(-1, 9, 2.6), show: route < 30 },
       qday: { p: this.at(-1, this.gateD, 6.2), show: route < this.gateD + 3 },
       u0: { p: this.doorTop(0), show: past && this.seg < 0 },
-      u1: { p: this.doorTop(1), show: past && this.seg < 0 },
-      u2: { p: this.doorTop(2), show: past && this.seg < 0 },
+      u1: { p: this.doorTop(1), show: past && this.seg < 0 && this.universes.length > 1 },
+      u2: { p: this.doorTop(2), show: past && this.seg < 0 && this.universes.length > 2 },
     }
     for (const [id, el] of this.labels) {
       const s = spots[id]
@@ -606,7 +621,7 @@ export class UniverseEngine {
     return p
   }
   private doorTop(i: number) {
-    const g = this.universes[i].door.group.position
+    const g = (this.universes[i] ?? this.universes[0]).door.group.position
     return new THREE.Vector3(g.x, g.y + DOOR.height + 0.9, g.z)
   }
 
