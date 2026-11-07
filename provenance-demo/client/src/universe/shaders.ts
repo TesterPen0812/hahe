@@ -61,6 +61,7 @@ export const fieldVertex = /* glsl */ `
   uniform vec4 uPulse;            // click pulse: x, z, start time, amplitude
   uniform vec3 uCenter;           // pivot for ring / sphere modes
   uniform float uOpacity;
+  uniform vec3 uAxis;
   attribute vec3 aColor;
   attribute float aSize;
   attribute float aSeed;
@@ -171,13 +172,23 @@ export const fieldVertex = /* glsl */ `
       vFade = smoothstep(0.0, 0.25, slide) * (1.0 - smoothstep(0.7, 1.0, slide));
       vTwinkle = 0.9 + 0.2 * sin(t * (0.5 + aSeed) + aSeed * 40.0);
     } else {
-      // The Q-Day curtain: strands sway; once crossed they part away from the path like a veil.
-      float open = clamp((0.55 - uOpacity) / 0.4, 0.0, 1.0);
-      float side = p.x - uCenter.x;
-      float push = sign(side) * (2.0 + abs(side) * 0.9) * open * open * (0.6 + aSeed);
-      p.x += push + sin(t * 0.4 + p.y * 0.5 + aSeed * 7.0) * 0.08;
-      p.y += open * open * aSeed * 2.0;
-      vTwinkle = (0.7 + 0.5 * sin(t * 1.4 - p.y * 0.8 + aSeed * 20.0)) * mix(1.0, 0.5, open);
+      // The Q-Day curtain: a bead curtain hung from one roof line. Each strand moves as a unit,
+      // swinging from its top like a pendulum: idle, it breathes in a slow shared draught; once
+      // crossed it swings aside, away from the path, settling with a small overshoot.
+      float open = clamp((0.55 - uOpacity) / 0.43, 0.0, 1.0);
+      float settle = open * open * (3.0 - 2.0 * open);
+      vec3 rel = p - uCenter;
+      float lat = dot(rel.xz, uAxis.xz);
+      float strand = hash(floor(p.x * 37.0) * 0.131 + floor(p.z * 37.0) * 0.737);
+      float hang = clamp((uCenter.y + 5.4 - p.y) / 9.0, 0.0, 1.0);   // 0 at the roof, 1 at the tip
+      float swing = sin(t * 0.55 + strand * 6.2831 + lat * 0.35) * 0.18 + sin(t * 0.23 + lat * 0.12) * 0.12;
+      float away = sign(lat + 0.001) * (3.2 + abs(lat) * 0.45) * (0.75 + strand * 0.5) * settle;
+      float ang = (swing * (1.0 - settle * 0.6) + away * 0.12) * hang;   // swing grows toward the tip
+      float reach = (uCenter.y + 5.4 - p.y);
+      vec2 dir = uAxis.xz;
+      p.xz += dir * sin(ang) * reach * 0.9;
+      p.y += (1.0 - cos(ang)) * reach * 0.9;                          // tips rise only as far as the arc allows
+      vTwinkle = (0.75 + 0.35 * sin(t * 1.1 + p.y * 0.6 + strand * 20.0)) * mix(1.0, 0.6, settle);
     }
 
     // Pointer wake: particles part around the cursor and settle back.
@@ -189,7 +200,7 @@ export const fieldVertex = /* glsl */ `
         float fall = exp(-r2 / 4.0) * exp(-tr.z * 2.2) * tr.w;
         vec2 dir = d * inversesqrt(max(r2, 1e-4));
         p.xz += dir * fall * 1.3;
-        p.y += fall * 0.9;
+        p.y += fall * 0.9 * step(uMode, 0.5);
         vTwinkle += fall * 0.6;
       }
     }
@@ -207,10 +218,10 @@ export const fieldVertex = /* glsl */ `
     if (uShock.w > 0.0) {
       float age = t - uShock.z;
       float r = length(p.xz - uShock.xy);
-      float front = (r - age * 24.0) / 3.0;
-      float ring = exp(-front * front) * exp(-age * 0.55) * uShock.w;
-      p.y += ring * 2.6;
-      vTwinkle += ring * 2.0;
+      float front = (r - age * 18.0) / 4.0;
+      float ring = exp(-front * front) * exp(-age * 0.45) * uShock.w;
+      p.xz += (p.xz - uShock.xy) / max(r, 1.0) * ring * 0.35;
+      vTwinkle += ring * 1.6;
     }
 
     vec4 mv = modelViewMatrix * vec4(p, 1.0);

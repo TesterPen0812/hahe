@@ -40,6 +40,8 @@ export function sceneUniforms(): SceneUniforms {
 export interface FieldStyle {
   fogColor?: RGB
   center?: THREE.Vector3
+  /** Sideways direction for clouds that part (the Q-Day curtain). */
+  axis?: THREE.Vector3
 }
 
 /** The material every particle cloud uses; `mode` picks its motion (see fieldVertex). */
@@ -55,6 +57,7 @@ export function fieldMaterial(u: SceneUniforms, mode: number, fog: [number, numb
       uOpacity: { value: opacity },
       uFogColor: { value: new THREE.Color(...(style.fogColor ?? [0, 0, 0])) },
       uCenter: { value: style.center?.clone() ?? new THREE.Vector3() },
+      uAxis: { value: style.axis?.clone() ?? new THREE.Vector3(1, 0, 0) },
     },
     transparent: true,
     depthWrite: false,

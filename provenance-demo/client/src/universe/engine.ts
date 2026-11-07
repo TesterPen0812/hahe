@@ -538,7 +538,9 @@ export class UniverseEngine {
     const sel = this.seg >= 0 ? this.seg : this.hovered
     g.set(...([0, 1, 2].map(i => (sel === null ? (past ? 1 : 0.55) : sel === i ? 1.25 : 0.35)) as [number, number, number]))
     const curtain = (this.gateCurtain.material as THREE.ShaderMaterial).uniforms.uOpacity
-    curtain.value += ((past ? 0.12 : 0.55) - curtain.value) * Math.min(1, dt * 2)
+    // the curtain starts to part as you walk up to it, so you pass through an opening, not a wall
+    const near = this.route() >= this.gateD - 7
+    curtain.value += ((near ? 0.12 : 0.55) - curtain.value) * Math.min(1, dt * 1.3)
   }
 
   private updateUniforms(t: number, dt: number) {
@@ -575,7 +577,7 @@ export class UniverseEngine {
       this.flashedQday = this.qdayAt
       this.flash = Math.max(this.flash, this.reducedMotion ? 0.12 : 0.3)
       this.flashColor.setRGB(0.62, 0.55, 1.0)
-      this.zoom = this.reducedMotion ? 0 : 1
+      this.zoom = this.reducedMotion ? 0 : 0.2
     }
     if (this.flash > 0.5) this.zoom = this.reducedMotion ? 0 : 1 // crossing a doorway
     this.zoom = Math.max(0, this.zoom - dt * 1.6)
