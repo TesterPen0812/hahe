@@ -1,8 +1,12 @@
 // Canonical JSON + hashing helpers.
 // Same object in -> exactly the same bytes out, so signatures stay valid.
+// No Node-only APIs, so this also runs in the browser.
 import canonicalize from 'canonicalize';
 import { sha256 } from '@noble/hashes/sha2.js';
-import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+import { bytesToHex, hexToBytes, utf8ToBytes } from '@noble/hashes/utils.js';
+import type { CaptureClaim } from './manifest.js';
+
+export { bytesToHex, hexToBytes, utf8ToBytes };
 
 /** RFC 8785 canonical JSON as a string. */
 export function canonicalJson(value: unknown): string {
@@ -16,13 +20,27 @@ export function canonicalBytes(value: unknown): Uint8Array {
   return utf8ToBytes(canonicalJson(value));
 }
 
-export function sha256Hex(data: Uint8Array): string {
-  return bytesToHex(sha256(data));
+export function sha256Hex(data: Uint8Array | string): string {
+  return bytesToHex(sha256(typeof data === 'string' ? utf8ToBytes(data) : data));
 }
 
-/** Hash of an object's canonical form. */
+/** Hash of an object's canonical form, hex. */
 export function hashObject(value: unknown): string {
   return sha256Hex(canonicalBytes(value));
+}
+
+/**
+ * The passkey challenge for a capture: the claim's hash, as base64url.
+ * Person B passes this as the WebAuthn challenge so Face ID approves THIS photo.
+ */
+export function claimChallenge(claim: CaptureClaim): string {
+  return toB64url(hexToBytes(hashObject(claim)));
+}
+
+/** Drop the `signature` field, giving the part of a credential that gets signed. */
+export function withoutSignature<T extends { signature: unknown }>(obj: T): Omit<T, 'signature'> {
+  const { signature: _ignored, ...rest } = obj;
+  return rest;
 }
 
 // base64url without Node's Buffer, so this also works in the browser.
