@@ -8,6 +8,7 @@ import trustRouter from './routes/trust.js';
 import devicesRouter from './routes/devices.js';
 import itemsRouter from './routes/items.js';
 import worldRouter from './routes/world.js';
+import logRouter from './routes/log.js';
 import { getWorld } from './world.js';
 
 config({ path: fileURLToPath(new URL('../.env', import.meta.url)), quiet: true });
@@ -18,7 +19,7 @@ const app = express();
 app.use(express.json({ limit: '1mb' }));
 
 const api = express.Router();
-api.use(trustRouter, devicesRouter, itemsRouter, worldRouter);
+api.use(trustRouter, devicesRouter, itemsRouter, worldRouter, logRouter);
 
 // Optional routers (some owned by Person B, some still placeholders).
 // Mounted only if the file exports a router as `default` or `router`.

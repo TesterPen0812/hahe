@@ -51,7 +51,8 @@ db.exec(`
     prev_hash     TEXT NOT NULL,
     timestamp     TEXT NOT NULL,
     entry_hash    TEXT NOT NULL UNIQUE,
-    item_id       TEXT REFERENCES items(id)
+    item_id       TEXT REFERENCES items(id),
+    checkpoint    TEXT                  -- JSON LogHead signed right after this entry (ML-DSA-65)
   );
   CREATE INDEX IF NOT EXISTS log_manifest ON log_entries(manifest_hash);
 
@@ -72,6 +73,10 @@ db.exec(`
     updated_at    TEXT NOT NULL
   );
 `);
+
+// Upgrade databases created before log checkpoints existed.
+const logColumns = (db.prepare('PRAGMA table_info(log_entries)').all() as { name: string }[]).map((c) => c.name);
+if (!logColumns.includes('checkpoint')) db.exec('ALTER TABLE log_entries ADD COLUMN checkpoint TEXT');
 
 // ---------- devices ----------
 

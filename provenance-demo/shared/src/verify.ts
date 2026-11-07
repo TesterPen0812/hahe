@@ -15,6 +15,7 @@ import { verifyDeviceCert, verifyEditEntry, verifyPersonhood } from './certs.js'
 import { verifyPasskeyAssertion } from './passkey.js';
 import { verifyLegacySignature } from './legacy.js';
 import { judgeHybrid, makePolicy, type Policy, type VerifyOptions } from './policy.js';
+import { checkpointValid } from './loghead.js';
 import type {
   Check, HybridManifest, LegacyManifest, LogEntry, Manifest, PresenceLevel, TrustLabel, TrustList,
   VerificationResult, WorldState,
@@ -22,12 +23,24 @@ import type {
 
 export type { VerifyOptions };
 
-/** True if `entry` is a well-formed log entry for exactly this manifest. */
-export function logEntryMatches(manifest: Manifest, entry: LogEntry | null): entry is LogEntry {
-  return !!entry
-    && entry.manifestHash === hashObject(manifest)
+export type LogStatus = 'ok' | 'missing' | 'mismatch' | 'unsigned';
+
+/**
+ * Is `entry` a genuine log entry for exactly this manifest?
+ *  - hashes: entry names this manifest, and entryHash = sha256(prevHash + manifestHash + timestamp)
+ *  - signature: its checkpoint (a log head) is signed by the trusted log's ML-DSA-65 key.
+ * Without the signature anyone could fabricate a backdated entry, since SHA-256 has no secret.
+ */
+export function checkLogEntry(manifest: Manifest, entry: LogEntry | null, trust: TrustList): LogStatus {
+  if (!entry) return 'missing';
+  const hashesOk = entry.manifestHash === hashObject(manifest)
     && entry.entryHash === sha256Hex(entry.prevHash + entry.manifestHash + entry.timestamp);
+  if (!hashesOk) return 'mismatch';
+  return checkpointValid(entry, trust.log) ? 'ok' : 'unsigned';
 }
+
+export const logEntryMatches = (manifest: Manifest, entry: LogEntry | null, trust: TrustList): entry is LogEntry =>
+  checkLogEntry(manifest, entry, trust) === 'ok';
 
 const grey = (reason: string, naive: boolean): VerificationResult => ({
   status: 'grey', presenceLevel: 'none', label: 'unknown', kind: null, naive, anchoredBeforeQDay: false,
@@ -45,11 +58,13 @@ export async function verifyItem(
   const naive = !!opts.naive;
   if (!manifest) return grey('This image has no provenance manifest. Its origin is unknown.', naive);
   try {
-    // The anchor only counts if the log entry really belongs to this manifest.
-    const entry = logEntryMatches(manifest, logEntry) ? logEntry : null;
+    // The anchor only counts if the log entry belongs to this manifest AND is signed by the log.
+    const logStatus = checkLogEntry(manifest, logEntry, trust);
+    const entry = logStatus === 'ok' ? logEntry : null;
     const policy = makePolicy(world, entry, naive);
-    if (manifest.kind === 'hybrid') return checkHybrid(imageBytes, manifest, trust, entry, policy);
-    if (manifest.kind === 'legacy') return await checkLegacy(imageBytes, manifest, trust, entry, policy);
+    const log: LogInfo = { entry, status: logStatus, logName: trust.log?.name ?? 'the log' };
+    if (manifest.kind === 'hybrid') return checkHybrid(imageBytes, manifest, trust, log, policy);
+    if (manifest.kind === 'legacy') return await checkLegacy(imageBytes, manifest, trust, log, policy);
     return grey('The provenance manifest is of an unknown kind and cannot be checked.', naive);
   } catch {
     // Missing fields, wrong types, bad encodings: never crash, just "unknown".
@@ -67,12 +82,17 @@ function checkList() {
 }
 type Add = ReturnType<typeof checkList>['add'];
 
-function addLogCheck(add: Add, entry: LogEntry | null, policy: Policy) {
+interface LogInfo { entry: LogEntry | null; status: LogStatus; logName: string }
+
+function addLogCheck(add: Add, log: LogInfo, policy: Policy) {
+  const { entry, status } = log;
+  const when = entry && (policy.anchored ? ', before Q-Day' : policy.world.mode === 'q-day' && !policy.naive ? ', after Q-Day' : '');
   add({
-    name: 'Logged', pass: !!entry,
-    reason: !entry ? 'No matching entry in the public log.'
-      : `Recorded in the public log on ${new Date(entry.timestamp).toUTCString()}`
-        + (policy.anchored ? ', before Q-Day.' : policy.world.mode === 'q-day' && !policy.naive ? ', after Q-Day.' : '.'),
+    name: 'Logged', pass: status === 'ok', alg: status === 'ok' || status === 'unsigned' ? 'ml-dsa-65' : undefined,
+    reason: status === 'missing' ? 'No matching entry in the public log.'
+      : status === 'mismatch' ? 'The log entry supplied does not match this manifest.'
+        : status === 'unsigned' ? `The log entry is not signed by ${log.logName} (ML-DSA-65), so its timestamp can't be trusted.`
+          : `Recorded in the public log on ${new Date(entry!.timestamp).toUTCString()}${when}; log head signed by ${log.logName} (ML-DSA-65).`,
   });
 }
 
@@ -84,7 +104,7 @@ function addContentCheck(add: Add, imageBytes: Uint8Array, expected: string, okR
 // ---------- our hybrid manifest ----------
 
 function checkHybrid(
-  imageBytes: Uint8Array, manifest: HybridManifest, trust: TrustList, entry: LogEntry | null, policy: Policy,
+  imageBytes: Uint8Array, manifest: HybridManifest, trust: TrustList, log: LogInfo, policy: Policy,
 ): VerificationResult {
   const { checks, add, allPass } = checkList();
   const { claim, edits } = manifest;
@@ -146,7 +166,7 @@ function checkHybrid(
   });
 
   // 7. The manifest was recorded in the transparency log.
-  addLogCheck(add, entry, policy);
+  addLogCheck(add, log, policy);
 
   const ok = allPass();
   const deviceOk = dev.pass && sameDevice && sig.pass;
@@ -161,7 +181,7 @@ function checkHybrid(
 // ---------- legacy classical-only camera ----------
 
 async function checkLegacy(
-  imageBytes: Uint8Array, manifest: LegacyManifest, trust: TrustList, entry: LogEntry | null, policy: Policy,
+  imageBytes: Uint8Array, manifest: LegacyManifest, trust: TrustList, log: LogInfo, policy: Policy,
 ): Promise<VerificationResult> {
   const { checks, add, allPass } = checkList();
   const { claim } = manifest;
@@ -191,7 +211,7 @@ async function checkLegacy(
   add({ name: 'Camera signature', pass: valid && counts, reason, alg: 'rsa-pss-2048', brokenSinceQDay });
 
   // 4. Logged.
-  addLogCheck(add, entry, policy);
+  addLogCheck(add, log, policy);
 
   const ok = allPass();
   // A camera signature proves the device, never the person.

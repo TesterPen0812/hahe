@@ -1,7 +1,7 @@
 // Task 1 + 2 check (today's world): verifyItem gives the right colour, presence and label for each case.
 // Runs fully in memory (no server, no DB).
 import {
-  hashObject, sha256Hex, verifyItem, claimChallenge, toB64url, todayWorld,
+  verifyItem, claimChallenge, toB64url, todayWorld,
   type HybridManifest, type LegacyManifest, type LogEntry, type Manifest, type PresenceLevel,
   type Status, type TrustLabel, type TrustList,
 } from '../shared/src/index.js';
@@ -10,6 +10,7 @@ import {
   makePersonhood, makePhone, passkeyAssert, photoFrom,
 } from './lib/fake-phone.js';
 import { SCENES, brighten, crop, paintBox } from './lib/png.js';
+import { FakeLog } from './lib/fake-log.js';
 
 // --- authorities and trust list ---
 const manufacturer = makeAuthority('demo-manufacturer', 'Demo Phone Co.');
@@ -20,21 +21,13 @@ const rogueIssuer = makeAuthority('demo-issuer', 'Impostor ID Office'); // same 
 const legacyCam = await makeLegacyCamera('legacy-cam-1');
 const rogueCam = await makeLegacyCamera('rogue-cam');                  // not on the trust list
 const impostorCam = await makeLegacyCamera('legacy-cam-1');            // trusted id, wrong key
+const fakeLog = new FakeLog();
 const pub = (a: typeof manufacturer) => ({ id: a.id, name: a.name, publicKeys: a.publicKeys });
 const trust: TrustList = {
   manufacturers: [pub(manufacturer)], issuers: [pub(issuer)], editors: [pub(editor)],
-  legacyCameras: [legacyTrustEntry(legacyCam)],
+  legacyCameras: [legacyTrustEntry(legacyCam)], log: fakeLog.trusted,
 };
-
-// --- a tiny in-memory log ---
-let prev = '0'.repeat(64), seq = 0;
-function log(m: Manifest): LogEntry {
-  const manifestHash = hashObject(m), timestamp = new Date().toISOString();
-  const entryHash = sha256Hex(prev + manifestHash + timestamp);
-  const e = { seq: ++seq, manifestHash, prevHash: prev, timestamp, entryHash };
-  prev = entryHash;
-  return e;
-}
+const log = (m: Manifest): LogEntry => fakeLog.append(m);
 
 // ================= hybrid (ours) =================
 const phone = makePhone('mara-iphone', manufacturer);

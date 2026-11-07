@@ -5,6 +5,7 @@ export * from './certs.js';
 export * from './passkey.js';
 export * from './rsa.js';
 export * from './legacy.js';
+export * from './loghead.js';
 export * from './dhash.js';
 export * from './world.js';
 export * from './policy.js';

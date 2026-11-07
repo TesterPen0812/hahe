@@ -38,7 +38,7 @@ export function claimChallenge(claim: CaptureClaim): string {
 }
 
 /** What a signature is for. Part of the signed bytes, so signatures can't be reused across purposes. */
-export type SigContext = 'claim' | 'device-cert' | 'personhood' | 'edit' | 'legacy-claim';
+export type SigContext = 'claim' | 'device-cert' | 'personhood' | 'edit' | 'legacy-claim' | 'log-head';
 
 /** Signed bytes = "provenance-demo/<context>/v1" + 0x00 + message. */
 export function domainSeparated(context: SigContext, msg: Uint8Array): Uint8Array {
