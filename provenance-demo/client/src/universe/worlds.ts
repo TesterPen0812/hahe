@@ -15,8 +15,12 @@ export interface SceneUniforms {
   uSizeScale: { value: number }
   uTrail: { value: THREE.Vector4[] }
   uShock: { value: THREE.Vector4 }
-  /** Click pulse: x, z, start time, amplitude. */
+  /** Click: xyz ray direction, w start time (very negative: none). */
   uPulse: { value: THREE.Vector4 }
+  /** Live pointer: xyz ray direction, w presence 0..1; rays start at uPointerFrom (the camera). */
+  uPointer: { value: THREE.Vector4 }
+  uPointerFrom: { value: THREE.Vector3 }
+  uWakeN: { value: number }
   /** Lens: focal distance (m), aperture radius, largest bokeh disc (css px). */
   uFocus: { value: number }
   uAperture: { value: number }
@@ -28,9 +32,12 @@ export function sceneUniforms(): SceneUniforms {
     uTime: { value: 0 },
     uPixelRatio: { value: 1 },
     uSizeScale: { value: 900 },
-    uTrail: { value: Array.from({ length: TRAIL_LENGTH }, () => new THREE.Vector4(0, 0, 99, 0)) },
+    uTrail: { value: Array.from({ length: TRAIL_LENGTH }, () => new THREE.Vector4(0, 0, -1, 99)) },
     uShock: { value: new THREE.Vector4(0, 0, -99, 0) },
-    uPulse: { value: new THREE.Vector4(0, 0, -99, 0) },
+    uPulse: { value: new THREE.Vector4(0, 0, -1, -99) },
+    uPointer: { value: new THREE.Vector4(0, 0, -1, 0) },
+    uPointerFrom: { value: new THREE.Vector3() },
+    uWakeN: { value: 0 },
     uFocus: { value: 10 },
     uAperture: { value: 0.07 },
     uMaxBlur: { value: 44 },
@@ -265,7 +272,7 @@ export function glowingPath(
     vertexShader: pathVertex,
     fragmentShader: pathFragment,
     uniforms: {
-      uTime: u.uTime, uPixelRatio: u.uPixelRatio, uSizeScale: u.uSizeScale, uShock: u.uShock, uPulse: u.uPulse,
+      uTime: u.uTime, uPixelRatio: u.uPixelRatio, uSizeScale: u.uSizeScale, uShock: u.uShock, uPulse: u.uPulse, uPointerFrom: u.uPointerFrom,
       uFocus: u.uFocus, uAperture: u.uAperture, uMaxBlur: u.uMaxBlur,
       uTintA: { value: new THREE.Color(...tints[0]) },
       uTintB: { value: new THREE.Color(...tints[1]) },

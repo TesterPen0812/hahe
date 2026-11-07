@@ -1,6 +1,8 @@
 // GLSL for the branching-universes scene. Original shaders written for this app.
 
-export const TRAIL_LENGTH = 12
+export const TRAIL_LENGTH = 16
+/** Seconds a pointer wake stamp lingers. */
+export const WAKE_LIFE = 1.6
 /** Pointer stamps the finishing pass uses for its lingering screen-space ripple. */
 export const WAKE_STAMPS = 10
 
@@ -56,9 +58,12 @@ export const fieldVertex = /* glsl */ `
   uniform float uMode;
   // 0 meadow · 1 RSA collapse · 2 hybrid lattice · 3 unsigned fog · 4 fireflies · 5 aurora
   // 6 orbiting sphere · 7 Q-Day ring · 8 rising motes · 9 flowers · 10 light pillars
-  uniform vec4 uTrail[${TRAIL_LENGTH}]; // x, z, age (s), strength
+  uniform vec4 uTrail[${TRAIL_LENGTH}]; // pointer wake: xyz ray direction, w age (s)
   uniform vec4 uShock;            // x, z, start time, amplitude
-  uniform vec4 uPulse;            // click pulse: x, z, start time, amplitude
+  uniform vec4 uPointer;          // live pointer: xyz ray direction, w presence 0..1
+  uniform float uWakeN;           // how many wake stamps are still alive (newest first)
+  uniform vec3 uPointerFrom;      // where the pointer's rays start (the camera)
+  uniform vec4 uPulse;            // click: xyz ray direction, w start time
   uniform vec3 uCenter;           // pivot for ring / sphere modes
   uniform float uOpacity;
   uniform vec3 uAxis;
@@ -72,6 +77,25 @@ export const fieldVertex = /* glsl */ `
   ${lens}
 
   float hash(float n) { return fract(sin(n) * 43758.5453); }
+
+  // A slowly turning, divergence-free flow: the curl of two sine vector potentials, so grains
+  // swirl around the pointer without bunching up or leaving holes.
+  vec3 stir(vec3 q, float t) {
+    vec3 a = q * 0.9 + vec3(t * 0.31, t * 0.23, t * 0.37);
+    vec3 b = q * 1.7 + vec3(1.3 - t * 0.19, 4.1 + t * 0.29, 2.7 - t * 0.21);
+    vec3 f1 = -vec3(cos(a.z), cos(a.x), cos(a.y));
+    vec3 f2 = vec3(cos(b.y), cos(b.z), cos(b.x)) * 0.6;
+    return (f1 + f2) * 0.62;
+  }
+
+  // How close a grain sits to a ray from the camera, as an angle, and its distance along it.
+  // Measuring by angle keeps the pointer's reach the same size on screen, near or far.
+  vec2 nearRay(vec3 q, vec3 dir) {
+    vec3 v = q - uPointerFrom;
+    float along = dot(v, dir);
+    float ang = length(v - dir * along) / max(along, 0.001);
+    return vec2(ang, along);
+  }
 
   void main() {
     vec3 p = position;
@@ -191,27 +215,50 @@ export const fieldVertex = /* glsl */ `
       vTwinkle = (0.75 + 0.35 * sin(t * 1.1 + p.y * 0.6 + strand * 20.0)) * mix(1.0, 0.6, settle);
     }
 
-    // Pointer wake: particles part around the cursor and settle back.
-    for (int i = 0; i < ${TRAIL_LENGTH}; i++) {
-      vec4 tr = uTrail[i];
-      if (tr.w > 0.0) {
-        vec2 d = p.xz - tr.xy;
-        float r2 = dot(d, d);
-        float fall = exp(-r2 / 4.0) * exp(-tr.z * 2.2) * tr.w;
-        vec2 dir = d * inversesqrt(max(r2, 1e-4));
-        p.xz += dir * fall * 1.3;
-        p.y += fall * 0.9 * step(uMode, 0.5);
-        vTwinkle += fall * 0.6;
+    // The pointer: grains around its ray swirl on a slow curl flow and light up. Where it has
+    // been, they keep turning for a moment and then settle back where they belong.
+    float lit = 0.0;
+    {
+      vec3 flow = stir(p, t);
+      float near = 0.0, wake = 0.0;
+      if (uPointer.w > 0.0) {
+        vec2 r = nearRay(p, uPointer.xyz);
+        if (r.y > 0.9) {
+          float f = exp(-r.x * r.x / 0.0064) * uPointer.w;            // ~4.5 degrees
+          vec3 out_ = normalize(p - uPointerFrom - uPointer.xyz * r.y + 1e-4);
+          p += (flow * 0.07 + out_ * 0.03) * f * r.y;
+          near = f;
+        }
       }
+      for (int i = 0; i < ${TRAIL_LENGTH}; i++) {
+        if (float(i) >= uWakeN) break;
+        vec4 tr = uTrail[i];
+        {
+          vec2 r = nearRay(p, tr.xyz);
+          if (r.y > 0.9) {
+            float life = 1.0 - tr.w / ${WAKE_LIFE.toFixed(2)};
+            float f = exp(-r.x * r.x / 0.0081) * life * life;
+            // rises as the stamp is made, then lets go: a spring that overshoots once
+            float swing = sin(min(tr.w * 3.2, 3.14159)) * 0.8 + 0.2;
+            p += flow * f * swing * r.y * 0.045;
+            wake += f;
+          }
+        }
+      }
+      lit = near * 1.8 + min(wake, 1.5) * 0.9;
     }
 
-    // Click pulse: a ring of light runs out across the ground.
-    if (uPulse.w > 0.0) {
-      float age = t - uPulse.z;
-      float front = (length(p.xz - uPulse.xy) - age * 11.0) / 1.4;
-      float ring = exp(-front * front) * exp(-age * 0.9) * uPulse.w;
-      p.y += ring * 0.5;
-      vTwinkle += ring * 2.5;
+    // Click: a ring of light runs out from the pointer, flashing the grains it passes.
+    if (uPulse.w > -50.0) {
+      float age = t - uPulse.w;
+      vec2 r = nearRay(p, uPulse.xyz);
+      if (r.y > 0.9 && age < 3.0) {
+        float front = (r.x - age * 0.32) / 0.025;
+        float ring = exp(-front * front) * exp(-age * 1.1);
+        vec3 out_ = normalize(p - uPointerFrom - uPulse.xyz * r.y + 1e-4);
+        p += out_ * ring * r.y * 0.012;
+        lit += ring * 2.2;
+      }
     }
 
     // Q-Day shock ring.
@@ -228,7 +275,8 @@ export const fieldVertex = /* glsl */ `
     gl_Position = projectionMatrix * mv;
     vDist = -mv.z;
     gl_PointSize = lensSize(aSize, vDist);
-    vColor = aColor;
+    // grains the pointer touches catch its light: brighter, and washed toward white
+    vColor = aColor * (1.0 + lit) + lit * 0.3 * vec3(0.8, 0.88, 1.0);
   }
 `
 
@@ -284,6 +332,7 @@ export const pathVertex = /* glsl */ `
   uniform vec3 uBranchGain;
   uniform vec4 uShock;
   uniform vec4 uPulse;
+  uniform vec3 uPointerFrom;
   attribute float aT;
   attribute float aBranch;
   attribute float aSeed;
@@ -329,10 +378,13 @@ export const pathVertex = /* glsl */ `
       float front = (length(p.xz - uShock.xy) - age * 24.0) / 2.0;
       vColor += exp(-front * front) * exp(-age * 0.6) * uShock.w * 1.5;
     }
-    if (uPulse.w > 0.0) {
-      float age = t - uPulse.z;
-      float front = (length(p.xz - uPulse.xy) - age * 11.0) / 1.2;
-      vColor += exp(-front * front) * exp(-age * 0.9) * uPulse.w * vec3(0.8, 0.9, 1.0);
+    if (uPulse.w > -50.0) {
+      float age = t - uPulse.w;
+      vec3 v = p - uPointerFrom;
+      float along = dot(v, uPulse.xyz);
+      float ang = length(v - uPulse.xyz * along) / max(along, 0.001);
+      float front = (ang - age * 0.32) / 0.025;
+      vColor += exp(-front * front) * exp(-age * 1.1) * step(0.9, along) * vec3(0.8, 0.9, 1.0);
     }
 
     vec4 mv = modelViewMatrix * vec4(p, 1.0);

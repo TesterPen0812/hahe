@@ -4,7 +4,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
-import { TRAIL_LENGTH, WAKE_STAMPS, finishShader } from './shaders'
+import { TRAIL_LENGTH, WAKE_LIFE, WAKE_STAMPS, finishShader } from './shaders'
 import {
   DOOR, UNIVERSES, type RGB, cloud, gateWall, glowingPath, homeHeight, portal, sceneUniforms,
   universeScene, type SceneUniforms, type UniverseDef,
@@ -30,7 +30,8 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2'
 export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
 
 const EYE = 1.7
-const TRAIL_MS = 16
+// a wake stamp every this many ms, so TRAIL_LENGTH stamps span WAKE_LIFE seconds
+const TRAIL_MS = (WAKE_LIFE * 1000) / TRAIL_LENGTH
 
 interface Universe {
   def: UniverseDef
@@ -90,7 +91,10 @@ export class UniverseEngine {
   // pointer
   private ndc = new THREE.Vector2(0, 0)
   private look = new THREE.Vector2(0, 0)
-  private trail: { x: number; z: number; t: number }[] = []
+  private trail: { dir: THREE.Vector3; t: number }[] = []
+  private pointerSpeed = 0
+  private lastNdc = new THREE.Vector2()
+  private pointerIn = false
   private lastTrail = 0
   private down: { x: number; y: number } | null = null
   private touchY: number | null = null
@@ -307,18 +311,18 @@ export class UniverseEngine {
   }
   private onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()) }
   private onPointerMove = (e: PointerEvent) => {
+    this.pointerIn = true
     const rect = this.canvas.getBoundingClientRect()
     this.ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
     const now = performance.now()
     if (now - this.lastTrail > TRAIL_MS) {
       this.lastTrail = now
-      const hit = this.groundHit()
-      if (hit) {
-        this.trail.unshift({ x: hit.x, z: hit.z, t: now })
-        if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH
-      }
+      this.trail.unshift({ dir: this.pointerRay(), t: now })
+      if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH
     }
   }
+  private onPointerEnter = () => { this.pointerIn = true }
+  private onPointerLeave = () => { this.pointerIn = false }
   private onPointerDown = (e: PointerEvent) => { this.down = { x: e.clientX, y: e.clientY } }
   private onPointerUp = (e: PointerEvent) => {
     if (!this.down) return
@@ -340,6 +344,8 @@ export class UniverseEngine {
   private bind() {
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
     this.canvas.addEventListener('pointermove', this.onPointerMove)
+    this.canvas.addEventListener('pointerenter', this.onPointerEnter)
+    this.canvas.addEventListener('pointerleave', this.onPointerLeave)
     this.canvas.addEventListener('pointerdown', this.onPointerDown)
     this.canvas.addEventListener('pointerup', this.onPointerUp)
     this.canvas.addEventListener('touchstart', this.onTouchStart, { passive: true })
@@ -351,6 +357,8 @@ export class UniverseEngine {
   private unbind() {
     this.canvas.removeEventListener('wheel', this.onWheel)
     this.canvas.removeEventListener('pointermove', this.onPointerMove)
+    this.canvas.removeEventListener('pointerenter', this.onPointerEnter)
+    this.canvas.removeEventListener('pointerleave', this.onPointerLeave)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointerup', this.onPointerUp)
     this.canvas.removeEventListener('touchstart', this.onTouchStart)
@@ -584,25 +592,37 @@ export class UniverseEngine {
     this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * u.rtScale })
     this.updateLens(inside)
 
-    // Pointer trail goes to whichever world the camera is in.
+    // The pointer stirs whichever world the camera is in: its live ray, its wake and clicks.
     const now = performance.now()
     const active = inside >= 0 ? this.universes[inside].u : this.homeU
+    const cam = inside >= 0 ? this.universes[inside].cam : this.camera
+    const moved = this.ndc.distanceTo(this.lastNdc) / Math.max(dt, 1e-3)
+    this.lastNdc.copy(this.ndc)
+    this.pointerSpeed += (Math.min(1, moved / 1.5) - this.pointerSpeed) * Math.min(1, dt * (moved > this.pointerSpeed ? 10 : 2.5))
+    const presence = this.pointerIn && !this.reducedMotion ? 0.3 + 0.7 * this.pointerSpeed : 0
     for (const u of all) {
       const arr = u.uTrail.value
+      const on = u === active
+      let alive = 0
       for (let i = 0; i < TRAIL_LENGTH; i++) {
-        const e = u === active ? this.trail[i] : undefined
-        if (e) arr[i].set(e.x, e.z, (now - e.t) / 1000, 1)
-        else arr[i].set(0, 0, 99, 0)
+        const e = on ? this.trail[i] : undefined
+        const age = e ? (now - e.t) / 1000 : 99
+        if (e && age < WAKE_LIFE) { arr[i].set(e.dir.x, e.dir.y, e.dir.z, age); alive = i + 1 }
+        else arr[i].set(0, 0, -1, 99)
       }
+      u.uWakeN.value = alive
+      u.uPointerFrom.value.copy(cam.position)
+      if (on) { const d = this.pointerRay(); u.uPointer.value.set(d.x, d.y, d.z, presence) }
+      else u.uPointer.value.w = 0
     }
-    // A click (press without drag) sends a ring of light across the ground.
+    // A click (press without drag) sends a ring of light out from the pointer.
     const pressed = this.down !== null
     if (pressed && !this.wasDown) {
-      const hit = this.groundHit()
-      if (hit) active.uPulse.value.set(hit.x, hit.z, t, this.reducedMotion ? 0.4 : 1)
+      const d = this.pointerRay()
+      active.uPulse.value.set(d.x, d.y, d.z, t)
     }
     this.wasDown = pressed
-    this.updateWake(now, inside)
+    this.updateWake()
 
     // Q-Day lands with a cold violet flash and a jolt of zoom.
     if (this.qdayAt >= 0 && this.flashedQday !== this.qdayAt) {
@@ -663,37 +683,17 @@ export class UniverseEngine {
     })
   }
 
-  /** Project recent pointer stamps to the screen for the finishing pass's lingering ripple. */
-  private updateWake(now: number, inside: number) {
-    const cam = inside >= 0 ? this.universes[inside].cam : this.camera
-    const strength = 0 // screen ripple retired: it smeared the image; the particle wake carries the effect
-    let prev: THREE.Vector3 | null = null, prevT = 0
-    for (let i = WAKE_STAMPS - 1; i >= 0; i--) {
-      const e = this.trail[i]
-      const w = this.wake[i]
-      if (!e) { w.set(-9, -9, 0, 0); prev = null; continue }
-      const y = inside >= 0 ? 0 : homeHeight(e.x, e.z)
-      const sp = new THREE.Vector3(e.x, y, e.z).project(cam)
-      const uv = new THREE.Vector3((sp.x + 1) / 2, (sp.y + 1) / 2, 0)
-      const age = (now - e.t) / 1000
-      if (prev && sp.z < 1) {
-        const dtS = Math.max((e.t - prevT) / 1000, 0.016)
-        const k = Math.exp(-age * 1.6) * strength
-        const vx = THREE.MathUtils.clamp((uv.x - prev.x) / dtS, -3, 3) * k
-        const vy = THREE.MathUtils.clamp((uv.y - prev.y) / dtS, -3, 3) * k
-        w.set(uv.x, uv.y, vx, vy)
-      } else w.set(uv.x, uv.y, 0, 0)
-      prev = uv; prevT = e.t
-    }
+  /** The screen-space ripple is retired (it smeared the image); keep its stamps empty. */
+  private updateWake() {
+    for (const w of this.wake) w.set(-9, -9, 0, 0)
   }
 
-  private groundHit() {
+  /** Direction of the ray from the active camera through the pointer, in that world's space. */
+  private pointerRay() {
     const inside = this.insideIndex()
     const cam = inside >= 0 ? this.universes[inside].cam : this.camera
-    const floorY = inside >= 0 ? 0 : this.camera.position.y - EYE
     this.raycaster.setFromCamera(this.ndc, cam)
-    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -floorY)
-    return this.raycaster.ray.intersectPlane(plane, new THREE.Vector3())
+    return this.raycaster.ray.direction.clone()
   }
 
   private updateLabels() {
