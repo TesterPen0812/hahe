@@ -118,3 +118,4 @@ button.danger { background: var(--red); border-color: var(--red); color: white; 
 .harness { max-width: 640px; margin: auto; padding: 24px 18px; }
 .harness .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0; }
 .harness pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); border: 1px solid var(--line); padding: 14px; border-radius: 8px; font: 14px/1.6 var(--mono); }
+.uv-loading { position: fixed; inset: 0; background: #020308; }

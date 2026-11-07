@@ -1,0 +1,685 @@
+import * as THREE from 'three'
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js'
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
+import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
+import { TRAIL_LENGTH, finishShader } from './shaders'
+import {
+  DOOR, UNIVERSES, glowingPath, homeHeight, looseParticles, particleField, portal, sceneUniforms,
+  sky, stars, universeScene, type SceneUniforms, type UniverseDef,
+} from './worlds'
+import { rng } from './noise'
+
+export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
+export interface EngineState {
+  phase: Phase
+  branch: number | null     // branch being walked or entered
+  hovered: number | null    // portal under the pointer / keyboard focus at the fork
+  qday: boolean             // camera is past the Q-Day gate
+  started: boolean          // the visitor has moved off the start
+}
+export interface EngineCallbacks {
+  onState: (s: EngineState) => void
+  onQDay: (crossed: boolean) => void
+}
+export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2'
+
+const EYE = 1.7
+const TRAIL_MS = 35
+
+interface Universe {
+  def: UniverseDef
+  scene: THREE.Scene
+  u: SceneUniforms
+  rt: THREE.WebGLRenderTarget
+  door: ReturnType<typeof portal>
+  cam: THREE.PerspectiveCamera
+  curve: THREE.CatmullRomCurve3
+  len: number
+  base: number
+  open: number
+  hover: number
+}
+
+const v2 = (x: number, z: number) => new THREE.Vector3(x, 0, z)
+
+export class UniverseEngine {
+  private canvas = document.createElement('canvas')
+  private renderer: THREE.WebGLRenderer
+  private composer: EffectComposer
+  private renderPass: RenderPass
+  private bloom: UnrealBloomPass
+  private finish: ShaderPass
+  private camera = new THREE.PerspectiveCamera(55, 1, 0.05, 900)
+  private home = new THREE.Scene()
+  private homeU = sceneUniforms()
+  private universes: Universe[] = []
+  private trunk = new THREE.CatmullRomCurve3([v2(0, 8), v2(1.4, -6), v2(-1.6, -20), v2(1.2, -34), v2(-0.6, -46), v2(0, -58)], false, 'centripetal')
+  private L0: number
+  private gateD: number
+  private gateCurtain: THREE.Points
+  private homePath: THREE.Points
+
+  // travel state
+  private seg = -1
+  private d = 0
+  private v = 0
+  private keys = new Set<string>()
+  private target: { seg: number; d: number } | null = { seg: -1, d: 6 }
+  private selected: number | null = null
+  private hovered: number | null = null
+  private qdayAt = -1
+  private flash = 0
+  private flashColor = new THREE.Color(1, 1, 1)
+  private wasInside = -1
+
+  // pointer
+  private ndc = new THREE.Vector2(0, 0)
+  private look = new THREE.Vector2(0, 0)
+  private trail: { x: number; z: number; t: number }[] = []
+  private lastTrail = 0
+  private down: { x: number; y: number } | null = null
+  private touchY: number | null = null
+
+  private startedAt = performance.now()
+  private lastFrame = performance.now()
+  private raf = 0
+  private disposed = false
+  private labels = new Map<LabelId, HTMLElement>()
+  private lastState = ''
+  private lowPower: boolean
+  private reducedMotion: boolean
+  private raycaster = new THREE.Raycaster()
+  private frustum = new THREE.Frustum()
+  private projScreen = new THREE.Matrix4()
+  private host: HTMLElement
+  private cb: EngineCallbacks
+  private resizeObserver: ResizeObserver
+
+  constructor(host: HTMLElement, cb: EngineCallbacks) {
+    this.host = host
+    this.cb = cb
+    this.lowPower = Math.min(window.innerWidth, window.innerHeight) < 700 || (navigator.hardwareConcurrency ?? 8) <= 4
+    this.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
+    this.canvas.className = 'uv-canvas'
+    host.appendChild(this.canvas)
+
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' })
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping
+    this.renderer.toneMappingExposure = 0.95
+    this.renderer.setClearColor(0x020308, 1)
+
+    this.L0 = this.trunk.getLength()
+    this.gateD = this.L0 - 9
+
+    this.buildHome()
+    this.buildUniverses()
+    this.gateCurtain = this.buildGate()
+    this.homePath = this.buildPaths()
+
+    this.renderPass = new RenderPass(this.home, this.camera)
+    this.composer = new EffectComposer(this.renderer)
+    this.composer.addPass(this.renderPass)
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.lowPower ? 0.45 : 0.55, 0.45, 0.42)
+    this.composer.addPass(this.bloom)
+    this.finish = new ShaderPass(finishShader)
+    this.finish.uniforms.uFlashColor.value = this.flashColor
+    this.composer.addPass(this.finish)
+    this.composer.addPass(new OutputPass())
+
+    this.resizeObserver = new ResizeObserver(() => this.resize())
+    this.resizeObserver.observe(host)
+    this.resize()
+    this.bind()
+    this.placeCamera(1)
+    this.raf = requestAnimationFrame(this.frame)
+  }
+
+  // ── public API ────────────────────────────────────────────────────────────
+
+  setLabel(id: LabelId, el: HTMLElement | null) {
+    if (el) this.labels.set(id, el)
+    else this.labels.delete(id)
+  }
+
+  /** Walk into a universe. */
+  choose(branch: number) {
+    if (!this.pastGate()) {
+      this.target = { seg: -1, d: this.L0 }
+      this.selected = branch
+      return
+    }
+    this.selected = branch
+    this.target = { seg: branch, d: this.universes[branch].len + 14 }
+  }
+
+  /** Walk back to the fork. */
+  back() { this.target = { seg: -1, d: this.L0 } }
+
+  /** Walk back to today, before Q-Day. */
+  rewind() { this.selected = null; this.target = { seg: -1, d: 5 } }
+
+  dispose() {
+    this.disposed = true
+    cancelAnimationFrame(this.raf)
+    this.resizeObserver.disconnect()
+    this.unbind()
+    const scenes = [this.home, ...this.universes.map(u => u.scene)]
+    for (const s of scenes) {
+      s.traverse(o => {
+        const m = o as THREE.Mesh
+        m.geometry?.dispose()
+        const mat = m.material as THREE.Material | THREE.Material[] | undefined
+        if (Array.isArray(mat)) mat.forEach(x => x.dispose())
+        else mat?.dispose()
+      })
+    }
+    this.universes.forEach(u => u.rt.dispose())
+    this.composer.dispose()
+    this.renderer.dispose()
+    this.canvas.remove()
+  }
+
+  // ── scene construction ───────────────────────────────────────────────────
+
+  private buildHome() {
+    const k = this.lowPower ? 0.45 : 1
+    this.home.add(sky([0.003, 0.006, 0.022], [0.04, 0.06, 0.15], [0.006, 0.008, 0.02], new THREE.Vector3(-0.42, 0.3, -1), [0.42, 0.46, 0.56], 0.0016))
+    this.home.add(stars(this.lowPower ? 900 : 2200, 3, [0.85, 0.9, 1.0]))
+    this.home.add(particleField(this.homeU, {
+      count: Math.floor(160000 * k), x: [-75, 75], z: [-150, 14], height: homeHeight, mode: 0, seed: 1, fog: [18, 120],
+      color: (r) => {
+        const f = r()
+        if (f < 0.035) return [1.0, 0.72, 0.45]
+        if (f < 0.06) return [0.95, 0.5, 0.62]
+        if (f < 0.08) return [0.72, 0.86, 1.0]
+        const b = 0.35 + r() * 0.65
+        return [(0.07 + r() * 0.08) * b, (0.12 + r() * 0.1) * b, (0.3 + r() * 0.32) * b]
+      },
+      size: (r) => (r() < 0.08 ? 0.09 + r() * 0.06 : 0.035 + r() * 0.045),
+      yJitter: (r) => r() * r() * 0.35,
+    }))
+    // Dust hanging in the air.
+    this.home.add(particleField(this.homeU, {
+      count: Math.floor(6000 * k), x: [-40, 40], z: [-110, 12], height: (x, z) => homeHeight(x, z) + 0.3, mode: 0, seed: 2,
+      fog: [10, 70], opacity: 0.4,
+      color: (r) => { const b = 0.4 + r() * 0.6; return [0.6 * b, 0.7 * b, 1.0 * b] },
+      size: (r) => 0.05 + r() * 0.12,
+      yJitter: (r) => r() * 8,
+    }))
+  }
+
+  private buildUniverses() {
+    // Branches fan out from the end of the trunk (the fork) to three doors.
+    const fork = this.trunk.getPointAt(1)
+    const ends = [
+      [v2(fork.x, fork.z), v2(-3.2, -64), v2(-9, -72), v2(-13, -82)],
+      [v2(fork.x, fork.z), v2(0, -66), v2(0, -76), v2(0, -88)],
+      [v2(fork.x, fork.z), v2(3.2, -64), v2(9, -72), v2(13, -82)],
+    ]
+    UNIVERSES.forEach((def, i) => {
+      const curve = new THREE.CatmullRomCurve3(ends[i], false, 'centripetal')
+      const end = curve.getPointAt(1)
+      const tan = curve.getTangentAt(1).setY(0).normalize()
+      const base = homeHeight(end.x, end.z)
+      const rt = new THREE.WebGLRenderTarget(16, 16, { type: THREE.HalfFloatType })
+      const door = portal(def.tint, rt)
+      door.group.position.set(end.x, base, end.z)
+      door.group.lookAt(end.x - tan.x, base, end.z - tan.z) // +z faces the visitor; -z leads into the universe
+      door.group.updateMatrixWorld(true)
+      this.home.add(door.group)
+      const u = sceneUniforms()
+      this.universes.push({
+        def, u, rt, door, curve, base, open: 0, hover: 0,
+        len: curve.getLength(),
+        scene: universeScene(def, u, this.lowPower),
+        cam: new THREE.PerspectiveCamera(55, 1, 0.05, 900),
+      })
+    })
+  }
+
+  private buildGate() {
+    // A thin shimmering curtain across the path: the moment Q-Day arrives.
+    const p = this.trunk.getPointAt(this.gateD / this.L0)
+    const tan = this.trunk.getTangentAt(this.gateD / this.L0)
+    const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize()
+    const n = this.lowPower ? 5000 : 12000, r = rng(77)
+    const pos = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      const s = (r() - 0.5) * 30, y = Math.pow(r(), 1.6) * 11
+      const x = p.x + side.x * s, z = p.z + side.z * s + (r() - 0.5) * 0.3
+      pos.set([x, homeHeight(x, z) + y, z], i * 3)
+    }
+    const curtain = looseParticles(this.homeU, pos, [0.7, 0.66, 1.0], 0.06, 0, 78, [12, 90], 0.55)
+    this.home.add(curtain)
+    return curtain
+  }
+
+  private buildPaths() {
+    const fork = this.trunk.getPointAt(1)
+    const gate = this.trunk.getPointAt(this.gateD / this.L0)
+    const tan = this.trunk.getTangentAt(this.gateD / this.L0)
+    const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize()
+    const dens = this.lowPower ? 50 : 95
+    const path = glowingPath(this.homeU, [
+      { curve: this.trunk, branch: 0, density: dens },
+      ...this.universes.map((u, i) => ({ curve: u.curve, branch: i + 1, density: dens })),
+      // the Q-Day threshold line across the path
+      { curve: new THREE.LineCurve3(gate.clone().addScaledVector(side, -6), gate.clone().addScaledVector(side, 6)), branch: 0, density: 30 },
+    ], [UNIVERSES[0].tint, UNIVERSES[1].tint, UNIVERSES[2].tint], 9, 130, homeHeight)
+    void fork
+    this.home.add(path)
+    return path
+  }
+
+  // ── input ────────────────────────────────────────────────────────────────
+
+  private onWheel = (e: WheelEvent) => {
+    e.preventDefault()
+    this.target = null
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
+    this.v = THREE.MathUtils.clamp(this.v + dy * 0.011, -14, 14)
+  }
+  private onKeyDown = (e: KeyboardEvent) => {
+    if ((e.target as HTMLElement | null)?.closest?.('input, textarea')) return
+    const k = e.key.toLowerCase()
+    if (['w', 's', 'arrowup', 'arrowdown'].includes(k)) { this.keys.add(k); this.target = null; e.preventDefault() }
+    if (this.atFork() || this.seg >= 0) {
+      if (k === '1' || k === '2' || k === '3') this.choose(Number(k) - 1)
+      if (k === 'arrowleft') this.hovered = Math.max(0, (this.hovered ?? 1) - 1)
+      if (k === 'arrowright') this.hovered = Math.min(2, (this.hovered ?? 1) + 1)
+      if (k === 'enter' && this.hovered !== null) this.choose(this.hovered)
+    }
+    if (k === 'escape' && this.seg >= 0) this.back()
+  }
+  private onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()) }
+  private onPointerMove = (e: PointerEvent) => {
+    const rect = this.canvas.getBoundingClientRect()
+    this.ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
+    const now = performance.now()
+    if (now - this.lastTrail > TRAIL_MS) {
+      this.lastTrail = now
+      const hit = this.groundHit()
+      if (hit) {
+        this.trail.unshift({ x: hit.x, z: hit.z, t: now })
+        if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH
+      }
+    }
+  }
+  private onPointerDown = (e: PointerEvent) => { this.down = { x: e.clientX, y: e.clientY } }
+  private onPointerUp = (e: PointerEvent) => {
+    if (!this.down) return
+    const moved = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y)
+    this.down = null
+    if (moved < 8 && this.hovered !== null && this.pastGate() && this.seg < 0) this.choose(this.hovered)
+  }
+  private onTouchStart = (e: TouchEvent) => { this.touchY = e.touches[0]?.clientY ?? null }
+  private onTouchMove = (e: TouchEvent) => {
+    const y = e.touches[0]?.clientY
+    if (y === undefined || this.touchY === null) return
+    e.preventDefault()
+    this.target = null
+    this.v = THREE.MathUtils.clamp(this.v + (this.touchY - y) * 0.05, -14, 14)
+    this.touchY = y
+  }
+  private onBlur = () => this.keys.clear()
+
+  private bind() {
+    this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
+    this.canvas.addEventListener('pointermove', this.onPointerMove)
+    this.canvas.addEventListener('pointerdown', this.onPointerDown)
+    this.canvas.addEventListener('pointerup', this.onPointerUp)
+    this.canvas.addEventListener('touchstart', this.onTouchStart, { passive: true })
+    this.canvas.addEventListener('touchmove', this.onTouchMove, { passive: false })
+    window.addEventListener('keydown', this.onKeyDown)
+    window.addEventListener('keyup', this.onKeyUp)
+    window.addEventListener('blur', this.onBlur)
+  }
+  private unbind() {
+    this.canvas.removeEventListener('wheel', this.onWheel)
+    this.canvas.removeEventListener('pointermove', this.onPointerMove)
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown)
+    this.canvas.removeEventListener('pointerup', this.onPointerUp)
+    this.canvas.removeEventListener('touchstart', this.onTouchStart)
+    this.canvas.removeEventListener('touchmove', this.onTouchMove)
+    window.removeEventListener('keydown', this.onKeyDown)
+    window.removeEventListener('keyup', this.onKeyUp)
+    window.removeEventListener('blur', this.onBlur)
+  }
+
+  // ── travel ───────────────────────────────────────────────────────────────
+
+  private route() { return this.seg < 0 ? this.d : this.L0 + this.d }
+  private pastGate() { return this.route() >= this.gateD }
+  private atFork() { return this.seg < 0 && this.d >= this.L0 - 0.6 }
+  private insideIndex() { return this.seg >= 0 && this.d > this.universes[this.seg].len ? this.seg : -1 }
+
+  private travel(dt: number, t: number) {
+    const before = this.route()
+    const fwd = this.keys.has('w') || this.keys.has('arrowup')
+    const bwd = this.keys.has('s') || this.keys.has('arrowdown')
+
+    if (this.target) {
+      const tg = this.target
+      if (this.seg < 0 && tg.seg >= 0) this.selected = tg.seg
+      const goal = this.seg >= 0 && tg.seg !== this.seg ? this.L0 : (tg.seg < 0 ? tg.d : this.L0 + tg.d)
+      const err = goal - before
+      const want = THREE.MathUtils.clamp(err * 1.3, -15, 15)
+      this.v += (want - this.v) * Math.min(1, dt * 3)
+      if (Math.abs(err) < 0.04 && (tg.seg === this.seg || (tg.seg < 0 && this.seg < 0))) { this.target = null; this.v = 0 }
+    } else if (fwd || bwd) {
+      this.v = THREE.MathUtils.clamp(this.v + (fwd ? 16 : -16) * dt, -9, 9)
+    } else {
+      this.v *= Math.exp(-dt * 2.4)
+    }
+
+    let r = before + this.v * dt
+    if (this.seg < 0) {
+      if (r < 0) { r = 0; this.v = Math.max(0, this.v) }
+      if (r >= this.L0) {
+        const b = this.selected
+        if (b !== null && this.universes[b].open > 0.6) { this.seg = b; this.d = r - this.L0 }
+        else { this.d = this.L0; this.v = Math.min(0, this.v) }
+      } else this.d = r
+    }
+    if (this.seg >= 0) {
+      let d = this.seg >= 0 && r >= this.L0 ? r - this.L0 : -1
+      if (d < 0) {
+        // walked back past the fork
+        this.seg = -1
+        this.selected = null
+        this.d = Math.max(0, r)
+      } else {
+        const u = this.universes[this.seg]
+        // a door that hasn't opened can't be walked through
+        if (u.open < 0.95 && d > u.len - 1.2) { d = u.len - 1.2; this.v = Math.min(0, this.v) }
+        if (d > u.len + 22) { d = u.len + 22; this.v = Math.min(0, this.v) }
+        this.d = d
+      }
+    }
+
+    // Q-Day gate crossings
+    const after = this.route()
+    if (before < this.gateD && after >= this.gateD) {
+      this.qdayAt = t
+      const g = this.trunk.getPointAt(this.gateD / this.L0)
+      this.homeU.uShock.value.set(g.x, g.z, t, this.reducedMotion ? 0.35 : 1)
+      this.cb.onQDay(true)
+    } else if (before >= this.gateD && after < this.gateD) {
+      this.qdayAt = -1
+      this.cb.onQDay(false)
+    }
+  }
+
+  /** Point on the walk for (segment, distance); extends straight through a door into its universe. */
+  private pointAt(seg: number, d: number, out = new THREE.Vector3()) {
+    if (seg < 0) return this.trunk.getPointAt(THREE.MathUtils.clamp(d / this.L0, 0, 1), out)
+    const u = this.universes[seg]
+    if (d <= u.len) return u.curve.getPointAt(Math.max(0, d / u.len), out)
+    const end = u.curve.getPointAt(1, out)
+    const tan = u.curve.getTangentAt(1).setY(0).normalize()
+    return end.addScaledVector(tan, d - u.len)
+  }
+
+  private groundAt(seg: number, d: number) {
+    const p = this.pointAt(seg, d)
+    if (seg >= 0) {
+      const u = this.universes[seg]
+      if (d >= u.len) return u.base
+      // ease into the doorway's floor height so there's no step at the threshold
+      const k = THREE.MathUtils.smoothstep(d, u.len - 6, u.len)
+      return THREE.MathUtils.lerp(this.smoothHeight(seg, d, p), u.base, k)
+    }
+    return this.smoothHeight(seg, d, p)
+  }
+
+  private smoothHeight(seg: number, d: number, p: THREE.Vector3) {
+    const a = this.pointAt(seg, d - 2), b = this.pointAt(seg, d + 2)
+    return (homeHeight(a.x, a.z) + homeHeight(p.x, p.z) * 2 + homeHeight(b.x, b.z)) / 4
+  }
+
+  private tmpM = new THREE.Matrix4()
+  private tmpQ = new THREE.Quaternion()
+  private tmpE = new THREE.Euler(0, 0, 0, 'YXZ')
+
+  private placeCamera(blend: number) {
+    const seg = this.seg, d = this.d
+    // On a portrait screen the camera stands back from the fork so all three doors fit.
+    const pull = seg < 0 && this.camera.aspect < 0.8 ? THREE.MathUtils.smoothstep(d, this.L0 - 20, this.L0) * 15 : 0
+    const pos = this.pointAt(seg, d - pull)
+    pos.y = this.groundAt(seg, d - pull) + EYE + Math.sin(this.d * 1.6) * 0.025 * Math.min(1, Math.abs(this.v) / 4)
+
+    let target: THREE.Vector3
+    if (seg < 0) {
+      const ahead = this.pointAt(-1, d + 7)
+      ahead.y = this.groundAt(-1, Math.min(d + 7, this.L0)) + EYE - 0.55
+      // Near the fork, turn to take in all three doors.
+      const k = THREE.MathUtils.smoothstep(d, this.L0 - 14, this.L0)
+      const focus = new THREE.Vector3(0, this.universes[1].base + 2.6, -84)
+      target = ahead.lerp(focus, k * 0.85)
+    } else {
+      const u = this.universes[seg]
+      const ahead = this.pointAt(seg, d + 7)
+      ahead.y = (d + 7 >= u.len ? u.base : this.groundAt(seg, d + 7)) + EYE - (d < u.len ? 0.45 : 0)
+      target = ahead
+    }
+
+    this.tmpM.lookAt(pos, target, THREE.Object3D.DEFAULT_UP)
+    this.tmpQ.setFromRotationMatrix(this.tmpM)
+    // The view leans gently toward the pointer.
+    this.tmpE.set(this.look.y * 0.1, -this.look.x * 0.2, 0)
+    this.tmpQ.multiply(new THREE.Quaternion().setFromEuler(this.tmpE))
+    this.camera.position.copy(pos)
+    this.camera.quaternion.slerp(this.tmpQ, blend)
+    this.camera.updateMatrixWorld()
+  }
+
+  // ── per-frame ────────────────────────────────────────────────────────────
+
+  private frame = () => {
+    if (this.disposed) return
+    this.raf = requestAnimationFrame(this.frame)
+    const now = performance.now()
+    const dt = Math.min((now - this.lastFrame) / 1000, 1 / 20)
+    this.lastFrame = now
+    const t = (now - this.startedAt) / 1000
+
+    this.look.lerp(this.ndc, 1 - Math.exp(-dt * 2.5))
+    this.travel(dt, t)
+    this.placeCamera(1 - Math.exp(-dt * 6))
+    this.updateDoors(dt, t)
+    this.updateUniforms(t, dt)
+    this.updateLabels()
+    this.emitState()
+    this.render()
+  }
+
+  private updateDoors(dt: number, t: number) {
+    const past = this.pastGate()
+    const since = this.qdayAt < 0 ? 99 : t - this.qdayAt
+    // Hover by pointer (raycast) when we're on the home side past the gate.
+    if (past && this.insideIndex() < 0 && this.seg < 0) {
+      this.raycaster.setFromCamera(this.ndc, this.camera)
+      const hits = this.raycaster.intersectObjects(this.universes.map(u => u.door.content), false)
+      const idx = hits.length ? this.universes.findIndex(u => u.door.content === hits[0].object) : -1
+      if (idx >= 0) this.hovered = idx
+      else if (this.hovered !== null && !this.atFork()) this.hovered = null
+      this.canvas.style.cursor = idx >= 0 ? 'pointer' : ''
+    } else this.canvas.style.cursor = ''
+
+    this.universes.forEach((u, i) => {
+      let want = 0
+      if (past) {
+        if (this.seg < 0) want = since > 0.9 + i * 0.45 ? 1 : 0
+        else want = this.seg === i ? 1 : 0.3
+      }
+      u.open += (want - u.open) * Math.min(1, dt * (want > u.open ? 1.5 : 3))
+      const hov = (this.hovered === i && this.seg < 0) || this.seg === i ? 1 : 0
+      u.hover += (hov - u.hover) * Math.min(1, dt * 5)
+      const m = u.door.contentMat.uniforms
+      m.uOpen.value = u.open
+      m.uHover.value = u.hover
+      m.uTime.value = t
+    })
+    const gains = this.homePath.material as THREE.ShaderMaterial
+    const g = gains.uniforms.uBranchGain.value as THREE.Vector3
+    const sel = this.seg >= 0 ? this.seg : this.hovered
+    g.set(...([0, 1, 2].map(i => (sel === null ? (past ? 1 : 0.55) : sel === i ? 1.25 : 0.35)) as [number, number, number]))
+    const curtain = (this.gateCurtain.material as THREE.ShaderMaterial).uniforms.uOpacity
+    curtain.value += ((past ? 0.12 : 0.55) - curtain.value) * Math.min(1, dt * 2)
+  }
+
+  private updateUniforms(t: number, dt: number) {
+    const inside = this.insideIndex()
+    const pr = this.renderer.getPixelRatio()
+    const all = [this.homeU, ...this.universes.map(u => u.u)]
+    for (const u of all) u.uTime.value = t
+    this.homeU.uPixelRatio.value = pr
+    this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * RT_SCALE })
+
+    // Pointer trail goes to whichever world the camera is in.
+    const now = performance.now()
+    const active = inside >= 0 ? this.universes[inside].u : this.homeU
+    for (const u of all) {
+      const arr = u.uTrail.value
+      for (let i = 0; i < TRAIL_LENGTH; i++) {
+        const e = u === active ? this.trail[i] : undefined
+        if (e) arr[i].set(e.x, e.z, (now - e.t) / 1000, 1)
+        else arr[i].set(0, 0, 99, 0)
+      }
+    }
+    this.finish.uniforms.uTime.value = t
+    this.flash = Math.max(0, this.flash - dt * 1.4)
+    this.finish.uniforms.uFlash.value = this.flash
+    for (const s of this.home.children) {
+      const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
+      if (m?.uniforms?.uPixelRatio && !('uSizeScale' in m.uniforms)) m.uniforms.uPixelRatio.value = pr
+      if (m?.uniforms?.uTime && !('uSizeScale' in m.uniforms)) m.uniforms.uTime.value = t
+    }
+    for (const u of this.universes) {
+      for (const s of u.scene.children) {
+        const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
+        if (m?.uniforms?.uTime && !('uSizeScale' in m.uniforms)) m.uniforms.uTime.value = t
+      }
+    }
+  }
+
+  private groundHit() {
+    const inside = this.insideIndex()
+    const cam = inside >= 0 ? this.universes[inside].cam : this.camera
+    const floorY = inside >= 0 ? 0 : this.camera.position.y - EYE
+    this.raycaster.setFromCamera(this.ndc, cam)
+    const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -floorY)
+    return this.raycaster.ray.intersectPlane(plane, new THREE.Vector3())
+  }
+
+  private updateLabels() {
+    const inside = this.insideIndex() >= 0
+    const w = this.canvas.clientWidth, h = this.canvas.clientHeight
+    const past = this.pastGate()
+    const route = this.route()
+    const spots: Record<LabelId, { p: THREE.Vector3; show: boolean }> = {
+      today: { p: this.at(-1, 9, 2.6), show: route < 30 },
+      qday: { p: this.at(-1, this.gateD, 6.2), show: route < this.gateD + 3 },
+      u0: { p: this.doorTop(0), show: past && this.seg < 0 },
+      u1: { p: this.doorTop(1), show: past && this.seg < 0 },
+      u2: { p: this.doorTop(2), show: past && this.seg < 0 },
+    }
+    for (const [id, el] of this.labels) {
+      const s = spots[id]
+      const p = s.p.clone().project(this.camera)
+      const visible = !inside && s.show && p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2
+      el.style.opacity = visible ? '1' : '0'
+      el.style.pointerEvents = visible ? 'auto' : 'none'
+      // keep a label's centre far enough from the edges that its text stays on screen
+      const half = Math.min(el.offsetWidth / 2 + 8, w / 2)
+      const x = THREE.MathUtils.clamp(((p.x + 1) / 2) * w, half, w - half)
+      el.style.transform = `translate(${x}px, ${((1 - p.y) / 2) * h}px) translate(-50%, -100%)`
+      if (id.startsWith('u')) el.dataset.hover = String(this.hovered === Number(id.slice(1)))
+    }
+  }
+
+  private at(seg: number, d: number, up: number) {
+    const p = this.pointAt(seg, d)
+    p.y = homeHeight(p.x, p.z) + up
+    return p
+  }
+  private doorTop(i: number) {
+    const g = this.universes[i].door.group.position
+    return new THREE.Vector3(g.x, g.y + DOOR.height + 0.9, g.z)
+  }
+
+  private emitState() {
+    const inside = this.insideIndex()
+    const phase: 'trunk' | 'fork' | 'branch' | 'inside' = inside >= 0 ? 'inside' : this.seg >= 0 ? 'branch' : this.atFork() ? 'fork' : 'trunk'
+    if (inside !== this.wasInside) {
+      if (inside >= 0) {
+        this.flash = 0.55
+        this.flashColor.setRGB(...this.universes[inside].def.tint)
+      }
+      this.wasInside = inside
+    }
+    const s: EngineState = {
+      phase,
+      branch: this.seg >= 0 ? this.seg : null,
+      hovered: this.hovered,
+      qday: this.pastGate(),
+      started: this.route() > 8,
+    }
+    const key = JSON.stringify(s)
+    if (key !== this.lastState) { this.lastState = key; this.cb.onState(s) }
+  }
+
+  private render() {
+    const inside = this.insideIndex()
+    for (const u of this.universes) {
+      // Map the visitor's camera through the doorway into that universe's own space.
+      this.tmpM.copy(u.door.group.matrixWorld).invert().multiply(this.camera.matrixWorld)
+      this.tmpM.decompose(u.cam.position, u.cam.quaternion, new THREE.Vector3())
+      u.cam.updateMatrixWorld()
+    }
+    if (inside >= 0) {
+      const u = this.universes[inside]
+      this.renderPass.scene = u.scene
+      this.renderPass.camera = u.cam
+    } else {
+      this.projScreen.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)
+      this.frustum.setFromProjectionMatrix(this.projScreen)
+      for (const u of this.universes) {
+        if (u.open < 0.004) continue
+        const c = u.door.group.position
+        if (!this.frustum.intersectsSphere(new THREE.Sphere(new THREE.Vector3(c.x, c.y + DOOR.height / 2, c.z), DOOR.height))) continue
+        this.renderer.setRenderTarget(u.rt)
+        this.renderer.render(u.scene, u.cam)
+      }
+      this.renderer.setRenderTarget(null)
+      this.renderPass.scene = this.home
+      this.renderPass.camera = this.camera
+    }
+    this.composer.render()
+  }
+
+  private resize() {
+    const w = Math.max(1, this.host.clientWidth), h = Math.max(1, this.host.clientHeight)
+    const pr = Math.min(window.devicePixelRatio || 1, this.lowPower ? 1.5 : 1.75)
+    const fov = w / h < 0.8 ? 78 : 55
+    for (const cam of [this.camera, ...this.universes.map(u => u.cam)]) {
+      cam.fov = fov
+      cam.aspect = w / h
+      cam.updateProjectionMatrix()
+    }
+    this.renderer.setPixelRatio(pr)
+    this.renderer.setSize(w, h, false)
+    this.composer.setPixelRatio(pr)
+    this.composer.setSize(w, h)
+    const sizeScale = h / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2))
+    for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uSizeScale.value = sizeScale
+    for (const u of this.universes) {
+      u.rt.setSize(Math.ceil(w * pr * RT_SCALE), Math.ceil(h * pr * RT_SCALE))
+      ;(u.door.contentMat.uniforms.uRes.value as THREE.Vector2).set(w * pr, h * pr)
+    }
+  }
+}
+
+const RT_SCALE = 0.6

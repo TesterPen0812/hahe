@@ -28,7 +28,7 @@ export default function ItemPage() {
   if (!item) return <main className="page"><p className="status">Loading…</p></main>
   return (
     <main className={`page item ${world.mode === 'q-day' ? 'is-qday' : ''}`}>
-      <p><Link to="/" className="back">← Briefing</Link></p>
+      <p><Link to="/feed" className="back">← Briefing</Link></p>
       <div className="item-layout">
         <figure className="item-media">
           <img src={item.imageUrl} alt="" />

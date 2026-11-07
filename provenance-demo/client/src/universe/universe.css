@@ -1,0 +1,156 @@
+/* The branching-universes landing page. The scene is always night, so it pins dark tokens. */
+.uv {
+  --bg: #05070d; --panel: rgba(14, 18, 28, 0.82); --line: rgba(255, 255, 255, 0.1);
+  --ink: #eef1f6; --muted: #9aa3b4; --tint: 255, 255, 255;
+  color-scheme: dark;
+  position: fixed; inset: 0; overflow: hidden; background: #020308; color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.uv-rsa { --tint: 255, 108, 41; }
+.uv-hybrid { --tint: 72, 255, 158; }
+.uv-unsigned { --tint: 184, 189, 204; }
+
+.uv-stage, .uv-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.uv-canvas { outline: none; }
+
+/* ── chrome ─────────────────────────────────────────────────────────── */
+.uv-top {
+  position: absolute; top: 0; left: 0; right: 0; z-index: 5;
+  display: flex; align-items: center; gap: 16px; padding: 18px 24px;
+  pointer-events: none;
+}
+.uv-brand { font-family: var(--serif); font-size: 19px; letter-spacing: 0.01em; margin-right: auto; }
+.uv-links { display: flex; gap: 4px; pointer-events: auto; }
+.uv-links a {
+  color: var(--muted); text-decoration: none; font-size: 13px; padding: 6px 10px; border-radius: 999px;
+  transition: color .2s, background .2s;
+}
+.uv-links a:hover { color: var(--ink); background: rgba(255, 255, 255, 0.08); }
+
+.uv-qday {
+  position: absolute; top: 64px; left: 50%; z-index: 5;
+  transform: translate(-50%, -12px); opacity: 0; pointer-events: none;
+  display: flex; gap: 12px; align-items: baseline; white-space: nowrap;
+  padding: 8px 16px; border-radius: 999px; font-size: 13px; color: #ffd9cf;
+  background: rgba(60, 10, 6, 0.55); border: 1px solid rgba(255, 110, 80, 0.35);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  transition: opacity .6s, transform .6s;
+}
+.uv-qday.on { opacity: 1; transform: translate(-50%, 0); }
+.uv-qday strong { letter-spacing: 0.12em; text-transform: uppercase; font-size: 11px; color: #ff8a6b; }
+
+/* ── intro ──────────────────────────────────────────────────────────── */
+.uv-intro {
+  position: absolute; left: 0; right: 0; bottom: 12vh; z-index: 4; text-align: center;
+  pointer-events: none; transition: opacity 1s, transform 1.2s;
+}
+.uv-intro.gone { opacity: 0; transform: translateY(-24px); }
+.uv-intro h1 {
+  font-family: var(--serif); font-weight: 500; font-size: clamp(34px, 6.4vw, 76px); line-height: 1.04;
+  letter-spacing: -0.015em; margin: 6px 0 22px; text-shadow: 0 0 40px rgba(120, 150, 255, 0.35);
+}
+.uv-kicker { font-size: 11px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.uv-hint { display: inline-flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); margin: 0; }
+.uv-mouse {
+  width: 16px; height: 25px; border: 1.5px solid currentColor; border-radius: 9px; position: relative;
+}
+.uv-mouse::after {
+  content: ""; position: absolute; left: 50%; top: 5px; width: 2px; height: 5px; margin-left: -1px;
+  background: currentColor; border-radius: 2px; animation: uv-wheel 1.6s ease-in-out infinite;
+}
+@keyframes uv-wheel { 0% { transform: translateY(0); opacity: 1 } 80% { transform: translateY(7px); opacity: 0 } 100% { opacity: 0 } }
+
+.uv-prompt {
+  position: absolute; left: 50%; bottom: 7vh; z-index: 4; transform: translate(-50%, 10px);
+  opacity: 0; transition: opacity .6s, transform .6s; pointer-events: none;
+  font-family: var(--serif); font-size: clamp(20px, 2.4vw, 28px); text-align: center; white-space: nowrap;
+}
+.uv-prompt.on { opacity: 1; transform: translate(-50%, 0); }
+.uv-prompt span { display: block; font-family: inherit; font-size: 12px; color: var(--muted); margin-top: 6px; font-family: -apple-system, sans-serif; letter-spacing: 0.04em; }
+
+/* ── labels pinned into the scene ──────────────────────────────────── */
+.uv-pin {
+  position: absolute; left: 0; top: 0; z-index: 3; opacity: 0; will-change: transform;
+  transition: opacity .5s; white-space: nowrap; pointer-events: none;
+}
+.uv-pin-today, .uv-pin-qday {
+  font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: rgba(255, 255, 255, 0.75);
+  padding-bottom: 10px;
+}
+.uv-pin-today::after, .uv-pin-qday::after {
+  content: ""; position: absolute; left: 50%; bottom: 0; width: 1px; height: 8px; background: currentColor; opacity: .6;
+}
+.uv-pin-qday { color: #c9bfff; }
+
+.uv-door {
+  display: grid; justify-items: center; gap: 2px; text-align: center; cursor: pointer;
+  background: none; border: 0; color: var(--ink); font: inherit; padding: 6px 10px 12px;
+  white-space: normal; width: max-content; max-width: 220px;
+}
+.uv-door-rsa { --c: 255, 120, 60; }
+.uv-door-hybrid { --c: 90, 255, 165; }
+.uv-door-unsigned { --c: 200, 204, 216; }
+.uv-letter {
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600;
+  border: 1px solid rgba(var(--c), 0.7); color: rgb(var(--c)); margin-bottom: 4px;
+  box-shadow: 0 0 18px rgba(var(--c), 0.35); transition: background .25s, color .25s;
+}
+.uv-door-title { font-family: var(--serif); font-size: 17px; line-height: 1.15; }
+.uv-door-line { font-size: 12px; color: var(--muted); line-height: 1.3; }
+.uv-door[data-hover="true"] .uv-letter, .uv-door:hover .uv-letter, .uv-door:focus-visible .uv-letter {
+  background: rgb(var(--c)); color: #05070d;
+}
+.uv-door:focus-visible { outline: 1px solid rgba(var(--c), .8); outline-offset: 2px; border-radius: 8px; }
+
+/* ── inside a universe ─────────────────────────────────────────────── */
+.uv-panel {
+  position: absolute; z-index: 6; top: 76px; right: 20px; bottom: 20px; width: min(460px, calc(100vw - 40px));
+  overflow-y: auto; overscroll-behavior: contain; touch-action: pan-y; user-select: text; -webkit-user-select: text;
+  padding: 22px; border-radius: 18px; background: var(--panel);
+  border: 1px solid rgba(var(--tint), 0.28);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .3), 0 30px 80px rgba(0, 0, 0, .5), 0 0 60px rgba(var(--tint), .08);
+  backdrop-filter: blur(18px) saturate(1.2); -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  animation: uv-panel-in .9s .25s both cubic-bezier(.2, .8, .2, 1);
+}
+@keyframes uv-panel-in { from { opacity: 0; transform: translateX(24px) } to { opacity: 1; transform: none } }
+.uv-panel .uv-kicker { color: rgb(var(--tint)); }
+.uv-panel h2 { font-family: var(--serif); font-weight: 500; font-size: 30px; line-height: 1.1; margin: 8px 0 6px; }
+.uv-line { font-family: var(--serif); font-size: 18px; margin: 0 0 10px; color: rgb(var(--tint)); }
+.uv-rule { font-size: 13px; line-height: 1.5; color: var(--muted); margin: 0 0 16px; }
+.uv-counts { display: flex; gap: 14px; font-size: 12px; margin: 0 0 12px; color: var(--muted); }
+.uv-counts span::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: currentColor; }
+.c-green { color: var(--green); } .c-amber { color: var(--amber); } .c-grey { color: var(--grey); }
+.uv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 10px; }
+.uv-grid .card { background: rgba(255, 255, 255, 0.04); border-color: var(--line); }
+.uv-grid .card-body { padding: 8px 10px 10px; }
+.uv-grid .card-meta, .uv-grid .card-hash { display: none; }
+.uv-empty { color: var(--muted); font-size: 14px; }
+.uv-tip { font-size: 13px; color: var(--muted); margin: 14px 0 0; }
+.uv-tip a { color: rgb(var(--tint)); text-decoration: none; }
+.uv-tip a:hover { text-decoration: underline; }
+@media (min-width: 721px) { .uv-in .uv-qday { left: calc((100% - 500px) / 2); } }
+.uv-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 18px; }
+.uv-actions button {
+  font: inherit; font-size: 13px; color: var(--ink); cursor: pointer; padding: 8px 14px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--line); transition: background .2s;
+}
+.uv-actions button:hover { background: rgba(255, 255, 255, 0.12); }
+
+.uv-fallback { max-width: 640px; margin: 0 auto; padding: 80px 20px; }
+.uv-fallback a { color: var(--accent); }
+
+@media (max-width: 720px) {
+  .uv-top { padding: 14px 16px; }
+  .uv-links a { padding: 6px 7px; font-size: 12px; }
+  .uv-qday { top: 54px; font-size: 11px; }
+  .uv-qday span { display: none; }
+  .uv-door { max-width: 108px; padding: 4px 2px 10px; }
+  .uv-door-title { font-size: 14px; }
+  .uv-door-line { display: none; }
+  .uv-panel { top: auto; left: 12px; right: 12px; bottom: 12px; width: auto; max-height: 62vh; padding: 18px; }
+  .uv-panel h2 { font-size: 24px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uv-mouse::after, .uv-panel { animation: none; }
+}
