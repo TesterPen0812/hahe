@@ -31,7 +31,6 @@ export default function FeedPage() {
     return () => { alive = false; clearInterval(t) }
   }, [world.mode])   // re-verify (refetch) whenever the world flips
 
-  const date = world.mode === 'q-day' ? new Date(world.qDayAt) : new Date()
   const counts = { green: 0, amber: 0, grey: 0 }
   items.forEach(i => counts[i.verification.status]++)
 
@@ -39,11 +38,11 @@ export default function FeedPage() {
     <main className={`page feed ${world.mode === 'q-day' ? 'is-qday' : ''}`}>
       <header className="feed-head">
         <div>
-          <p className="kicker">{date.toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+          <p className="kicker">{world.mode === 'q-day' ? `Q-Day · ${world.headlineYear}` : new Date().toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
           <h1>Good morning, Mara.</h1>
           <p className="lede">{items.length ? `${counts.green} verified, ${counts.amber} edited, ${counts.grey} of unknown origin overnight.` : 'Nothing in your briefing yet.'}</p>
         </div>
-        <WorldSwitch world={world} onSet={m => void set(m)} />
+        <WorldSwitch world={world} onSet={set} />
       </header>
       {error && <p className="status error">Can’t reach the server: {error}</p>}
       <section className="grid">

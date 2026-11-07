@@ -1,5 +1,4 @@
-import type { DeviceCert, HybridPublicKeys, ItemSummary, PersonhoodCredential, TrustList } from '@provenance-demo/shared'
-import type { WorldState } from './world'
+import type { DeviceCert, HybridPublicKeys, ItemSummary, PersonhoodCredential, TrustList, WorldState } from '@provenance-demo/shared'
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, init)

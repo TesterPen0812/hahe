@@ -28,7 +28,7 @@ export default function SplitScreenPage() {
   }, [world.mode])
   return (
     <main className={`page split ${world.mode === 'q-day' ? 'is-qday' : ''}`}>
-      <WorldSwitch world={world} onSet={m => void set(m)} />
+      <WorldSwitch world={world} onSet={set} />
       <div className="split-cols">
         <section><h2>Naive verifier</h2><p className="muted small">Trusts any valid signature</p><div className="grid">{naive.map(i => <FeedCard key={i.id} item={i} trust={trust} />)}</div></section>
         <section><h2>Our verifier</h2><p className="muted small">Knows which algorithms have fallen</p><div className="grid">{ours.map(i => <FeedCard key={i.id} item={i} trust={trust} />)}</div></section>

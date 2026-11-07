@@ -27,7 +27,7 @@ export default function ItemPage() {
           <figcaption><Marker status={item.verification.status} label={item.verification.label} /></figcaption>
         </figure>
         <div>
-          <WorldSwitch world={world} onSet={m => void set(m)} />
+          <WorldSwitch world={world} onSet={set} />
           <VerificationPanel item={item} world={world} trust={trust} />
           <p className="mono small muted">SHA-256 {item.contentHash}</p>
         </div>

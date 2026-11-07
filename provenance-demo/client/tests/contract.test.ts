@@ -4,17 +4,27 @@ import { test } from 'node:test'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { MemoryRouter } from 'react-router-dom'
-import type { ItemSummary, TrustList } from '@provenance-demo/shared'
+import { makeWorld, todayWorld, type ItemSummary, type TrustList } from '@provenance-demo/shared'
 import { capture, legacyCapture, legacyTrustEntry, makeAuthority, makeLegacyCamera, makePasskey, makePersonhood, makePhone, photoFrom } from '../../scripts/lib/fake-phone.js'
 import { SCENES } from '../../scripts/lib/png.js'
 import { FeedCard } from '../src/components/FeedCard'
 import { Marker } from '../src/components/Marker'
+import { WorldSwitch } from '../src/components/WorldSwitch'
 import { sealsFor } from '../src/lib/seals'
-import type { WorldState } from '../src/lib/world'
 
-const today: WorldState = { mode: 'today', qDayAt: '2035-03-14T00:00:00.000Z', broken: [] }
-const qDay: WorldState = { ...today, mode: 'q-day', broken: ['ed25519', 'rsa-pss-2048'] }
+const today = todayWorld()
+const qDay = makeWorld('q-day', new Date().toISOString(), 2035)
 const emptyTrust: TrustList = { manufacturers: [], issuers: [], editors: [], legacyCameras: [] }
+
+test('world switch uses the story year and accepts a null Q-Day timestamp today', () => {
+  const onSet = async () => {}
+  const current = renderToStaticMarkup(createElement(WorldSwitch, { world: today, onSet }))
+  assert.doesNotMatch(current, /Invalid Date|1970|NaN/)
+  assert.match(current, /aria-pressed="true"[^>]*>Today/)
+  const future = renderToStaticMarkup(createElement(WorldSwitch, { world: qDay, onSet }))
+  assert.match(future, /Q-Day · 2035/)
+  assert.match(future, new RegExp(`dateTime="${qDay.qDayAt}"`))
+})
 
 test('hybrid seals use labelled parts, including missing and duplicate signatures', async () => {
   const manufacturer = makeAuthority('manufacturer', 'Manufacturer')
@@ -46,7 +56,7 @@ test('legacy RSA seals verify with the trusted camera and never imply a human ba
   const item: ItemSummary = {
     id: 'legacy', imageUrl: '/api/items/legacy/image', contentHash: manifest.claim.contentHash,
     dHash: manifest.claim.dHash, createdAt: manifest.claim.capturedAt, parentId: null, manifest, logEntry: null,
-    verification: { status: 'green', presenceLevel: 'device-only', label: 'camera-verified', kind: 'legacy', checks: [] },
+    verification: { status: 'green', presenceLevel: 'device-only', label: 'camera-verified', kind: 'legacy', naive: false, anchoredBeforeQDay: false, checks: [] },
   }
   const html = renderToStaticMarkup(createElement(MemoryRouter, null, createElement(FeedCard, { item, trust })))
   assert.match(html, /Camera-verified/)

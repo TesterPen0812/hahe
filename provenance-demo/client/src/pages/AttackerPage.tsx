@@ -44,7 +44,7 @@ export default function AttackerPage() {
     <main className="page attacker">
       <p className="kicker">Simulation · attacker console</p>
       <h1>Quantum attacker</h1>
-      <WorldSwitch world={world} onSet={m => void set(m)} />
+      <WorldSwitch world={world} onSet={set} />
       {world.mode !== 'q-day' && <p className="status">Switch to Q-Day first: today, nobody can recover the key.</p>}
       <ol className="attack-steps">
         {steps.map((s, i) => (
