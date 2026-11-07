@@ -15,9 +15,10 @@ export async function getDevice(): Promise<Device | undefined> {
 /** Returns this browser's device, creating keys and getting a manufacturer cert on first use. */
 export async function ensureDevice(): Promise<Device> {
   const existing = await getDevice()
-  if (existing) return existing
-  const keys = generateHybridKeys()
-  const deviceId = `device-${crypto.randomUUID().slice(0, 8)}`
+  if (existing && Array.isArray(existing.cert.signature)) return existing
+  // Refresh certificates cached before signatures became labelled lists; keep this phone's keys.
+  const keys = existing?.keys ?? generateHybridKeys()
+  const deviceId = existing?.deviceId ?? `device-${crypto.randomUUID().slice(0, 8)}`
   const cert = await api.registerDevice(deviceId, keys.publicKeys)
   const device = { deviceId, keys, cert }
   await set(KEY, device)

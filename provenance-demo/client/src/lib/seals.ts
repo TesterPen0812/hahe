@@ -1,22 +1,34 @@
-// Per-algorithm view of a photo's seals, checked here in the browser against the manifest's own keys.
-import { canonicalBytes, fromB64url, hybridVerify, type Manifest } from '@provenance-demo/shared'
+// Per-algorithm view, checked in the browser against device or trusted camera keys.
+import { ALG_NAMES, canonicalBytes, fromB64url, hybridVerify, rsaPssVerify, type Alg, type Manifest, type TrustList } from '@provenance-demo/shared'
 import type { WorldState } from './world'
 
 export interface Seal {
-  alg: 'ed25519' | 'ml-dsa-65'
+  alg: Alg
   label: string
   bytes: number
-  valid: boolean
+  valid: boolean | null   // null while the camera trust list is loading
   broken: boolean          // the algorithm is breakable in the current world
   quantumSafe: boolean
 }
 
-export function sealsFor(manifest: Manifest, world: WorldState): Seal[] {
+function signatureBytes(value?: string): number {
+  try { return value ? fromB64url(value).length : 0 } catch { return 0 }
+}
+
+export async function sealsFor(manifest: Manifest, world: WorldState, trust: TrustList | null): Promise<Seal[]> {
+  if (manifest.kind === 'legacy') {
+    const camera = trust?.legacyCameras.find(c => c.id === manifest.claim.cameraId)
+    const alg = 'rsa-pss-2048'
+    return [{
+      alg, label: ALG_NAMES[alg], bytes: signatureBytes(manifest.signature?.value),
+      valid: trust ? !!camera && await rsaPssVerify('legacy-claim', canonicalBytes(manifest.claim), manifest.signature, camera.publicKey) : null,
+      broken: world.broken.includes(alg), quantumSafe: false,
+    }]
+  }
   const r = hybridVerify('claim', canonicalBytes(manifest.claim), manifest.claimSignature, manifest.deviceCert.publicKeys)
-  return [
-    { alg: 'ed25519', label: 'Ed25519', bytes: fromB64url(manifest.claimSignature.ed25519).length, valid: r.ed25519,
-      broken: world.broken.includes('ed25519'), quantumSafe: false },
-    { alg: 'ml-dsa-65', label: 'ML-DSA-65', bytes: fromB64url(manifest.claimSignature.mlDsa65).length, valid: r.mlDsa65,
-      broken: world.broken.includes('ml-dsa-65'), quantumSafe: true },
-  ]
+  return r.parts.map(part => ({
+    alg: part.alg, label: ALG_NAMES[part.alg],
+    bytes: signatureBytes(manifest.claimSignature.find(s => s.alg === part.alg)?.value),
+    valid: part.valid, broken: world.broken.includes(part.alg), quantumSafe: part.alg === 'ml-dsa-65',
+  }))
 }

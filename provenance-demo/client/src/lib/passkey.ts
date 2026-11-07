@@ -10,18 +10,20 @@ type Options<T> = { optionsJSON: T; ceremonyId: string }
 export async function registerPasskey(): Promise<string> {
   const { optionsJSON, ceremonyId } = await api.post<Options<PublicKeyCredentialCreationOptionsJSON>>('/passkeys/register/options')
   const response = await startRegistration({ optionsJSON })
-  const outcome = await api.post<{ verified: boolean }>('/passkeys/register/verify', { ceremonyId, response })
+  const outcome = await api.post<{ verified: boolean; publicKey?: string }>('/passkeys/register/verify', { ceremonyId, response })
   if (!outcome.verified) throw new Error('Passkey registration was not verified')
-  await personhoodFor(response.id)
+  if (outcome.publicKey) await set(`passkey-public-key-${response.id}`, outcome.publicKey).catch(() => {})
+  await personhoodFor(response.id, outcome.publicKey)
   return response.id
 }
 
 /** Personhood credential for a passkey, from cache or freshly issued by the demo issuer. */
-export async function personhoodFor(credentialId: string): Promise<PersonhoodCredential> {
+export async function personhoodFor(credentialId: string, publicKey?: string): Promise<PersonhoodCredential> {
   const key = `personhood-${credentialId}`
   const cached = await get<PersonhoodCredential>(key).catch(() => undefined)
-  if (cached) return cached
-  const cred = await api.personhood(credentialId)
+  if (cached?.passkeyAlg === 'es256' && cached.passkeyPublicKey) return cached
+  const knownPublicKey = publicKey ?? await get<string>(`passkey-public-key-${credentialId}`).catch(() => undefined)
+  const cred = await api.personhood(credentialId, knownPublicKey)
   await set(key, cred).catch(() => {})
   return cred
 }

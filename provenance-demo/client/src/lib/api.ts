@@ -19,8 +19,8 @@ export const api = {
   trust: () => call<TrustList>('/trust'),
   registerDevice: (deviceId: string, publicKeys: HybridPublicKeys) =>
     call<DeviceCert>('/devices', json('POST', { deviceId, publicKeys })),
-  personhood: (credentialId: string) =>
-    call<PersonhoodCredential>('/devices/personhood', json('POST', { credentialId })),
+  personhood: (credentialId: string, publicKey?: string) =>
+    call<PersonhoodCredential>('/devices/personhood', json('POST', { credentialId, publicKey })),
   world: () => call<WorldState>('/world'),
   setWorld: (mode: WorldState['mode']) => call<WorldState>('/world', json('POST', { mode })),
   post: <T>(path: string, body: unknown = {}) => call<T>(path, json('POST', body)),

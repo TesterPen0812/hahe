@@ -73,7 +73,7 @@ export default function CapturePage() {
 
       {phase === 'done' && result && (
         <div className="capture-done">
-          <Marker status={result.verification.status} presence={result.verification.presenceLevel} />
+          <Marker status={result.verification.status} label={result.verification.label} />
           <p>Sent to the feed. <Link to={`/item/${result.id}`}>See its seals</Link></p>
         </div>
       )}

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ItemSummary } from '@provenance-demo/shared'
+import type { ItemSummary, TrustList } from '@provenance-demo/shared'
 import { api } from '../lib/api'
 import { useWorld } from '../lib/world'
 import { FeedCard } from '../components/FeedCard'
@@ -8,9 +8,12 @@ import { WorldSwitch } from '../components/WorldSwitch'
 export default function FeedPage() {
   const { world, set } = useWorld()
   const [items, setItems] = useState<ItemSummary[]>([])
+  const [trust, setTrust] = useState<TrustList | null>(null)
   const [error, setError] = useState('')
   const seen = useRef<Set<string> | null>(null)
   const [fresh, setFresh] = useState<Set<string>>(new Set())
+
+  useEffect(() => { api.trust().then(setTrust).catch(() => {}) }, [])
 
   useEffect(() => {
     let alive = true
@@ -44,7 +47,7 @@ export default function FeedPage() {
       </header>
       {error && <p className="status error">Can’t reach the server: {error}</p>}
       <section className="grid">
-        {items.map(i => <FeedCard key={i.id} item={i} isNew={fresh.has(i.id)} />)}
+        {items.map(i => <FeedCard key={i.id} item={i} trust={trust} isNew={fresh.has(i.id)} />)}
       </section>
     </main>
   )
