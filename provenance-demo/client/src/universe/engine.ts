@@ -236,7 +236,7 @@ export class UniverseEngine {
   }
 
   private buildGate() {
-    // A great ring of light over the path: the moment Q-Day arrives.
+    // A curtain of hanging light across the path: the moment Q-Day arrives.
     const p = this.trunk.getPointAt(this.gateD / this.L0)
     const tan = this.trunk.getTangentAt(this.gateD / this.L0).setY(0).normalize()
     const center = new THREE.Vector3(p.x, homeHeight(p.x, p.z) + 4.6, p.z)
@@ -474,6 +474,7 @@ export class UniverseEngine {
     if (this.disposed) return
     this.raf = requestAnimationFrame(this.frame)
     const now = performance.now()
+    this.adapt(now - this.lastFrame)
     const dt = Math.min((now - this.lastFrame) / 1000, 1 / 20)
     this.lastFrame = now
     const t = (now - this.startedAt) / 1000
@@ -486,6 +487,23 @@ export class UniverseEngine {
     this.updateLabels()
     this.emitState()
     this.render()
+  }
+
+  // Adaptive resolution: drop quality quickly when frames run long, recover it slowly.
+  private quality = 1
+  private perf = { sum: 0, n: 0, good: 0 }
+  private adapt(ms: number) {
+    if (ms > 250) return // tab was hidden or paused; not a real frame
+    const p = this.perf
+    p.sum += ms; p.n++
+    if (p.sum < 1000) return
+    const avg = p.sum / p.n
+    p.sum = 0; p.n = 0
+    if (avg > 21 && this.quality > 0.55) {
+      this.quality = Math.max(0.55, this.quality * 0.82); p.good = 0; this.resize()
+    } else if (avg < 15.5 && this.quality < 1) {
+      if (++p.good >= 3) { this.quality = Math.min(1, this.quality * 1.12); p.good = 0; this.resize() }
+    } else p.good = 0
   }
 
   private updateDoors(dt: number, t: number) {
@@ -589,8 +607,8 @@ export class UniverseEngine {
   /** Focus the lens on what the visitor is walking toward: the path ahead, then the door. */
   private tmpV = new THREE.Vector3()
   private updateLens(inside: number) {
-    const aperture = this.lowPower ? 0.05 : 0.075
-    const maxBlur = this.lowPower ? 22 : 44
+    const aperture = this.lowPower ? 0.08 : 0.12
+    const maxBlur = this.lowPower ? 30 : 56
     let focus = 8
     if (inside < 0) {
       const sel = this.seg >= 0 ? this.seg : this.pastGate() ? Math.min(this.hovered ?? Math.floor(this.universes.length / 2), this.universes.length - 1) : -1
@@ -732,7 +750,10 @@ export class UniverseEngine {
 
   private resize() {
     const w = Math.max(1, this.host.clientWidth), h = Math.max(1, this.host.clientHeight)
-    const pr = Math.min(window.devicePixelRatio || 1, this.lowPower ? 1.5 : 1.75)
+    // Render to a pixel budget rather than full Retina density: soft bokeh looks the same at a
+    // lower resolution, and fill rate is what this scene spends. Quality adapts to the frame rate.
+    const budget = this.lowPower ? 1.1e6 : 2.3e6
+    const pr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, Math.sqrt(budget / (w * h))) * this.quality)
     const fov = w / h < 0.8 ? 78 : 55
     for (const cam of [this.camera, ...this.universes.map(u => u.cam)]) {
       cam.fov = fov
@@ -753,4 +774,4 @@ export class UniverseEngine {
   }
 }
 
-const RT_SCALE = 0.6
+const RT_SCALE = 0.45

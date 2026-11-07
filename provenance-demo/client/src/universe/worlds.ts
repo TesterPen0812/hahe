@@ -348,7 +348,8 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
   sparks.frustumCulled = false
   sparks.renderOrder = 6
 
-  group.add(content, frame, spill, sparks)
+  group.add(content, frame, sparks)
+  spillMat.dispose(); spill.geometry.dispose()
   return { group, content, contentMat }
 }
 

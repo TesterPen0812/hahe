@@ -1,6 +1,6 @@
 // GLSL for the branching-universes scene. Original shaders written for this app.
 
-export const TRAIL_LENGTH = 24
+export const TRAIL_LENGTH = 12
 /** Pointer stamps the finishing pass uses for its lingering screen-space ripple. */
 export const WAKE_STAMPS = 10
 
@@ -148,11 +148,28 @@ export const fieldVertex = /* glsl */ `
       float head = step(0.5, fract(aSeed * 3.0 + 0.5) );
       p.x += sin(t * 1.1 + p.z * 0.3 + aSeed) * 0.04;
       vTwinkle = 0.8 + 0.35 * sin(t * 0.9 + p.x * 0.7 + p.z * 0.5) * head;
-    } else {
+    } else if (uMode < 10.5) {
       // Pillars of light: a quiet pulse climbs each column.
       float climb = fract(t * 0.18 + uCenter.x * 0.0 + p.z * 0.013);
       float h = fract(p.y * 0.2);
       vTwinkle = 0.6 + 1.2 * exp(-pow((h - climb) * 9.0, 2.0));
+    } else if (uMode < 11.5) {
+      // Hanging threads: beads slide slowly down their strand and fade in at the top,
+      // so each strand drips light. aColor.g carries nothing special; length is in the seed.
+      float len = 1.5 + fract(aSeed * 37.1) * 7.0;
+      float slide = fract(t * (0.03 + fract(aSeed * 11.3) * 0.05) + aSeed * 13.0);
+      p.y -= slide * len * 0.35;
+      p.x += sin(t * 0.25 + p.y * 0.4 + aSeed * 9.0) * 0.05;
+      vFade = smoothstep(0.0, 0.2, slide) * (1.0 - smoothstep(0.75, 1.0, slide));
+      vTwinkle = 0.75 + 0.35 * sin(t * (0.8 + aSeed) + aSeed * 60.0);
+    } else {
+      // The Q-Day curtain: strands sway; once crossed they part away from the path like a veil.
+      float open = clamp((0.55 - uOpacity) / 0.4, 0.0, 1.0);
+      float side = p.x - uCenter.x;
+      float push = sign(side) * (2.0 + abs(side) * 0.9) * open * open * (0.6 + aSeed);
+      p.x += push + sin(t * 0.4 + p.y * 0.5 + aSeed * 7.0) * 0.08;
+      p.y += open * open * aSeed * 2.0;
+      vTwinkle = (0.7 + 0.5 * sin(t * 1.4 - p.y * 0.8 + aSeed * 20.0)) * mix(1.0, 0.5, open);
     }
 
     // Pointer wake: particles part around the cursor and settle back.

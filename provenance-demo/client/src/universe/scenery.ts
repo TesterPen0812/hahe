@@ -1,150 +1,114 @@
 // The home meadow ("today") and the Q-Day gate. Original scene design for this app.
+// The look is deliberately spare: one colour family, soft out-of-focus light everywhere,
+// a cavern of hanging threads, and a single bright stream leading to the door.
 import * as THREE from 'three'
 import { fbm, rng } from './noise'
-import { cloud, homeHeight, particleField, sky, stars, type RGB, type SceneUniforms } from './worlds'
+import { cloud, homeHeight, particleField, sky, type RGB, type SceneUniforms } from './worlds'
 
-const MEADOW_FOG: RGB = [0.05, 0.08, 0.2]
+const MEADOW_FOG: RGB = [0.02, 0.035, 0.11]
 
-/** Night meadow under a low moon: grass, flower patches, fireflies, haze and mountains. */
+/** Strand ceiling: high over the path, curving down toward the sides like a cave roof. */
+const ceiling = (x: number) => 13 - 0.008 * x * x
+
+/** Night meadow inside a cavern of hanging light. */
 export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
   const k = lowPower ? 0.45 : 1
   const fog = { fogColor: MEADOW_FOG }
-  scene.add(sky(
-    [0.002, 0.004, 0.018], [0.05, 0.07, 0.17], [0.004, 0.006, 0.016],
-    new THREE.Vector3(-0.42, 0.24, -1), [1.25, 1.22, 1.15], 0.03,
-    {
-      glow: [0.09, 0.11, 0.24],
-      band: [0.05, 0.055, 0.09],
-      ridge: { near: [0.004, 0.006, 0.018], far: [0.03, 0.045, 0.11], height: 0.07, seed: 3 },
-      sun: new THREE.Vector3(-0.1, 0.25, 1),
-      body: 'moon',
-    },
-  ))
-  scene.add(stars(lowPower ? 1100 : 2800, 3, [0.85, 0.9, 1.0]))
 
-  // The ground: indigo grains in drifting patches of light and shade.
+  // A near-black navy sky with a faint lift at the horizon. No moon, no mountains.
+  scene.add(sky(
+    [0.004, 0.006, 0.02], [0.025, 0.035, 0.09], [0.004, 0.006, 0.018],
+    new THREE.Vector3(0.2, -0.8, -1), [0, 0, 0], 0.001,
+    { glow: [0.03, 0.04, 0.1] },
+  ))
+
+  // The ground: a deep field of navy and periwinkle grains that blur into bokeh near and far.
   scene.add(particleField(u, {
-    count: Math.floor(170000 * k), x: [-80, 80], z: [-160, 16], height: homeHeight, mode: 0, seed: 1, fog: [16, 135], ...fog,
+    count: Math.floor(130000 * k), x: [-60, 60], z: [-140, 16], height: homeHeight, mode: 0, seed: 1, fog: [18, 120], ...fog,
     color: (r, x, z) => {
-      const f = r()
-      if (f < 0.02) return [1.0, 0.75, 0.5]
-      if (f < 0.035) return [0.95, 0.55, 0.75]
-      if (f < 0.05) return [0.7, 0.85, 1.0]
-      const patch = 0.55 + 0.6 * fbm(x * 0.06 + 4, z * 0.06, 3)
-      const b = (0.3 + r() * 0.7) * patch
-      return [(0.08 + r() * 0.08) * b, (0.13 + r() * 0.1) * b, (0.36 + r() * 0.3) * b]
+      const patch = 0.6 + 0.55 * fbm(x * 0.05 + 4, z * 0.05, 3)
+      if (r() < 0.06) { const w = 0.7 + r() * 0.5; return [0.72 * w, 0.8 * w, 1.0 * w] }
+      const b = (0.45 + r() * 0.6) * patch
+      return [(0.16 + r() * 0.1) * b, (0.24 + r() * 0.12) * b, (0.72 + r() * 0.3) * b]
     },
-    size: (r) => (r() < 0.06 ? 0.08 + r() * 0.06 : 0.03 + r() * 0.04),
-    yJitter: (r) => r() * r() * 0.3,
+    size: (r) => 0.06 + r() * r() * 0.12,
+    yJitter: (r) => r() * r() * 0.35,
   }))
 
-  // Grass blades near the walk: short vertical strokes that catch the wind.
-  const gr = rng(41), blades = Math.floor(9000 * k)
-  const gp: number[] = [], gc: number[] = [], gs: number[] = []
-  for (let i = 0; i < blades; i++) {
-    const x = (gr() - 0.5) * 60 * (0.3 + gr()), z = 14 - gr() * 85
-    const base = homeHeight(x, z), tall = 0.18 + gr() * 0.45, lean = (gr() - 0.5) * 0.12
-    const steps = 4
-    for (let s = 0; s < steps; s++) {
-      const f = s / (steps - 1)
-      gp.push(x + lean * f * f, base + f * tall, z)
-      const b = (0.12 + 0.5 * f) * (0.6 + gr() * 0.5)
-      gc.push(0.18 * b, 0.32 * b, 0.75 * b)
-      gs.push(0.022 + gr() * 0.012)
+  // Pale clumps scattered over the ground, like frosted shrubs catching the light.
+  const cr = rng(31), clumps = Math.floor(70 * k)
+  const cp: number[] = [], cc: number[] = [], cs: number[] = []
+  for (let c = 0; c < clumps; c++) {
+    const x0 = (cr() - 0.5) * 70, z = 10 - cr() * 110
+    const x = Math.abs(x0) < 2.5 ? x0 + Math.sign(x0 || 1) * 2.5 : x0 // keep the walk clear
+    const base = homeHeight(x, z), rad = 0.4 + cr() * 0.7, n = 90 + Math.floor(cr() * 120)
+    for (let i = 0; i < n; i++) {
+      const a = cr() * Math.PI * 2, rr = Math.sqrt(cr()) * rad, h = cr() * rad * 1.3
+      cp.push(x + Math.cos(a) * rr, base + h * (1 - rr / rad * 0.5), z + Math.sin(a) * rr)
+      const b = 0.35 + cr() * 0.45
+      cc.push(0.62 * b, 0.7 * b, 0.95 * b)
+      cs.push(0.035 + cr() * 0.035)
     }
   }
-  scene.add(cloud(u, new Float32Array(gp), new Float32Array(gc), new Float32Array(gs), 0, [8, 60], 42, 1, fog))
+  scene.add(cloud(u, new Float32Array(cp), new Float32Array(cc), new Float32Array(cs), 9, [8, 90], 32, 1, fog))
 
-  // Flowers in drifts: dim stems and luminous heads in warm and cool colours.
-  const fr = rng(51)
-  const palette: RGB[] = [[1.0, 0.62, 0.38], [1.0, 0.48, 0.66], [0.62, 0.78, 1.0], [1.0, 0.9, 0.7], [0.75, 0.55, 1.0]]
-  const fp: number[] = [], fc: number[] = [], fs: number[] = []
-  const want = Math.floor(900 * k)
-  for (let tries = 0, made = 0; made < want && tries < want * 12; tries++) {
-    const x = (fr() - 0.5) * 44, z = 12 - fr() * 50
-    if (fbm(x * 0.05 + 11, z * 0.05 - 3, 3) < 0.18 || Math.abs(x) < 1.2) continue
-    made++
-    const base = homeHeight(x, z), tall = 0.35 + fr() * 0.55
-    const c = palette[Math.floor(fr() * palette.length)]
-    const bend = (fr() - 0.5) * 0.2
-    for (let s = 0; s < 6; s++) {
-      const f = s / 6
-      fp.push(x + bend * f * f, base + f * tall, z)
-      fc.push(0.04, 0.09, 0.08); fs.push(0.018)
+  // The cavern: thousands of strands hanging from an unseen roof, each dripping slow beads of light.
+  const sr = rng(41), strands = Math.floor(2200 * k)
+  const sp: number[] = [], sc: number[] = [], ss: number[] = []
+  for (let i = 0; i < strands; i++) {
+    const x = (sr() - 0.5) * 2 * (6 + sr() * 34)
+    const z = 14 - sr() * 140
+    const top = ceiling(x) + (sr() - 0.5) * 2.5
+    if (top < 2.5) continue
+    // keep a clear corridor above the walk so strands frame the path instead of blocking it
+    const ground = homeHeight(x, z)
+    const len = (1.5 + sr() * sr() * 8) * (Math.abs(x) < 4 ? 0.35 : 1)
+    const beads = 10 + Math.floor(len * 5)
+    const bright = sr() < 0.15 ? 2.0 : 0.8 + sr() * 0.7
+    for (let b = 0; b < beads; b++) {
+      const f = b / beads
+      sp.push(x + (sr() - 0.5) * 0.04, Math.max(ground + 0.5, ground + top - f * len), z + (sr() - 0.5) * 0.04)
+      const w = bright * (0.5 + 0.5 * (1 - f)) * (0.7 + sr() * 0.4)
+      sc.push(0.6 * w, 0.68 * w, 1.0 * w)
+      ss.push(0.045 + sr() * 0.05)
     }
-    const petals = 5 + Math.floor(fr() * 4)
-    for (let p = 0; p < petals; p++) {
-      const a = (p / petals) * Math.PI * 2, rr = 0.05 + fr() * 0.04
-      fp.push(x + bend + Math.cos(a) * rr, base + tall + (fr() - 0.5) * 0.03, z + Math.sin(a) * rr)
-      const b = 0.7 + fr() * 0.5
-      fc.push(c[0] * b, c[1] * b, c[2] * b); fs.push(0.045 + fr() * 0.03)
-    }
-    fp.push(x + bend, base + tall + 0.02, z); fc.push(1.3, 1.2, 1.0); fs.push(0.06)
   }
-  scene.add(cloud(u, new Float32Array(fp), new Float32Array(fc), new Float32Array(fs), 9, [4, 30], 52, 1, fog))
+  scene.add(cloud(u, new Float32Array(sp), new Float32Array(sc), new Float32Array(ss), 11, [10, 110], 42, 1, fog))
 
-  // Fireflies drifting over the grass.
-  const ff = rng(61), fn = Math.floor(420 * k)
-  const ffp = new Float32Array(fn * 3), ffc = new Float32Array(fn * 3), ffs = new Float32Array(fn)
-  for (let i = 0; i < fn; i++) {
-    const x = (ff() - 0.5) * 60, z = 12 - ff() * 95
-    ffp.set([x, homeHeight(x, z) + 0.4 + ff() * 2.2, z], i * 3)
-    const warm = ff() < 0.7
-    ffc.set(warm ? [2.4, 1.8, 0.7] : [1.1, 2.0, 1.2], i * 3)
-    ffs[i] = 0.05 + ff() * 0.04
-  }
-  scene.add(cloud(u, ffp, ffc, ffs, 4, [6, 80], 62, 1, fog))
-
-  // Dust hanging in the air.
+  // A light snow of motes falling through the cavern.
   scene.add(particleField(u, {
-    count: Math.floor(5000 * k), x: [-40, 40], z: [-110, 12], height: (x, z) => homeHeight(x, z) + 0.3, mode: 0, seed: 2,
-    fog: [10, 70], opacity: 0.22, ...fog,
-    color: (r) => { const b = 0.4 + r() * 0.6; return [0.6 * b, 0.7 * b, 1.0 * b] },
-    size: (r) => 0.04 + r() * 0.08,
-    yJitter: (r) => r() * 8,
+    count: Math.floor(3500 * k), x: [-35, 35], z: [-110, 12], height: (x, z) => homeHeight(x, z) + 0.5, mode: 8, seed: 2,
+    fog: [6, 70], opacity: 0.35, ...fog,
+    color: (r) => { const b = 0.5 + r() * 0.5; return [0.7 * b, 0.78 * b, 1.0 * b] },
+    size: (r) => 0.03 + r() * 0.05,
+    yJitter: (r) => r() * 10,
   }))
 }
 
 /**
- * The Q-Day gate: a great ring of light standing over the path, ticking like a clock face.
- * Its material's uOpacity doubles as its state: 0.55 whole, falling toward 0.12 as it shatters.
+ * The Q-Day gate: a dense curtain of hanging strands across the path. Its material's uOpacity
+ * doubles as its state: 0.55 closed, falling toward 0.12 as the curtain parts once crossed.
  */
 export function qdayGate(u: SceneUniforms, center: THREE.Vector3, tangent: THREE.Vector3, lowPower: boolean) {
-  const n = lowPower ? 5000 : 12000, r = rng(77)
-  const radius = 5.6
+  const r = rng(77), strands = lowPower ? 260 : 620
   const side = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize()
-  const up = new THREE.Vector3(0, 1, 0)
   const pos: number[] = [], col: number[] = [], size: number[] = []
-  const push = (a: number, rad: number, depth: number, c: RGB, s: number) => {
-    const p = center.clone().addScaledVector(side, Math.cos(a) * rad).addScaledVector(up, Math.sin(a) * rad).addScaledVector(tangent, depth)
-    if (p.y < homeHeight(p.x, p.z) + 0.02) return
-    pos.push(p.x, p.y, p.z); col.push(...c); size.push(s)
-  }
-  for (let i = 0; i < n; i++) {
-    const kind = r()
-    const a = r() * Math.PI * 2
-    if (kind < 0.55) {
-      // the main ring: a tight bright band
-      const g = (r() + r() - 1) * 0.08
-      const b = 0.7 + r() * 0.6
-      push(a, radius + g, (r() - 0.5) * 0.08, [0.72 * b, 0.68 * b, 1.0 * b], 0.03 + r() * 0.03)
-    } else if (kind < 0.75) {
-      // a second faint ring, offset, like an interference fringe
-      const b = 0.25 + r() * 0.3
-      push(a, radius * 1.12 + (r() - 0.5) * 0.25, (r() - 0.5) * 0.4, [0.5 * b, 0.55 * b, 1.0 * b], 0.03 + r() * 0.03)
-    } else if (kind < 0.85) {
-      // sixty tick marks, every fifth one long and amber
-      const tick = Math.floor(r() * 60), major = tick % 5 === 0
-      const ta = (tick / 60) * Math.PI * 2 + Math.PI / 2
-      const len = major ? 0.7 : 0.25
-      const b = major ? 1.3 : 0.6
-      push(ta + (r() - 0.5) * 0.004, radius - 0.25 - r() * len, 0, major ? [1.0 * b, 0.7 * b, 0.4 * b] : [0.7 * b, 0.7 * b, 1.0 * b], 0.03)
-    } else {
-      // a thin veil drifting inside the ring
-      const rad = Math.sqrt(r()) * radius * 0.95
-      const b = 0.08 + r() * 0.12
-      push(a, rad, (r() - 0.5) * 0.3, [0.55 * b, 0.5 * b, 1.0 * b], 0.04 + r() * 0.06)
+  for (let i = 0; i < strands; i++) {
+    const s = (r() - 0.5) * 2 * 9 * Math.sqrt(r())
+    const depth = (r() - 0.5) * 0.8
+    const x = center.x + side.x * s + tangent.x * depth, z = center.z + side.z * s + tangent.z * depth
+    const ground = homeHeight(x, z)
+    const top = 6.5 + (1 - Math.abs(s) / 9) * 3 + r() * 1.5
+    const reach = top * (0.55 + r() * 0.45)
+    const beads = 26 + Math.floor(reach * 5)
+    const violet = r() < 0.18
+    for (let b = 0; b < beads; b++) {
+      const f = b / beads
+      pos.push(x, ground + top - f * reach, z)
+      const w = (0.9 + r() * 0.9) * (0.45 + 0.55 * (1 - f))
+      col.push(...((violet ? [0.95 * w, 0.55 * w, 1.0 * w] : [0.72 * w, 0.66 * w, 1.0 * w]) as RGB))
+      size.push(0.04 + r() * 0.035)
     }
   }
-  return cloud(u, new Float32Array(pos), new Float32Array(col), new Float32Array(size), 7, [14, 110], 78, 0.55, { center, fogColor: MEADOW_FOG })
+  return cloud(u, new Float32Array(pos), new Float32Array(col), new Float32Array(size), 12, [12, 110], 78, 0.55, { center, fogColor: MEADOW_FOG })
 }
