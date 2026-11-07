@@ -90,6 +90,7 @@ export default function CapturePage() {
           : <button className="primary big" disabled={phase === 'preparing' || phase === 'sealing' || phase === 'uploading'}
               onClick={() => void takePhoto()}>{phase === 'done' ? 'Take another' : 'Take photo'}</button>}
       </div>
+      <p className="muted small">Photo already in your library? <Link to="/upload">Upload it</Link> (it won’t carry a seal).</p>
       <p className="muted small">First time on this phone? <Link to="/setup">Set it up</Link>.</p>
     </main>
   )

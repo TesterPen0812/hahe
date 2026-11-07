@@ -7,6 +7,7 @@ import SetupPage from './pages/SetupPage'
 import AttackerPage from './pages/AttackerPage'
 import SplitScreenPage from './pages/SplitScreenPage'
 import PasskeyTestPage from './pages/PasskeyTestPage'
+import UploadPage from './pages/UploadPage'
 
 // three.js only loads on the landing page, so the phone's capture page stays light.
 const UniversePage = lazy(() => import('./universe/UniversePage'))
@@ -20,6 +21,7 @@ function Nav() {
       <NavLink to="/" end className="brand">Provenance</NavLink>
       <NavLink to="/feed">Briefing</NavLink>
       <NavLink to="/capture">Capture</NavLink>
+      <NavLink to="/upload">Upload</NavLink>
       <NavLink to="/attack">Attacker</NavLink>
       <NavLink to="/split">Split</NavLink>
     </nav>
@@ -34,6 +36,7 @@ export default function App() {
         <Route path="/" element={<Suspense fallback={<div className="uv-loading" />}><UniversePage /></Suspense>} />
         <Route path="/feed" element={<FeedPage />} />
         <Route path="/capture" element={<CapturePage />} />
+        <Route path="/upload" element={<UploadPage />} />
         <Route path="/item/:id" element={<ItemPage />} />
         <Route path="/setup" element={<SetupPage />} />
         <Route path="/attack" element={<AttackerPage />} />
