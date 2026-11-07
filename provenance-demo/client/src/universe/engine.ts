@@ -11,6 +11,7 @@ import {
 } from './worlds'
 import { buildMeadow, qdayGate } from './scenery'
 import { buildGallery, type Gallery, type GalleryPhoto } from './gallery'
+import { Fluid } from './fluid'
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
@@ -68,6 +69,8 @@ export class UniverseEngine {
   private gateCurtain: THREE.Points
   private homePath: THREE.Points
   private gallery: Gallery | null = null
+  private fluid: Fluid
+  private fluidLast = new THREE.Vector2(-1, -1)
 
   // travel state
   private seg = -1
@@ -127,6 +130,7 @@ export class UniverseEngine {
     this.renderer.toneMappingExposure = this.exposure
     this.renderer.setClearColor(0x020308, 1)
 
+    this.fluid = new Fluid(this.renderer, this.lowPower)
     this.L0 = this.trunk.getLength()
     this.gateD = this.L0 - 9
 
@@ -145,6 +149,8 @@ export class UniverseEngine {
     this.finish = new ShaderPass(finishShader)
     this.finish.uniforms.uFlashColor.value = this.flashColor
     this.finish.uniforms.uWake.value = this.wake
+    this.finish.uniforms.uFluid.value = this.fluid.texture
+    this.finish.uniforms.uFluidAmt.value = this.reducedMotion ? 0 : 0.014
     this.composer.addPass(this.finish)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
@@ -211,6 +217,7 @@ export class UniverseEngine {
     }
     this.gallery?.dispose()
     this.universes.forEach(u => u.rt.dispose())
+    this.fluid.dispose()
     this.composer.dispose()
     this.renderer.dispose()
     this.canvas.remove()
@@ -516,7 +523,20 @@ export class UniverseEngine {
     this.updateUniforms(t, dt)
     this.updateLabels()
     this.emitState()
+    this.stirFluid(dt)
     this.render()
+  }
+
+  /** The pointer pushes the screen fluid along the way it moves. */
+  private stirFluid(dt: number) {
+    const uv = new THREE.Vector2((this.ndc.x + 1) / 2, (this.ndc.y + 1) / 2)
+    if (this.pointerIn && this.fluidLast.x >= 0) {
+      const v = uv.clone().sub(this.fluidLast).divideScalar(Math.max(dt, 1 / 240))
+      if (v.lengthSq() > 1e-4) this.fluid.splat(uv, v.clampLength(0, 4).multiplyScalar(0.9))
+    }
+    this.fluidLast.copy(uv)
+    this.fluid.step(dt)
+    this.finish.uniforms.uFluid.value = this.fluid.texture
   }
 
   // Adaptive resolution: drop quality quickly when frames run long, recover it slowly.
@@ -801,6 +821,7 @@ export class UniverseEngine {
     const sizeScale = h / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2))
     for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uSizeScale.value = sizeScale
     this.finish.uniforms.uAspect.value = w / h
+    this.fluid.resize(w, h)
     for (const u of this.universes) {
       u.rt.setSize(Math.ceil(w * pr * u.rtScale), Math.ceil(h * pr * u.rtScale))
       ;(u.door.contentMat.uniforms.uRes.value as THREE.Vector2).set(w * pr, h * pr)

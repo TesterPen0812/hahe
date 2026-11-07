@@ -717,6 +717,8 @@ export const finishShader = {
     uAspect: { value: 1 },
     uZoom: { value: 0 },
     uWake: { value: [] as unknown[] },
+    uFluid: { value: null },
+    uFluidAmt: { value: 0 },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -731,21 +733,16 @@ export const finishShader = {
     uniform vec3 uFlashColor;
     uniform float uAspect;
     uniform float uZoom;
-    uniform vec4 uWake[${WAKE_STAMPS}]; // screen uv xy, velocity xy (uv/s); strength baked into velocity
+    uniform sampler2D uFluid;   // the pointer's fluid: velocity in uv per second
+    uniform float uFluidAmt;
     varying vec2 vUv;
     float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
     void main() {
       vec2 uv = vUv;
-      // The image is gently dragged along behind the pointer and slowly lets go.
-      vec2 disp = vec2(0.0);
-      for (int i = 0; i < ${WAKE_STAMPS}; i++) {
-        vec4 w = uWake[i];
-        vec2 d = (uv - w.xy) * vec2(uAspect, 1.0);
-        float f = exp(-dot(d, d) * 90.0);
-        vec2 sw = vec2(-d.y, d.x) * 0.6;
-        disp -= (w.zw + sw * length(w.zw) * 4.0) * f;
-      }
-      uv += disp * 0.012;
+      // The image ripples where the pointer stirred it, like disturbed water, and settles.
+      vec2 flow = uFluidAmt > 0.0 ? texture2D(uFluid, vUv).xy : vec2(0.0);
+      uv -= flow * uFluidAmt;
+      float speed = length(flow);
       vec2 c = uv - 0.5;
       float r2 = dot(c, c);
       vec3 col;
@@ -759,7 +756,7 @@ export const finishShader = {
         col /= 8.0;
       } else {
         // dispersion grows toward the frame edges
-        vec2 off = c * r2 * 0.012;
+        vec2 off = c * r2 * 0.012 + flow * uFluidAmt * 0.35;
         col = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
       }
       col *= mix(1.0, smoothstep(0.95, 0.15, length(c * vec2(1.0, 1.15))), uVignette);
