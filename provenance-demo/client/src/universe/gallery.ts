@@ -1,10 +1,11 @@
-// Real photos from the feed hang along the walk as prints on smoked glass. Before Q-Day an old
+// Real photos from the feed hang along the walk, lit by their world. Before Q-Day a standard
 // camera's photo and one of ours look equally sealed. When Q-Day's wave reaches a print, a sheen
 // crosses it and its seal re-reads the server's verdict: a classical ring the signed log still
 // vouches for turns brass and keeps a log mark; one nothing vouches for parts and fades; the
 // post-quantum ring holds. Labels say only what the server said (setVerdicts).
 import * as THREE from 'three'
 import type { SealPart } from './contract'
+import { CARD_LOOKS, CardMotes, type CardLook } from './cardLight'
 import { PhotoCard } from './photoCard'
 import type { Label } from './photoStyle'
 import { homeHeight } from './worlds'
@@ -21,6 +22,10 @@ export interface GalleryOptions {
   lift?: number
   /** Card width in world units. */
   width?: number
+  /** The world's light, fog and particles (the blue world's by default). */
+  look?: CardLook
+  /** Least distance along the path between neighbouring prints; photos that don't fit aren't hung. */
+  gap?: number
 }
 
 /** Every photo hung here was logged before the gate is crossed; until the server answers, this is what it says. */
@@ -32,7 +37,7 @@ function before(kind: SealKind): { parts: SealPart[]; label: Label } {
   const parts: SealPart[] = kind === 'legacy'
     ? [{ alg: 'rsa-pss-2048', state: 'holds' }]
     : [{ alg: 'ml-dsa-65', state: 'holds' }, { alg: 'ed25519', state: 'holds' }]
-  return { parts, label: { kicker: kind === 'legacy' ? 'Old camera' : 'Provenance', parts } }
+  return { parts, label: { kicker: kind === 'legacy' ? "Today's standard" : 'Provenance', parts } }
 }
 
 function after(kind: SealKind, v: SealVerdict): { parts: SealPart[]; label: Label; lost: number } {
@@ -67,33 +72,43 @@ export function buildGallery(
   const group = new THREE.Group()
   const ground = opts.ground ?? homeHeight
   const lift = opts.lift ?? 1.85
-  type Frame = { photo: GalleryPhoto; card: PhotoCard; base: THREE.Vector3; tan: THREE.Vector3; seed: number; verdict: SealVerdict; hit: number | null; lost: number }
+  type Frame = { photo: GalleryPhoto; card: PhotoCard; base: THREE.Vector3; tan: THREE.Vector3; seed: number; verdict: SealVerdict; hit: number | null; lost: number; ground: number }
   const frames: Frame[] = []
-  const n = photos.length
-  photos.forEach((photo, i) => {
+  const look = opts.look ?? CARD_LOOKS.blue
+  const fog: [number, number] = [26, 50]
+  const motes = new CardMotes(look, fog)
+  group.add(motes.mesh)
+  // Evenly along the span, but never closer than `gap`: neighbours stand well apart, on alternate sides.
+  const span = (to - from) * curve.getLength()
+  const gap = opts.gap ?? 9
+  const n = Math.min(photos.length, Math.max(1, Math.floor(span / gap) + 1))
+  photos.slice(0, n).forEach((photo, i) => {
     const f = n === 1 ? (from + to) / 2 : from + (to - from) * (i / (n - 1))
     const on = curve.getPointAt(f)
     const tan = curve.getTangentAt(f).setY(0).normalize()
     const side = new THREE.Vector3(-tan.z, 0, tan.x)
     const k = i + seed
     const sgn = k % 2 === 0 ? -1 : 1
-    const off = 3.1 + (k % 3) * 0.45
+    const off = 3.4 + (k % 3) * 0.4
     const pos = on.clone().addScaledVector(side, sgn * off)
-    pos.y = ground(pos.x, pos.z) + lift + ((k * 37) % 5) * 0.1
-    // a deep label band, so the captions read on a projector from the path
-    const card = new PhotoCard({ width: opts.width ?? 2.6, band: 0.3, seed: k * 0.37, fog: [26, 50] })
+    const g = ground(pos.x, pos.z)
+    pos.y = g + lift + ((k * 37) % 5) * 0.08
+    // a deep label, so the captions read on a projector from the path
+    const card = new PhotoCard({ width: opts.width ?? 2.6, band: 0.28, seed: k * 0.37, fog, look })
     const b = before(photo.kind)
     card.setParts(b.parts, { at: -100 })
     card.setLabel(b.label)
     card.mesh.position.copy(pos)
+    card.setGround(g - pos.y)
     // face back down the path, turned a little toward its centre line
-    const look = on.clone().addScaledVector(tan, -9)
-    look.y = pos.y
-    card.mesh.lookAt(look)
+    const look3 = on.clone().addScaledVector(tan, -9)
+    look3.y = pos.y
+    card.mesh.lookAt(look3)
     card.mesh.renderOrder = 3
     group.add(card.mesh)
+    motes.add(card)
     void card.setPhoto(photo.url).then(() => card.showPhoto(true))
-    frames.push({ photo, card, base: pos, tan, seed: k * 1.7, verdict: PREDICTED, hit: null, lost: 0 })
+    frames.push({ photo, card, base: pos, tan, seed: k * 1.7, verdict: PREDICTED, hit: null, lost: 0, ground: g })
   })
 
   const apply = (fr: Frame, at: number) => {
@@ -115,6 +130,7 @@ export function buildGallery(
           fr.card.alpha = THREE.MathUtils.smoothstep(ahead, 2.5, 6)
         } else fr.card.alpha = 1
         fr.card.mesh.position.y = fr.base.y + Math.sin(t * 0.5 + fr.seed) * 0.04
+        fr.card.setGround(fr.ground - fr.card.mesh.position.y)
         if (qdayAt < 0) {
           if (fr.hit !== null) {
             // rewound to today: back to how it hung, at once
@@ -131,6 +147,7 @@ export function buildGallery(
         const lostNow = fr.hit === null ? 0 : fr.lost * THREE.MathUtils.smoothstep(t - fr.hit, 0.6, 2.2)
         fr.card.lost = lostNow
       }
+      motes.update(t)
     },
     setVerdicts(verdicts) {
       for (const fr of frames) {
@@ -143,6 +160,6 @@ export function buildGallery(
         if (fr.hit !== null) apply(fr, last)
       }
     },
-    dispose() { for (const fr of frames) fr.card.dispose() },
+    dispose() { for (const fr of frames) fr.card.dispose(); motes.dispose() },
   }
 }

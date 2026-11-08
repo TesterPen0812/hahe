@@ -9,6 +9,7 @@
 //  photos  (branch v2-photos): gallery.ts, liveFrame.ts, liveSequence.ts and new photo/seal modules.
 //                              How photos and seals look in 3D, the live frames, and the rejected forgery.
 import type * as THREE from 'three'
+import type { CardLook } from './cardLight'
 
 export type RGB = [number, number, number]
 
@@ -82,6 +83,8 @@ export interface LiveSequenceOptions {
   /** Address shown in the waiting frame. */
   host: string
   onLand?: (index: number, a: LiveArrival) => void
+  /** The world the frames stand in: its light, fog and particles. */
+  look?: CardLook
 }
 export interface LiveSequence {
   readonly group: THREE.Group

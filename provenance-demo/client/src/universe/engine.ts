@@ -10,6 +10,7 @@ import {
   tintGateWall, tintLeak, tintSurround, type Leak, type SceneUniforms, type Surround,
 } from './worlds'
 import { buildMeadow } from './scenery'
+import { CARD_LOOKS } from './cardLight'
 import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from './gallery'
 import { PHONE_HOST } from './liveFrame'
 import { createLiveSequence, LIVE_VIEW, type LiveFrames } from './liveSequence'
@@ -498,9 +499,9 @@ export class UniverseEngine implements WalkControls {
     if (!photos.length) return
     const blue = this.stages[1], prism = this.stages[2]
     const gate = blue.door!.s
-    this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, { ground: blue.ground }) })
+    this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, { ground: blue.ground, look: CARD_LOOKS.blue }) })
     // the first prints hang well ahead of the Q-Day stop, so none is cut off at the screen's edge there
-    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, (QDAY_AT + 6) / prism.len, (LIVE_START - 3) / prism.len, 1, { ground: prism.ground }) })
+    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, (QDAY_AT + 6) / prism.len, (LIVE_START - 3) / prism.len, 1, { ground: prism.ground, look: CARD_LOOKS.prism }) })
     for (const g of this.galleries) this.stages[g.stage].scene.add(g.gallery.group)
   }
 
@@ -1049,7 +1050,16 @@ export class UniverseEngine implements WalkControls {
     return p
   }
 
+  /** Visual QA (DEV only): hold the eye at a point, looking at another, in the active world's space. */
+  qaEye: { at: [number, number, number]; to: [number, number, number] } | null = null
+
   private placeCamera(blend: number) {
+    if (import.meta.env.DEV && this.qaEye) {
+      this.camera.position.set(...this.qaEye.at)
+      this.camera.lookAt(...this.qaEye.to)
+      this.camera.updateMatrixWorld()
+      return
+    }
     const j = this.active, st = this.stages[j]
     const s = this.r - st.start
     const pos = this.pointAt(j, s)

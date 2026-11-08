@@ -10,6 +10,7 @@
 // aside. Frames further on than the next one sit back, dimmer, until it's their turn.
 import * as THREE from 'three'
 import type { ForgeryArrival, LiveArrival, LiveSequence, LiveSequenceOptions } from './contract'
+import { CARD_LOOKS, CardMotes } from './cardLight'
 import { PhotoCard } from './photoCard'
 import { labelFor } from './sealParts'
 
@@ -19,6 +20,8 @@ const CARD_W = 2.5
 /** Phone photos are portrait; the waiting frame takes their shape. */
 const PORTRAIT = 3 / 4
 const FLIGHT = 1.7
+/** Ground to the bottom of a frame's label: clear of the path's glow. */
+const LIFT = 0.85
 
 interface Slot {
   card: PhotoCard
@@ -50,10 +53,15 @@ const smooth = THREE.MathUtils.smoothstep
 export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
   const group = new THREE.Group()
   const slots: Slot[] = []
-  const waiting = new PhotoCard({ width: CARD_W, aspect: PORTRAIT, seed: 0.5, fog: [40, 70] })
+  const worldLook = o.look ?? CARD_LOOKS.prism
+  const fog: [number, number] = [40, 70]
+  const motes = new CardMotes(worldLook, fog)
+  group.add(motes.mesh)
+  const waiting = new PhotoCard({ width: CARD_W, aspect: PORTRAIT, seed: 0.5, fog, look: worldLook })
   waiting.waiting = 1
   waiting.setLabel({ kicker: 'Live', live: true })
   group.add(waiting.mesh)
+  motes.add(waiting)
   /** The waiting frame fades out of one slot and in at the next. */
   let waitingAt = 0, waitingFrom = 0, waitingMoved = -100
   let now = 0, last = 0
@@ -70,7 +78,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
     const facing = spot.facing.copy(at.tangent).setY(0).normalize().negate()
     const pos = spot.pos.copy(at.position)
     // high enough that the path's glow runs under the frame, not into its lower edge
-    pos.y = o.path.ground(pos.x, pos.z) + height / 2 + 0.62
+    pos.y = o.path.ground(pos.x, pos.z) + height / 2 + LIFT
     spot.side.set(facing.z, 0, -facing.x).multiplyScalar(i % 2 === 0 ? 1 : -1)
     return spot
   }
@@ -85,6 +93,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
     out.copy(pos).addScaledVector(side, aside * (CARD_W * 0.85 + 0.5))
     out.y += Math.sin(now * 0.6 + i * 1.3) * 0.03
     card.mesh.position.copy(out)
+    card.setGround(-(card.height / 2 + LIFT) - (out.y - pos.y))
     card.mesh.lookAt(look.copy(out).add(facing))
     card.mesh.rotateY(aside * 0.5 * (i % 2 === 0 ? -1 : 1))
     // the frame you're walking to is bright; further ones wait, dimmer
@@ -107,16 +116,18 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
       for (let k = slots.length - 1; k >= 0; k--) {
         if (!slots[k].forgery) continue
         group.remove(slots[k].card.mesh)
+        motes.remove(slots[k].card)
         slots[k].card.dispose()
         slots.splice(k, 1)
       }
     }
-    const card = new PhotoCard({ width: CARD_W, aspect: PORTRAIT, seed: slots.length * 0.61 + 0.2, fog: [40, 70] })
+    const card = new PhotoCard({ width: CARD_W, aspect: PORTRAIT, seed: slots.length * 0.61 + 0.2, fog, look: worldLook })
     card.alpha = 0
     card.captionOn = 0
     card.setParts(a.parts, { draw: true, at: 1e6 })   // not drawn until it lands
     card.setLabel(labelFor(a, forgery))
     group.add(card.mesh)
+    motes.add(card)
     const slot: Slot = { card, arrival: a, forgery, ready: false, flewAt: null, landed: false, failed: false }
     slots.push(slot)
     if (!forgery) photoSlots.push(slot)
@@ -171,9 +182,11 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
           card.mesh.scale.setScalar(0.35 + 0.65 * e)
           card.mesh.rotateY((1 - e) * 0.35)
           card.alpha = smooth(k, 0, 0.25) * p.queued
+          card.standing = smooth(k, 0.75, 1)
           if (k >= 1) {
             s.landed = true
             card.mesh.scale.setScalar(1)
+            card.standing = 1
             card.setParts(s.arrival.parts, { draw: true, at: t + 0.15 })
             o.onLand?.(i, s.arrival)
           }
@@ -193,9 +206,10 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
       const fade = k < 0 ? 1 - smooth(k, -FLIGHT * 0.4, 0) : smooth(k, 0.2, 1.2)
       const wp = pose(waiting, slotNow, cam, rest)
       waiting.alpha = fade * wp.queued
+      motes.update(t)
     },
     reset() {
-      for (const s of slots) { group.remove(s.card.mesh); s.card.dispose() }
+      for (const s of slots) { group.remove(s.card.mesh); motes.remove(s.card); s.card.dispose() }
       slots.length = 0
       photoSlots.length = 0
       waitingAt = waitingFrom = 0; waitingMoved = -100
@@ -203,6 +217,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
     dispose() {
       for (const s of slots) s.card.dispose()
       waiting.dispose()
+      motes.dispose()
     },
   }
 }
