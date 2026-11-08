@@ -24,18 +24,17 @@ export const prismHelpers = /* glsl */ `
     if (tone < 0.666667) return mix(violet, rose, tone * 3.0 - 1.0);
     return mix(rose, lemon, tone * 3.0 - 2.0);
   }
-  // Today's meadow keeps its own family: navy, periwinkle, ice and a little violet.
+  // Today's world is one calm colour: deep navy through cornflower to a pale ice blue.
   vec3 todayPalette(float tone) {
-    vec3 navy = vec3(0.16, 0.26, 0.86), periwinkle = vec3(0.42, 0.52, 1.0);
-    vec3 ice = vec3(0.74, 0.82, 1.0), violet = vec3(0.6, 0.42, 1.0);
-    if (tone < 0.333333) return mix(navy, periwinkle, tone * 3.0);
-    if (tone < 0.666667) return mix(periwinkle, ice, tone * 3.0 - 1.0);
-    return mix(ice, violet, tone * 3.0 - 2.0);
+    vec3 navy = vec3(0.12, 0.22, 0.78), cornflower = vec3(0.36, 0.5, 1.0), ice = vec3(0.72, 0.82, 1.0);
+    if (tone < 0.5) return mix(navy, cornflower, tone * 2.0);
+    return mix(cornflower, ice, tone * 2.0 - 1.0);
   }
   vec3 meadowPalette(float tone) { return uPalette > 0.5 ? todayPalette(tone) : prismPalette(tone); }
   vec3 prismColor(vec3 base, float mode, vec4 hang, vec4 detail, float time) {
     if (mode < 15.5 || mode > 16.5) return base;
-    float wave = sin(hang.x * 0.32 + hang.y * 0.21 + sin(hang.y * 0.09) * 2.0 - time * 0.35) * 0.5 + 0.5;
+    // Today's bands drift at half the Prism's pace: a calmer world before Q-Day.
+    float wave = sin(hang.x * 0.32 + hang.y * 0.21 + sin(hang.y * 0.09) * 2.0 - time * (uPalette > 0.5 ? 0.17 : 0.35)) * 0.5 + 0.5;
     float tone = clamp(wave * 1.1 - 0.05 + detail.z, 0.0, 1.0);
     vec3 tint = hang.w < 0.0 ? meadowPalette(0.15) : detail.w > 0.5 ? vec3(0.91, 0.96, 1.0) : meadowPalette(tone);
     return base * tint;

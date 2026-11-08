@@ -443,7 +443,7 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = fa
 
 export function gateWall(tint: RGB, lowPower: boolean) {
   const n = lowPower ? 3680 : 9200
-  const pos: number[] = [], col: number[] = [], size: number[] = [], shape: number[] = []
+  const pos: number[] = [], col: number[] = [], size: number[] = [], shape: number[] = [], bright: number[] = []
   const outer = DOOR.width / 2 + DOOR.frame
   for (let i = 0; i < n; i++) {
     const r = (salt: number) => portalRandom(i, salt)
@@ -456,6 +456,7 @@ export function gateWall(tint: RGB, lowPower: boolean) {
       shape.push(top ? 0 : side * (1 - reach), reach, top ? 1 : 0, -1)
       const b = r(88) < 0.09 ? 1.5 : 0.65 + r(89) * 0.35
       col.push((tint[0] * 0.7 + 0.3) * b, (tint[1] * 0.7 + 0.3) * b, (tint[2] * 0.7 + 0.3) * b)
+      bright.push(b)
       size.push(0.04 * THREE.MathUtils.lerp(0.6, 1.2, r(89)))
     } else {
       const distance = Math.pow(r(91), 1.6) * 7
@@ -463,10 +464,21 @@ export function gateWall(tint: RGB, lowPower: boolean) {
       pos.push(bell * 0.02, 0.015, distance + 0.175)
       shape.push(bell * (1 + distance * 0.35), 0, 0, distance)
       col.push(tint[0] * 0.7 + 0.3, tint[1] * 0.7 + 0.3, tint[2] * 0.7 + 0.3)
+      bright.push(1)
       size.push(0.04 * THREE.MathUtils.lerp(0.6, 1.2, r(94)))
     }
   }
-  return { pos: new Float32Array(pos), col: new Float32Array(col), size: new Float32Array(size), shape: new Float32Array(shape) }
+  return { pos: new Float32Array(pos), col: new Float32Array(col), size: new Float32Array(size), shape: new Float32Array(shape), bright: new Float32Array(bright) }
+}
+
+/** Recolour a door's slab and spill grains in place (see gateWall's colour law). */
+export function tintGateWall(colors: Float32Array, bright: Float32Array, tint: RGB) {
+  for (let i = 0; i < bright.length; i++) {
+    const b = bright[i]
+    colors[i * 3] = (tint[0] * 0.7 + 0.3) * b
+    colors[i * 3 + 1] = (tint[1] * 0.7 + 0.3) * b
+    colors[i * 3 + 2] = (tint[2] * 0.7 + 0.3) * b
+  }
 }
 
 // ── The home meadow (today) ────────────────────────────────────────────────

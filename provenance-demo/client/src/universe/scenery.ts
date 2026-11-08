@@ -1,4 +1,4 @@
-// The home meadow ("today") and the Q-Day gate. Original scene design for this app.
+// The blue world ("today", before Q-Day). Original scene design for this app.
 // The look is deliberately spare: one colour family, soft out-of-focus light everywhere,
 // a cavern of hanging threads, and a single bright stream leading to the door.
 import * as THREE from 'three'
@@ -70,35 +70,4 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
     size: (r) => 0.03 + r() * 0.05,
     yJitter: (r) => r() * 10,
   }))
-}
-
-/**
- * The Q-Day gate: a dense curtain of hanging strands across the path. Its material's uOpacity
- * doubles as its state: 0.55 closed, falling toward 0.12 as the curtain parts once crossed.
- */
-export function qdayGate(u: SceneUniforms, center: THREE.Vector3, tangent: THREE.Vector3, lowPower: boolean) {
-  const r = rng(77), strands = lowPower ? 260 : 620
-  const side = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize()
-  const pos: number[] = [], col: number[] = [], size: number[] = []
-  for (let i = 0; i < strands; i++) {
-    const s = (r() - 0.5) * 2 * 9 * Math.sqrt(r())
-    const depth = (r() - 0.5) * 0.8
-    const x = center.x + side.x * s + tangent.x * depth, z = center.z + side.z * s + tangent.z * depth
-    const ground = homeHeight(x, z)
-    // every strand hangs from the same roof line, so the curtain swings from one pivot height
-    const edge = Math.abs(s) / 9
-    const top = 9.6 - edge * edge * 2.4 + (r() - 0.5) * 0.8
-    const reach = top * (0.5 + r() * 0.42)
-    const beads = 26 + Math.floor(reach * 5)
-    const violet = r() < 0.18
-    for (let b = 0; b < beads; b++) {
-      const f = b / beads
-      pos.push(x, ground + top - f * reach, z)
-      // fade toward the curtain's edges and toward each strand's tip, so it has no hard outline
-      const w = (0.9 + r() * 0.9) * (0.45 + 0.55 * (1 - f)) * (1 - edge * edge * 0.85) * (f > 0.8 ? (1 - f) * 5 : 1)
-      col.push(...((violet ? [0.95 * w, 0.55 * w, 1.0 * w] : [0.72 * w, 0.66 * w, 1.0 * w]) as RGB))
-      size.push(0.04 + r() * 0.035)
-    }
-  }
-  return cloud(u, new Float32Array(pos), new Float32Array(col), new Float32Array(size), 12, [12, 110], 78, 0.55, { center, axis: side, fogColor: MEADOW_FOG })
 }
