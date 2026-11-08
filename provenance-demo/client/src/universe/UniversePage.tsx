@@ -6,11 +6,11 @@ import '@fontsource-variable/newsreader/opsz-italic.css'
 import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
 import { api } from '../lib/api'
-import { useWorld } from '../lib/world'
+import { latestWins, useWorld } from '../lib/world'
 import { UniverseEngine, type EngineState, type WorldView } from './engine'
 import type { GalleryPhoto, SealVerdict } from './gallery'
 import { isAttack, useLiveFeed } from './liveFeed'
-import type { DoorId, DoorTints, RGB, WalkState } from './contract'
+import type { DoorId, DoorTints, RGB, WalkControls } from './contract'
 import { useGesture, useHands } from '../gesture/gestures'
 import { StoryCard } from './StoryCard'
 import { CaptureLog } from './CaptureLog'
@@ -18,6 +18,7 @@ import { ForgeReadout, VERDICT_MS } from './ForgeReadout'
 import { StageTools } from './StageTools'
 import { loadTints, useForge, useMockCard, useVerdictGate } from './stageHooks'
 import { toForgeryArrival, toLiveArrival } from './sealParts'
+import { cardShowing } from './stageData'
 import './universe.css'
 
 const INITIAL: EngineState = {
@@ -29,6 +30,8 @@ const params = new URLSearchParams(window.location.search)
 const REHEARSE = import.meta.env.DEV && params.has('rehearse')
 // Building the screen before the scene emits walk state: /?mockwalk cycles the cards.
 const MOCKWALK = import.meta.env.DEV && params.has('mockwalk')
+/** After a finished run is put away, B does nothing for this long. */
+const B_QUIET_MS = 2000
 
 
 function webglAvailable() {
@@ -45,17 +48,18 @@ export default function UniversePage() {
   const engine = useRef<UniverseEngine | null>(null)
   const [view, setView] = useState<WorldView>('journey')
   const [state, setState] = useState<EngineState>(INITIAL)
+  const mockCard = useMockCard(MOCKWALK)
   const [failed, setFailed] = useState(() => !webglAvailable())
   const { world, set } = useWorld()
   const setRef = useRef(set)
   useEffect(() => { setRef.current = set })
-  // World writes go out one at a time, in the order they were asked for, so the last one always wins
-  // (the reset on load can never land after a door crossing that came later).
-  const worldWrites = useRef<Promise<unknown>>(Promise.resolve())
+  // World writes go out one at a time and only the newest waiting one is sent, so the last one always
+  // wins (the reset on load can never land after a door crossing that came later). Each write times out
+  // (api.setWorld), so a stalled request can't wedge the ones behind it.
+  const worldQueue = useRef<((mode: WorldMode) => Promise<void>) | null>(null)
   const writeWorld = useCallback((mode: WorldMode) => {
-    const next = worldWrites.current.catch(() => {}).then(() => setRef.current(mode))
-    worldWrites.current = next
-    void next.catch(() => {})
+    worldQueue.current ??= latestWins<WorldMode>(m => setRef.current(m))
+    void worldQueue.current(mode)
   }, [])
 
   // ── hand control: H toggles; the only trace on stage is a small mark in the corner ──
@@ -100,13 +104,20 @@ export default function UniversePage() {
 
   // ── the live key break ──
   const forge = useForge(result => engine.current?.showForgery(toForgeryArrival(result)))
-  const { run: forgeRun, start: startForge, dismiss: dismissForge } = forge
+  const { run: forgeRun, start: startForge, dismiss: putAway } = forge
+  // When a finished run was put away: B stays quiet for a moment after, so a double tap that dismisses
+  // the verdict can't go on to start a second break.
+  const putAwayAt = useRef(0)
+  const dismissForge = useCallback(() => { putAwayAt.current = performance.now(); putAway() }, [putAway])
   const dismissRef = useRef(dismissForge)
   useEffect(() => { dismissRef.current = dismissForge })
   // The verdict waits for the forged photo to land in its frame (the scene's `forgeryLanded`; older
-  // scene builds don't send it, and the gate falls back to a short delay).
-  const walk: WalkState & { forgeryLanded?: boolean } = state.walk
-  const verdict = useVerdictGate(forgeRun, walk.forgeryLanded)
+  // scene builds don't send it, and the gate falls back to a short delay)…
+  const verdictOpen = useVerdictGate(forgeRun, state.walk.forgeryLanded)
+  // …and for any story card to clear, so a card never hides it and its reading time starts once it's seen.
+  const card = MOCKWALK ? mockCard : state.walk.card
+  const cardUp = view === 'journey' && cardShowing(card?.strength)
+  const verdict = verdictOpen && !cardUp
   // Once the verdict has been read (or the run failed and faded), the readout goes; the 3D frame stays.
   const forgeOver = forgeRun?.phase === 'error' ? 'error' : verdict ? 'verdict' : null
   useEffect(() => {
@@ -119,7 +130,11 @@ export default function UniversePage() {
   const breakKey = useCallback(() => {
     if (forgeRun?.phase === 'running') return
     if (forgeRun) dismissForge()
-    else if (qday) startForge()
+    else if (qday && performance.now() - putAwayAt.current > B_QUIET_MS) {
+      startForge()
+      // The camera glides to the break stop while the key breaks, so the forgery lands in view.
+      ;(engine.current as WalkControls | null)?.goToBreak?.()
+    }
   }, [forgeRun, startForge, dismissForge, qday])
 
   // ── door colours (demo-only tuning, remembered in this browser) ──
@@ -212,8 +227,6 @@ export default function UniversePage() {
     return () => { e.dispose(); engine.current = null }
   }, [failed, writeWorld])
 
-  const mockCard = useMockCard(MOCKWALK)
-  const card = MOCKWALK ? mockCard : state.walk.card
   const journey = view === 'journey'
 
   if (failed) {
@@ -243,7 +256,7 @@ export default function UniversePage() {
       </header>
 
       <div className="uv-story" hidden={!journey}>
-        <CaptureLog item={feed.arrival} hidden={!!forgeRun} fold={!!forgeRun?.result} />
+        <CaptureLog item={feed.arrival} hidden={!!forgeRun} fold={!!forgeRun?.result} region={state.walk.region} />
         <ForgeReadout run={forgeRun} verdict={verdict} />
       </div>
 
