@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ItemSummary } from '@provenance-demo/shared'
+import type { Region } from './contract'
 import { captureSteps, type CaptureStep } from './stageData'
 
 const FIRST = 500     // ms before the first line, while the photo flies into its frame
 const EVERY = 340     // ms between lines
 const SETTLE = 3500   // ms the full log stays open after the verdict before it folds to a thumbnail
+const LINGER = 4000   // ms the folded thumbnail stays before it fades away too
 
 const MARK: Record<CaptureStep['tone'], string> = { ok: '✓', fail: '✕', warn: '!', info: '·' }
 
@@ -12,15 +14,24 @@ const MARK: Record<CaptureStep['tone'], string> = { ok: '✓', fail: '✕', warn
  * A corner log of what happened to the photo that just arrived: one line per check the verifier ran,
  * revealed in order, then folded away to the photo's thumbnail. Click it to open the log again.
  * `fold` turning on (the forgery is on screen) folds it at once, so it never covers the forgery.
+ * The folded thumbnail lingers a few seconds, then goes until the next photo arrives; walking back to
+ * the tunnel or to Today (before the Post-Quantum Day door) clears it at once.
  */
-export function CaptureLog({ item, hidden, fold }: { item: ItemSummary | null; hidden?: boolean; fold?: boolean }) {
+export function CaptureLog({ item, hidden, fold, region }: { item: ItemSummary | null; hidden?: boolean; fold?: boolean; region?: Region }) {
   const steps = useMemo(() => (item ? captureSteps(item) : []), [item])
   const [shown, setShown] = useState(0)
   const [open, setOpen] = useState(true)
   const [folding, setFolding] = useState(false)
+  // The arrival that has been put away (by time or by walking back); a new arrival is a new object.
+  const [gone, setGone] = useState<ItemSummary | null>(null)
   if (!!fold !== folding) {
     setFolding(!!fold)
     if (fold) setOpen(false)
+  }
+  const [lastRegion, setLastRegion] = useState(region)
+  if (region !== lastRegion) {
+    setLastRegion(region)
+    if (item && region !== 'qday') setGone(item)
   }
 
   useEffect(() => {
@@ -32,15 +43,21 @@ export function CaptureLog({ item, hidden, fold }: { item: ItemSummary | null; h
     return () => timers.forEach(clearTimeout)
   }, [steps])
 
+  const done = shown >= steps.length
+  useEffect(() => {
+    if (!item || open || !done || hidden) return
+    const t = window.setTimeout(() => setGone(item), LINGER)
+    return () => clearTimeout(t)
+  }, [item, open, done, hidden])
+
   if (!item || !steps.length) return null
   const verdict = steps[steps.length - 1]
-  const done = shown >= steps.length
   const body = steps.slice(0, -1)
   const tone = item.verification.status
 
   return (
     <aside
-      className={`uv-log uv-log-${tone} ${open ? 'open' : 'folded'} ${hidden ? 'away' : ''}`}
+      className={`uv-log uv-log-${tone} ${open ? 'open' : 'folded'} ${hidden || gone === item ? 'away' : ''}`}
       onClick={() => done && setOpen(o => !o)}
       aria-label="Capture log"
     >

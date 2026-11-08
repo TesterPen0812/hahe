@@ -190,10 +190,11 @@
 .uv-tools { position: absolute; right: 22px; bottom: 22px; z-index: 9; }
 .uv-tools-mark {
   display: block; width: 12px; height: 12px; padding: 0; border-radius: 50%;
-  background: transparent; border: 1px solid rgba(255, 255, 255, 0.5); opacity: 0.22;
-  transition: opacity .25s, background .25s;
+  background: transparent; border: 1px solid rgba(255, 255, 255, 0.5); opacity: 0;
+  transition: opacity .35s, background .25s;
 }
-.uv-tools-mark:hover, .uv-tools.open .uv-tools-mark { opacity: 0.9; }
+.uv-tools.near .uv-tools-mark { opacity: 0.35; }
+.uv-tools-mark:hover, .uv-tools-mark:focus-visible, .uv-tools.open .uv-tools-mark { opacity: 0.9; }
 .uv-tools.open .uv-tools-mark { background: rgba(255, 255, 255, 0.85); }
 .uv-tools-panel {
   position: absolute; right: 0; bottom: 24px; width: 292px; box-sizing: border-box; display: grid; gap: 12px;

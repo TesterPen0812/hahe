@@ -1,10 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { DoorId, DoorTints, RGB } from './contract'
 import type { WorldView } from './engine'
 import { loadTints, saveTints } from './stageHooks'
 
 // Demo-only tuning, folded into one quiet mark in the corner: pick each door's colour (kept in this
 // browser until Taha chooses the default) and switch landscape. The key break is B (or the clicker).
+// The mark is invisible on stage: it fades in only when the pointer comes near it (or it has keyboard focus).
+const NEAR_PX = 140
 const SWATCHES: { name: string; rgb: RGB }[] = [
   { name: 'Pearl', rgb: [0.95, 0.93, 0.88] },
   { name: 'Ice', rgb: [0.72, 0.86, 1.0] },
@@ -31,10 +33,28 @@ export function StageTools({ view, onView, tints, onTint }: {
   onTint: (door: DoorId, rgb: RGB) => void
 }) {
   const [open, setOpen] = useState(false)
+  const [near, setNear] = useState(false)
+  const mark = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      const r = mark.current?.getBoundingClientRect()
+      if (!r) return
+      setNear(Math.hypot(e.clientX - (r.left + r.width / 2), e.clientY - (r.top + r.height / 2)) < NEAR_PX)
+    }
+    const away = () => setNear(false)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerdown', onMove)
+    document.documentElement.addEventListener('pointerleave', away)
+    return () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerdown', onMove)
+      document.documentElement.removeEventListener('pointerleave', away)
+    }
+  }, [])
   const tint = (door: DoorId, rgb: RGB) => { onTint(door, rgb); saveTints({ ...loadTints(), [door]: rgb }) }
   return (
-    <div className={`uv-tools ${open ? 'open' : ''}`}>
-      <button type="button" className="uv-tools-mark" aria-expanded={open} aria-label="Demo tools" onClick={() => setOpen(o => !o)} />
+    <div className={`uv-tools ${open ? 'open' : ''} ${near ? 'near' : ''}`}>
+      <button type="button" ref={mark} className="uv-tools-mark" aria-expanded={open} aria-label="Demo tools" onClick={() => setOpen(o => !o)} />
       {open && (
         <div className="uv-tools-panel" role="dialog" aria-label="Demo tools">
           {DOORS.map(d => (
