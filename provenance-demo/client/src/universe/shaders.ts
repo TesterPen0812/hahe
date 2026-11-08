@@ -1,10 +1,9 @@
-// GLSL for the branching-universes scene. Original shaders written for this app.
+import { Vector2 } from 'three'
+import { curlField } from './curl'
 
 export const TRAIL_LENGTH = 16
 /** Seconds a pointer wake stamp lingers. */
 export const WAKE_LIFE = 1.6
-/** Pointer stamps the finishing pass uses for its lingering screen-space ripple. */
-export const WAKE_STAMPS = 10
 
 /**
  * Shared particle lens model. A point's sharp footprint grows into a bokeh disc the further it
@@ -61,6 +60,12 @@ export const fieldVertex = /* glsl */ `
   uniform vec4 uTrail[${TRAIL_LENGTH}]; // pointer wake: xyz ray direction, w age (s)
   uniform vec4 uShock;            // x, z, start time, amplitude
   uniform vec4 uPointer;          // live pointer: xyz ray direction, w presence 0..1
+  uniform float uPointerSpeed;
+  uniform float uInteraction;
+  uniform float uTrailWeight[16];
+  uniform vec3 uPulseFrom;
+  varying vec2 vStrokeDirection;
+  varying float vStrokeLength;
   uniform float uWakeN;           // how many wake stamps are still alive (newest first)
   uniform vec3 uPointerFrom;      // where the pointer's rays start (the camera)
   uniform vec4 uPulse;            // click: xyz ray direction, w start time
@@ -78,15 +83,7 @@ export const fieldVertex = /* glsl */ `
 
   float hash(float n) { return fract(sin(n) * 43758.5453); }
 
-  // A slowly turning, divergence-free flow: the curl of two sine vector potentials, so grains
-  // swirl around the pointer without bunching up or leaving holes.
-  vec3 stir(vec3 q, float t) {
-    vec3 a = q * 0.9 + vec3(t * 0.31, t * 0.23, t * 0.37);
-    vec3 b = q * 1.7 + vec3(1.3 - t * 0.19, 4.1 + t * 0.29, 2.7 - t * 0.21);
-    vec3 f1 = -vec3(cos(a.z), cos(a.x), cos(a.y));
-    vec3 f2 = vec3(cos(b.y), cos(b.z), cos(b.x)) * 0.6;
-    return (f1 + f2) * 0.62;
-  }
+  ${curlField}
 
   // How close a grain sits to a ray from the camera, as an angle, and its distance along it.
   // Measuring by angle keeps the pointer's reach the same size on screen, near or far.
@@ -102,6 +99,7 @@ export const fieldVertex = /* glsl */ `
     float t = uTime;
     vTwinkle = 1.0;
     vFade = 1.0;
+    vec3 velocity = vec3(0.0);
 
     if (uMode < 0.5) {
       // Wind combs the meadow in long slow waves; tall grains sway more.
@@ -165,6 +163,7 @@ export const fieldVertex = /* glsl */ `
       // Motes rising slowly, fading in and out over their climb.
       float life = fract(t * (0.025 + aSeed * 0.03) + aSeed * 9.0);
       p.y += life * 9.0;
+      velocity.y = (0.025 + aSeed * 0.03) * 9.0;
       p.x += sin(t * 0.4 + aSeed * 20.0) * 0.5;
       vFade = smoothstep(0.0, 0.15, life) * (1.0 - smoothstep(0.7, 1.0, life));
       vTwinkle = 0.8 + 0.4 * sin(t * 2.0 + aSeed * 50.0);
@@ -184,6 +183,7 @@ export const fieldVertex = /* glsl */ `
       float len = 1.5 + fract(aSeed * 37.1) * 7.0;
       float slide = fract(t * (0.03 + fract(aSeed * 11.3) * 0.05) + aSeed * 13.0);
       p.y -= slide * len * 0.35;
+      velocity.y = -(0.03 + fract(aSeed * 11.3) * 0.05) * len * 0.35;
       p.x += sin(t * 0.25 + p.y * 0.4 + aSeed * 9.0) * 0.05;
       vFade = smoothstep(0.0, 0.2, slide) * (1.0 - smoothstep(0.75, 1.0, slide));
       vTwinkle = 0.75 + 0.35 * sin(t * (0.8 + aSeed) + aSeed * 60.0);
@@ -191,6 +191,7 @@ export const fieldVertex = /* glsl */ `
       // Glass beads strung on hanging columns: they creep down their strand and sway together.
       float slide = fract(t * (0.012 + fract(aSeed * 5.7) * 0.02) + aSeed * 7.0);
       p.y -= slide * 1.6;
+      velocity.y = -(0.012 + fract(aSeed * 5.7) * 0.02) * 1.6;
       float sway = sin(t * 0.35 + p.x * 0.15 + p.z * 0.05);
       p.x += sway * 0.06 * (1.0 + p.y * 0.04);
       vFade = smoothstep(0.0, 0.25, slide) * (1.0 - smoothstep(0.7, 1.0, slide));
@@ -215,49 +216,43 @@ export const fieldVertex = /* glsl */ `
       vTwinkle = (0.75 + 0.35 * sin(t * 1.1 + p.y * 0.6 + strand * 20.0)) * mix(1.0, 0.6, settle);
     }
 
-    // The pointer: grains around its ray swirl on a slow curl flow and light up. Where it has
-    // been, they keep turning for a moment and then settle back where they belong.
     float lit = 0.0;
-    {
-      vec3 flow = stir(p, t);
-      float near = 0.0, wake = 0.0;
-      if (uPointer.w > 0.0) {
-        vec2 r = nearRay(p, uPointer.xyz);
-        if (r.y > 0.9) {
-          float f = exp(-r.x * r.x / 0.0064) * uPointer.w;            // ~4.5 degrees
-          vec3 out_ = normalize(p - uPointerFrom - uPointer.xyz * r.y + 1e-4);
-          p += (flow * 0.07 + out_ * 0.03) * f * r.y;
-          near = f;
-        }
-      }
+    if (uInteraction > 0.0) {
+      vec3 relative = p - uPointerFrom;
+      vec2 ray = nearRay(p, uPointer.xyz);
+      float near = ray.y > 0.9 ? exp(-ray.x * ray.x / 0.0064) * uPointer.w : 0.0;
+      float wake = 0.0;
       for (int i = 0; i < ${TRAIL_LENGTH}; i++) {
         if (float(i) >= uWakeN) break;
-        vec4 tr = uTrail[i];
-        {
-          vec2 r = nearRay(p, tr.xyz);
-          if (r.y > 0.9) {
-            float life = 1.0 - tr.w / ${WAKE_LIFE.toFixed(2)};
-            float f = exp(-r.x * r.x / 0.0081) * life * life;
-            // rises as the stamp is made, then lets go: a spring that overshoots once
-            float swing = sin(min(tr.w * 3.2, 3.14159)) * 0.8 + 0.2;
-            p += flow * f * swing * r.y * 0.045;
-            wake += f;
-          }
-        }
+        vec4 stamp = uTrail[i];
+        vec2 r = nearRay(p, stamp.xyz);
+        if (r.y <= 0.9) continue;
+        float fade = max(0.0, 1.0 - stamp.w / ${WAKE_LIFE.toFixed(2)});
+        float impulse = (1.0 - exp(-stamp.w * 12.0)) * exp(-stamp.w * 2.0);
+        wake += exp(-r.x * r.x / 0.016384) * fade * fade * uTrailWeight[i] * impulse;
       }
-      lit = near * 1.8 + min(wake, 1.5) * 0.9;
-    }
-
-    // Click: a ring of light runs out from the pointer, flashing the grains it passes.
-    if (uPulse.w > -50.0) {
+      if (near + wake > 0.01) {
+        vec3 flow = pointerCurl(p, t);
+        float distance = length(relative);
+        vec3 target = flow * max(ray.y, 0.0) * 0.08 * 0.22 * near * (0.3 + uPointerSpeed * 0.9);
+        vec3 wakeVelocity = flow * distance * min(wake, 2.0) * 0.18;
+        p += (target + wakeVelocity * 0.22) * uInteraction;
+        velocity += wakeVelocity * uInteraction;
+        lit = near * (0.25 + uPointerSpeed * 0.8) + min(wake, 1.5) * 0.35;
+      }
+      // The click travels from its original ray even after the cursor moves away.
       float age = t - uPulse.w;
-      vec2 r = nearRay(p, uPulse.xyz);
-      if (r.y > 0.9 && age < 3.0) {
-        float front = (r.x - age * 0.32) / 0.025;
-        float ring = exp(-front * front) * exp(-age * 1.1);
-        vec3 out_ = normalize(p - uPointerFrom - uPulse.xyz * r.y + 1e-4);
-        p += out_ * ring * r.y * 0.012;
-        lit += ring * 2.2;
+      if (age >= 0.0 && age < 3.0) {
+        vec3 rel = p - uPulseFrom;
+        float along = dot(rel, uPulse.xyz);
+        vec3 across = rel - uPulse.xyz * along;
+        float angle = length(across) / max(along, 0.0001);
+        float front = angle - age * 0.9;
+        float ring = exp(-front * front / 0.0025) * exp(-age * 1.6) * step(0.9, along);
+        vec3 push = across / max(length(across), 0.0001);
+        p += push * along * 0.015 * ring * uInteraction;
+        velocity += push * along * 0.03 * ring * uInteraction;
+        lit += ring * 2.0;
       }
     }
 
@@ -274,7 +269,19 @@ export const fieldVertex = /* glsl */ `
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     gl_Position = projectionMatrix * mv;
     vDist = -mv.z;
-    gl_PointSize = lensSize(aSize, vDist);
+    float diameter = lensSize(aSize, vDist);
+    vec4 tail = projectionMatrix * (modelViewMatrix * vec4(p - velocity * 0.08, 1.0));
+    vec2 axis = (gl_Position.xy / max(gl_Position.w, 0.05) - tail.xy / max(tail.w, 0.05));
+    vec2 halfResolution = vec2(projectionMatrix[1][1] / projectionMatrix[0][0], 1.0) * uSizeScale * uPixelRatio / projectionMatrix[1][1];
+    axis *= halfResolution;
+    float axisLength = tail.w > 0.05 ? min(length(axis), diameter * 3.0) : 0.0;
+    vStrokeDirection = length(axis) > 0.001 ? normalize(axis) : vec2(1.0, 0.0);
+    gl_Position.xy -= vStrokeDirection * axisLength * 0.5 / halfResolution * gl_Position.w;
+    vStrokeLength = axisLength / max(diameter, 1.0);
+    vEnergy *= sqrt(1.0 / (1.0 + vStrokeLength));
+    gl_PointSize = min(diameter + axisLength, 128.0);
+    // Points enclose the capsule in a square; hardware limits are respected below.
+    vStrokeLength = min(vStrokeLength, max(0.0, 128.0 / diameter - 1.0));
     // grains the pointer touches catch its light: brighter, and washed toward white
     vColor = aColor * (1.0 + lit) + lit * 0.3 * vec3(0.8, 0.88, 1.0);
   }
@@ -290,35 +297,39 @@ export const fieldFragment = /* glsl */ `
   varying float vDist;
   varying float vTwinkle;
   varying float vFade;
-  ${sprite}
+  varying float vBlur;
+  varying float vEnergy;
+  varying vec2 vStrokeDirection;
+  varying float vStrokeLength;
 
   void main() {
-    float inside;
-    float shape = spriteShape(gl_PointCoord, inside);
-    if (inside < 0.5) discard;
+    vec2 screen = (gl_PointCoord * 2.0 - 1.0) * vec2(1.0, -1.0) * (1.0 + vStrokeLength);
+    vec2 side = vec2(-vStrokeDirection.y, vStrokeDirection.x);
+    vec2 local = vec2(dot(screen, vStrokeDirection), dot(screen, side));
+    float along = max(abs(local.x) - vStrokeLength, 0.0);
+    float rr = along * along + local.y * local.y;
+    if (rr > 1.0 || vDist <= 0.05) discard;
+    float radius = sqrt(rr);
+    float disc = 1.0 - smoothstep(0.82, 1.0, radius);
+    float rim = smoothstep(0.5, 0.92, radius);
+    float taper = mix(0.15, 1.0, clamp(local.x / (vStrokeLength + 1.0) * 0.5 + 0.5, 0.0, 1.0));
+    vec2 planar = vStrokeDirection * sign(local.x) * along + side * local.y;
+    vec3 normal = normalize(vec3(planar, sqrt(max(1.0 - rr, 0.0))));
+    vec3 light = normalize(vec3(-0.42, 0.55, 0.72));
+    float diffuse = max(dot(normal, light), 0.0);
+    float highlight = pow(max(reflect(-light, normal).z, 0.0), 36.0);
+    float fresnel = pow(1.0 - normal.z, 3.0);
     float fog = smoothstep(uFogNear, uFogFar, vDist);
-    float near = smoothstep(0.15, 1.1, vDist);
-    float op = (uMode > 6.5 && uMode < 7.5) ? 1.0 : uOpacity;
-    float a = shape * vEnergy * (1.0 - fog * fog) * near * op * vFade;
-    // distant grains take on the colour of the air
-    vec3 col = mix(vColor * vTwinkle, uFogColor, fog * 0.7);
-    if (uMode > 12.5 && vBlur < 0.55) {
-      // An in-focus bead is a small glass sphere: lit from above-left, dark limb, bright rim.
-      vec2 q = gl_PointCoord * 2.0 - 1.0;
-      float rr = dot(q, q);
-      if (rr > 1.0) discard;
-      vec3 n = vec3(q.x, -q.y, sqrt(1.0 - rr));
-      float lit = 0.32 + 0.68 * max(dot(n, normalize(vec3(-0.45, 0.6, 0.65))), 0.0);
-      float rim = pow(1.0 - n.z, 3.0) * 0.6;
-      float spec = pow(max(dot(n, normalize(vec3(-0.35, 0.45, 0.82))), 0.0), 40.0) * 0.9;
-      float k = 1.0 - smoothstep(0.2, 0.55, vBlur);
-      vec3 glass = mix(vColor * vTwinkle, uFogColor, fog * 0.7) * (lit + rim) + spec;
-      float ga = smoothstep(1.0, 0.86, sqrt(rr)) * (1.0 - fog * fog) * near * op * vFade;
-      col = mix(col, glass, k);
-      a = mix(a, ga, k);
-    }
-    gl_FragColor = vec4(col, a);
+    vec3 color = mix(vColor * vTwinkle, uFogColor, fog * 0.7);
+    float peak = max(color.r, max(color.g, color.b));
+    vec3 bead = color * (0.18 + diffuse * 1.1 + fresnel * 0.7) + vec3(peak) * highlight * 2.2;
+    vec3 bokeh = color * (0.55 + rim * 0.6);
+    float focus = smoothstep(0.15, 0.7, 1.0 - vBlur * vBlur);
+    float opacity = (uMode > 6.5 && uMode < 7.5) ? 1.0 : uOpacity;
+    float alpha = disc * taper * 0.42 * vEnergy * (1.0 - fog * fog) * smoothstep(0.05, 0.8, vDist) * opacity * vFade;
+    gl_FragColor = vec4(mix(bokeh, bead, focus), alpha);
   }
+
 `
 
 /** The glowing timeline: a stream of light that flows toward the future. */
@@ -610,16 +621,15 @@ export const portalFragment = /* glsl */ `
     float wobble = (vn(vec2(ang * 3.0, uTime * 0.8)) - 0.5) * 0.14 * open;
     float sd = length(wp) - hx + wobble;
     if (sd > 0.0) discard;
-    float edgeDist = clamp(-sd / max(hx, 1e-3), 0.0, 1.0);
     vec2 suv = gl_FragCoord.xy / uRes;
     // Light bends near the rim: the view through the door lenses slightly at its edges.
-    float bend = exp(-edgeDist * 8.0);
+    float bend = exp(-max(-sd, 0.0) * 5.0);
     vec2 drift = vec2(vn(vUv * 6.0 + uTime * 0.3), vn(vUv * 6.0 - uTime * 0.27)) - 0.5;
-    suv += (drift * 0.02 + vec2(sign(vUv.x - 0.5), 0.0) * -0.012) * bend * (1.0 - uEnter);
+    suv += (drift * 0.006) * bend * (1.0 - uEnter);
     vec3 world = texture2D(uTex, suv).rgb;
-    float rim = exp(-edgeDist * 18.0) * (1.0 - uEnter);
+    float rim = exp(-max(-sd, 0.0) * 40.0) * (1.0 - uEnter);
     float slit = 1.0 - smoothstep(0.0, 0.35, uOpen);
-    vec3 col = world * (1.0 + 0.25 * uHover);
+    vec3 col = world * smoothstep(0.0, 0.25, uOpen);
     col += mix(vec3(1.0), uTint, 0.7) * rim * (0.6 + 0.4 * uHover);
     col = mix(col, vec3(1.6, 1.55, 1.5), slit);
     // a faint inner veil of light near the floor of the opening
@@ -710,13 +720,16 @@ export const finishShader = {
   uniforms: {
     tDiffuse: { value: null },
     uTime: { value: 0 },
-    uVignette: { value: 0.75 },
-    uGrain: { value: 0.035 },
+    uVignette: { value: 0.3 },
+    uGrain: { value: 0.024 },
     uFlash: { value: 0 },
     uFlashColor: { value: [1, 1, 1] },
     uAspect: { value: 1 },
     uZoom: { value: 0 },
-    uWake: { value: [] as unknown[] },
+    uResolution: { value: new Vector2(1, 1) },
+    uFluidTexel: { value: new Vector2(1, 1) },
+    uDye: { value: null },
+    uDisplacement: { value: null },
     uFluid: { value: null },
     uFluidAmt: { value: 0 },
   },
@@ -733,16 +746,30 @@ export const finishShader = {
     uniform vec3 uFlashColor;
     uniform float uAspect;
     uniform float uZoom;
-    uniform sampler2D uFluid;   // the pointer's fluid: velocity in uv per second
+    uniform sampler2D uFluid;
+    uniform sampler2D uDye;
+    uniform sampler2D uDisplacement;
+    uniform vec2 uFluidTexel;
+    uniform vec2 uResolution;
     uniform float uFluidAmt;
     varying vec2 vUv;
     float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
+    float surfaceHeight(vec2 uv) {
+      return texture2D(uDye, uv).x + length(texture2D(uFluid, uv).xy * uFluidTexel) * 0.12;
+    }
     void main() {
       vec2 uv = vUv;
       // The image ripples where the pointer stirred it, like disturbed water, and settles.
-      vec2 flow = uFluidAmt > 0.0 ? texture2D(uFluid, vUv).xy : vec2(0.0);
-      uv -= flow * uFluidAmt;
-      float speed = length(flow);
+      vec2 flow = vec2(0.0);
+      if (uFluidAmt > 0.0) {
+        vec2 tx = vec2(uFluidTexel.x, 0.0), ty = vec2(0.0, uFluidTexel.y);
+        vec2 gradient = vec2(surfaceHeight(uv + tx) - surfaceHeight(uv - tx), surfaceHeight(uv + ty) - surfaceHeight(uv - ty));
+        vec3 normal = normalize(vec3(-gradient * 1.8, 1.0));
+        vec2 pixels = (texture2D(uDisplacement, uv).xy * 0.35 - normal.xy * 0.007) * uResolution;
+        // Preserve the portal silhouette under sustained input: strictly less than 2 output pixels.
+        flow = pixels * (2.0 / (2.0 + length(pixels))) / uResolution;
+        uv += flow;
+      }
       vec2 c = uv - 0.5;
       float r2 = dot(c, c);
       vec3 col;
@@ -756,10 +783,10 @@ export const finishShader = {
         col /= 8.0;
       } else {
         // dispersion grows toward the frame edges
-        vec2 off = c * r2 * 0.012 + flow * uFluidAmt * 0.35;
+        vec2 off = c * r2 * 0.0015 + flow * 0.08;
         col = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
       }
-      col *= mix(1.0, smoothstep(0.95, 0.15, length(c * vec2(1.0, 1.15))), uVignette);
+      col *= max(0.0, 1.0 - dot(c, c) * uVignette * 2.0);
       col = mix(col, uFlashColor, uFlash);
       float g = rand(vUv * 1000.0 + fract(uTime * 7.13) * 61.0) - 0.5;
       // grain is strongest in the mid-tones, like film

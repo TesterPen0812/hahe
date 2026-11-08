@@ -4,7 +4,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js'
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
-import { TRAIL_LENGTH, WAKE_LIFE, WAKE_STAMPS, finishShader } from './shaders'
+import { TRAIL_LENGTH, WAKE_LIFE, finishShader } from './shaders'
 import {
   DOOR, UNIVERSES, type RGB, cloud, gateWall, glowingPath, homeHeight, portal, sceneUniforms,
   universeScene, type SceneUniforms, type UniverseDef,
@@ -86,15 +86,15 @@ export class UniverseEngine {
   private wasInside = -1
 
   private exposure = 0.95
-  private wake = Array.from({ length: WAKE_STAMPS }, () => new THREE.Vector4(-9, -9, 0, 0))
-  private wasDown = false
   private flashedQday = -1
   private zoom = 0
 
   // pointer
   private ndc = new THREE.Vector2(0, 0)
   private look = new THREE.Vector2(0, 0)
-  private trail: { dir: THREE.Vector3; t: number }[] = []
+  private trail: { dir: THREE.Vector3; t: number; weight: number }[] = []
+  private pointerEventAt = 0
+  private pulsePending: { ray: THREE.Vector3; origin: THREE.Vector3; world: number; time: number } | null = null
   private pointerSpeed = 0
   private lastNdc = new THREE.Vector2()
   private pointerIn = false
@@ -148,9 +148,9 @@ export class UniverseEngine {
     this.composer.addPass(new OutputPass())
     this.finish = new ShaderPass(finishShader)
     this.finish.uniforms.uFlashColor.value = this.flashColor
-    this.finish.uniforms.uWake.value = this.wake
     this.finish.uniforms.uFluid.value = this.fluid.texture
-    this.finish.uniforms.uFluidAmt.value = this.reducedMotion ? 0 : 0.014
+    this.finish.uniforms.uFluidAmt.value = this.reducedMotion ? 0 : 1
+    this.finish.uniforms.uFluidTexel.value = this.fluid.texel
     this.composer.addPass(this.finish)
 
     this.resizeObserver = new ResizeObserver(() => this.resize())
@@ -256,7 +256,7 @@ export class UniverseEngine {
         tmp.set(w.pos[k], w.pos[k + 1], w.pos[k + 2]).applyMatrix4(door.group.matrixWorld)
         w.pos.set([tmp.x, tmp.y, tmp.z], k)
       }
-      const wall = cloud(this.homeU, w.pos, w.col, w.size, 9, [10, 95], 61, 0)
+      const wall = cloud(this.homeU, w.pos, w.col, w.size, 9, [10, 95], 61, 0, { interaction: 0 })
       this.home.add(wall)
       const u = sceneUniforms()
       this.universes.push({
@@ -320,17 +320,29 @@ export class UniverseEngine {
   private onPointerMove = (e: PointerEvent) => {
     this.pointerIn = true
     const rect = this.canvas.getBoundingClientRect()
+    const previous = this.ndc.clone()
     this.ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
     const now = performance.now()
     if (now - this.lastTrail > TRAIL_MS) {
       this.lastTrail = now
-      this.trail.unshift({ dir: this.pointerRay(), t: now })
+      const speed = previous.distanceTo(this.ndc) / Math.max((now - this.pointerEventAt) / 1000, 1 / 120)
+      this.trail.unshift({ dir: this.pointerRay(), t: now, weight: Math.min(1, speed / 1.5) })
       if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH
     }
+    this.pointerEventAt = now
   }
   private onPointerEnter = () => { this.pointerIn = true }
-  private onPointerLeave = () => { this.pointerIn = false }
-  private onPointerDown = (e: PointerEvent) => { this.down = { x: e.clientX, y: e.clientY } }
+  private onPointerLeave = () => { this.pointerIn = false; this.fluidLast.set(-1, -1); this.down = null }
+  private onPointerDown = (e: PointerEvent) => {
+    this.onPointerMove(e)
+    this.down = { x: e.clientX, y: e.clientY }
+    const world = this.insideIndex()
+    const cam = world >= 0 ? this.universes[world].cam : this.camera
+    this.pulsePending = this.reducedMotion ? null : {
+      ray: this.pointerRay(), origin: cam.position.clone(), world,
+      time: (performance.now() - this.startedAt) / 1000,
+    }
+  }
   private onPointerUp = (e: PointerEvent) => {
     if (!this.down) return
     const moved = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y)
@@ -346,7 +358,10 @@ export class UniverseEngine {
     this.v = THREE.MathUtils.clamp(this.v + (this.touchY - y) * 0.05, -14, 14)
     this.touchY = y
   }
-  private onBlur = () => this.keys.clear()
+  private onBlur = () => {
+    this.keys.clear(); this.pointerIn = false; this.down = null; this.touchY = null
+    this.pulsePending = null; this.fluidLast.set(-1, -1)
+  }
 
   private bind() {
     this.canvas.addEventListener('wheel', this.onWheel, { passive: false })
@@ -380,7 +395,7 @@ export class UniverseEngine {
   private route() { return this.seg < 0 ? this.d : this.L0 + this.d }
   private pastGate() { return this.route() >= this.gateD }
   private atFork() { return this.seg < 0 && this.d >= this.L0 - 0.6 }
-  private insideIndex() { return this.seg >= 0 && this.d > this.universes[this.seg].len ? this.seg : -1 }
+  private insideIndex() { return this.seg >= 0 && this.d >= this.universes[this.seg].len - 0.08 ? this.seg : -1 }
 
   private travel(dt: number, t: number) {
     const before = this.route()
@@ -519,10 +534,11 @@ export class UniverseEngine {
     this.look.lerp(this.ndc, 1 - Math.exp(-dt * 5))
     this.travel(dt, t)
     this.placeCamera(1 - Math.exp(-dt * 6))
+    this.updatePreviewCameras()
     this.updateDoors(dt, t)
+    this.emitState()
     this.updateUniforms(t, dt)
     this.updateLabels()
-    this.emitState()
     this.stirFluid(dt)
     this.render()
   }
@@ -530,13 +546,17 @@ export class UniverseEngine {
   /** The pointer pushes the screen fluid along the way it moves. */
   private stirFluid(dt: number) {
     const uv = new THREE.Vector2((this.ndc.x + 1) / 2, (this.ndc.y + 1) / 2)
-    if (this.pointerIn && this.fluidLast.x >= 0) {
-      const v = uv.clone().sub(this.fluidLast).divideScalar(Math.max(dt, 1 / 240))
-      if (v.lengthSq() > 1e-4) this.fluid.splat(uv, v.clampLength(0, 4).multiplyScalar(0.9))
-    }
-    this.fluidLast.copy(uv)
+    if (this.reducedMotion) return
+    if (this.pointerIn) {
+      if (this.fluidLast.x >= 0 && uv.distanceToSquared(this.fluidLast) > 1e-7) {
+        this.fluid.splat(this.fluidLast, uv, dt)
+      }
+      this.fluidLast.copy(uv)
+    } else this.fluidLast.set(-1, -1)
     this.fluid.step(dt)
     this.finish.uniforms.uFluid.value = this.fluid.texture
+    this.finish.uniforms.uDye.value = this.fluid.dyeTexture
+    this.finish.uniforms.uDisplacement.value = this.fluid.displacementTexture
   }
 
   // Adaptive resolution: drop quality quickly when frames run long, recover it slowly.
@@ -562,7 +582,10 @@ export class UniverseEngine {
     // Hover by pointer (raycast) when we're on the home side past the gate.
     if (past && this.insideIndex() < 0 && this.seg < 0) {
       this.raycaster.setFromCamera(this.ndc, this.camera)
-      const hits = this.raycaster.intersectObjects(this.universes.map(u => u.door.content), false)
+      const hits = this.raycaster.intersectObjects(this.universes.map(u => u.door.content), false).filter(hit => {
+        const door = this.universes.find(u => u.door.content === hit.object)
+        return door && door.open > 0.05 && hit.uv && hit.uv.distanceTo(new THREE.Vector2(0.5, 0.5)) <= THREE.MathUtils.smoothstep(door.open, 0, 1) * 0.5
+      })
       const idx = hits.length ? this.universes.findIndex(u => u.door.content === hits[0].object) : -1
       if (idx >= 0) this.hovered = idx
       else if (this.hovered !== null && !this.atFork()) this.hovered = null
@@ -582,11 +605,11 @@ export class UniverseEngine {
       m.uOpen.value = u.open
       m.uHover.value = u.hover
       m.uTime.value = t
-      // Walking up to the door, the opening widens until it fills the view, so stepping
-      // through is one continuous move instead of a cut.
+      // Fade the rim as the physical opening fills the view on approach.
       const e = this.seg !== i ? 0 : this.d >= u.len ? 1 : THREE.MathUtils.smoothstep(this.d, u.len - 8, u.len - 0.3)
       m.uEnter.value = e
-      u.door.content.scale.setScalar(1 + e * e * 4)
+      // The physical aperture fills the view naturally; scaling it breaks occlusion.
+      u.door.content.scale.setScalar(1)
       ;(u.wall.material as THREE.ShaderMaterial).uniforms.uOpacity.value = u.open * (1 - e * 0.7)
       // render the world behind the door at full resolution once it's about to fill the screen
       const rtWant = this.seg === i && this.d > u.len - 10 ? 1 : RT_SCALE
@@ -627,22 +650,25 @@ export class UniverseEngine {
       for (let i = 0; i < TRAIL_LENGTH; i++) {
         const e = on ? this.trail[i] : undefined
         const age = e ? (now - e.t) / 1000 : 99
+        u.uTrailWeight.value[i] = e && age < WAKE_LIFE ? e.weight : 0
         if (e && age < WAKE_LIFE) { arr[i].set(e.dir.x, e.dir.y, e.dir.z, age); alive = i + 1 }
         else arr[i].set(0, 0, -1, 99)
       }
       u.uWakeN.value = alive
+      u.uPointerSpeed.value = this.pointerSpeed
       u.uPointerFrom.value.copy(cam.position)
       if (on) { const d = this.pointerRay(); u.uPointer.value.set(d.x, d.y, d.z, presence) }
       else u.uPointer.value.w = 0
     }
     // A click (press without drag) sends a ring of light out from the pointer.
-    const pressed = this.down !== null
-    if (pressed && !this.wasDown) {
-      const d = this.pointerRay()
-      active.uPulse.value.set(d.x, d.y, d.z, t)
+    if (this.pulsePending) {
+      const pulse = this.pulsePending
+      if (pulse.world === inside) {
+        active.uPulse.value.set(pulse.ray.x, pulse.ray.y, pulse.ray.z, pulse.time)
+        active.uPulseFrom.value.copy(pulse.origin)
+      }
+      this.pulsePending = null
     }
-    this.wasDown = pressed
-    this.updateWake()
 
     // Q-Day lands with a cold violet flash and a jolt of zoom.
     if (this.qdayAt >= 0 && this.flashedQday !== this.qdayAt) {
@@ -696,16 +722,11 @@ export class UniverseEngine {
     h.uFocus.value += (focus - h.uFocus.value) * 0.06
     h.uAperture.value = aperture
     h.uMaxBlur.value = maxBlur
-    this.universes.forEach((u, i) => {
-      u.u.uFocus.value = i === inside ? 10 : 18
+    this.universes.forEach(u => {
+      u.u.uFocus.value = 10
       u.u.uAperture.value = aperture
-      u.u.uMaxBlur.value = i === inside ? maxBlur : maxBlur * 0.5
+      u.u.uMaxBlur.value = maxBlur
     })
-  }
-
-  /** The screen-space ripple is retired (it smeared the image); keep its stamps empty. */
-  private updateWake() {
-    for (const w of this.wake) w.set(-9, -9, 0, 0)
   }
 
   /** Direction of the ray from the active camera through the pointer, in that world's space. */
@@ -756,8 +777,13 @@ export class UniverseEngine {
     const inside = this.insideIndex()
     const phase: 'trunk' | 'fork' | 'branch' | 'inside' = inside >= 0 ? 'inside' : this.seg >= 0 ? 'branch' : this.atFork() ? 'fork' : 'trunk'
     if (inside !== this.wasInside) {
+      // Pointer rays belong to a world's coordinate frame, never the next world's.
+      this.trail.length = 0
+      this.fluidLast.set(-1, -1)
+      this.fluid.clear()
+      for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uPulse.value.w = -99
       if (inside >= 0) {
-        this.flash = 0.12
+        this.flash = 0.035
         this.flashColor.setRGB(...this.universes[inside].def.tint)
       }
       this.wasInside = inside
@@ -773,14 +799,17 @@ export class UniverseEngine {
     if (key !== this.lastState) { this.lastState = key; this.cb.onState(s) }
   }
 
-  private render() {
-    const inside = this.insideIndex()
+  private updatePreviewCameras() {
     for (const u of this.universes) {
       // Map the visitor's camera through the doorway into that universe's own space.
       this.tmpM.copy(u.door.group.matrixWorld).invert().multiply(this.camera.matrixWorld)
       this.tmpM.decompose(u.cam.position, u.cam.quaternion, new THREE.Vector3())
       u.cam.updateMatrixWorld()
     }
+  }
+
+  private render() {
+    const inside = this.insideIndex()
     if (inside >= 0) {
       const u = this.universes[inside]
       this.renderPass.scene = u.scene
@@ -806,7 +835,7 @@ export class UniverseEngine {
     const w = Math.max(1, this.host.clientWidth), h = Math.max(1, this.host.clientHeight)
     // Render to a pixel budget rather than full Retina density: soft bokeh looks the same at a
     // lower resolution, and fill rate is what this scene spends. Quality adapts to the frame rate.
-    const budget = this.lowPower ? 1.1e6 : 2.3e6
+    const budget = this.lowPower ? 1.1e6 : 1.85e6
     const pr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, Math.sqrt(budget / (w * h))) * this.quality)
     const fov = w / h < 0.8 ? 78 : 55
     for (const cam of [this.camera, ...this.universes.map(u => u.cam)]) {
@@ -821,6 +850,7 @@ export class UniverseEngine {
     const sizeScale = h / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2))
     for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uSizeScale.value = sizeScale
     this.finish.uniforms.uAspect.value = w / h
+    this.finish.uniforms.uResolution.value.set(Math.floor(w * pr), Math.floor(h * pr))
     this.fluid.resize(w, h)
     for (const u of this.universes) {
       u.rt.setSize(Math.ceil(w * pr * u.rtScale), Math.ceil(h * pr * u.rtScale))

@@ -21,6 +21,9 @@ export interface SceneUniforms {
   uPointer: { value: THREE.Vector4 }
   uPointerFrom: { value: THREE.Vector3 }
   uWakeN: { value: number }
+  uTrailWeight: { value: Float32Array }
+  uPointerSpeed: { value: number }
+  uPulseFrom: { value: THREE.Vector3 }
   /** Lens: focal distance (m), aperture radius, largest bokeh disc (css px). */
   uFocus: { value: number }
   uAperture: { value: number }
@@ -38,6 +41,9 @@ export function sceneUniforms(): SceneUniforms {
     uPointer: { value: new THREE.Vector4(0, 0, -1, 0) },
     uPointerFrom: { value: new THREE.Vector3() },
     uWakeN: { value: 0 },
+    uTrailWeight: { value: new Float32Array(TRAIL_LENGTH) },
+    uPointerSpeed: { value: 0 },
+    uPulseFrom: { value: new THREE.Vector3() },
     uFocus: { value: 10 },
     uAperture: { value: 0.07 },
     uMaxBlur: { value: 44 },
@@ -49,6 +55,8 @@ export interface FieldStyle {
   center?: THREE.Vector3
   /** Sideways direction for clouds that part (the Q-Day curtain). */
   axis?: THREE.Vector3
+  /** Structural portal particles remain aligned with the aperture. */
+  interaction?: number
 }
 
 /** The material every particle cloud uses; `mode` picks its motion (see fieldVertex). */
@@ -59,6 +67,7 @@ export function fieldMaterial(u: SceneUniforms, mode: number, fog: [number, numb
     uniforms: {
       ...u,
       uMode: { value: mode },
+      uInteraction: { value: style.interaction ?? 1 },
       uFogNear: { value: fog[0] },
       uFogFar: { value: fog[1] },
       uOpacity: { value: opacity },
