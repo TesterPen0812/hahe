@@ -131,11 +131,13 @@ export async function runToyBreak(onStage?: (s: ToyBreakStage) => void, signal?:
   stopped()
 
   const manifest = { ...signed, demoAttack: DEMO_ATTACK_MARKER } as LegacyManifest
-  const uploaded = await api.upload(uploadForm(new File([image], 'forged.png', { type: 'image/png' }), manifest, claim.dHash))
+  const form = uploadForm(new File([image], 'forged.png', { type: 'image/png' }), manifest, claim.dHash)
+  stopped() // the last moment to stop: once the upload starts, the fake is on the server
+  const uploaded = await api.upload(form, signal)
   stopped()
   onStage?.({ stage: 'uploaded', itemId: uploaded.id })
 
-  const [ours, naive] = await Promise.all([api.item(uploaded.id), api.item(uploaded.id, { naive: true })])
+  const [ours, naive] = await Promise.all([api.item(uploaded.id, { signal }), api.item(uploaded.id, { naive: true, signal })])
   stopped()
   return {
     camera: { id: camera.id, name: camera.name }, n, bits, p: f.p, q: f.q, d, steps: f.steps, ms: f.ms,
