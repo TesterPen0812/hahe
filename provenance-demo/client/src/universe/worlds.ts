@@ -86,7 +86,8 @@ function emptyCurve() {
 const GLYPHS = '01#%&*+=:;/\\<>{}ABCDEF$@^~|?![]9'
 // Share of each layer's falling beads drawn as characters, by motion mode: the hanging strands,
 // the Q-Day curtain, and the cave's drips and threads (the shader picks which beads fall).
-const GLYPH_SHARE: Record<number, number> = { 11: 0.24, 12: 0.14, 13: 0.3 }
+// 14 is a door's dust (0 until it's crossed; the engine raises it), 20 the dedicated character rain.
+const GLYPH_SHARE: Record<number, number> = { 11: 0.24, 12: 0.14, 13: 0.3, 14: 0, 20: 1 }
 
 let atlas: THREE.Texture | null = null
 /** White characters on a transparent atlas, drawn once at runtime and shared by every layer. */
@@ -132,7 +133,7 @@ export function fieldMaterial(u: SceneUniforms, mode: number, fog: [number, numb
       uCurveTex: { value: style.curve?.texture ?? emptyCurve() },
       uCurveInfo: { value: new THREE.Vector2(style.curve?.samples ?? 1, style.curve?.length ?? 1) },
       uGlyphShare: { value: GLYPH_SHARE[mode] ?? 0 },
-      uGlyphs: { value: GLYPH_SHARE[mode] ? glyphAtlas() : null },
+      uGlyphs: { value: mode in GLYPH_SHARE ? glyphAtlas() : null },
     },
     transparent: true,
     depthWrite: false,

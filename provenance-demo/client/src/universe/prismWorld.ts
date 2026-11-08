@@ -1,4 +1,5 @@
 import * as THREE from 'three'
+import { asciiRain } from './asciiRain'
 import { scenePath } from './scenePath'
 import { cloud, sky, type FieldStyle, type RGB, type SceneUniforms } from './worlds'
 import { PRISM_RING_TILT } from './prismMotion'
@@ -204,5 +205,15 @@ export function buildPrismWorld(u: SceneUniforms, lowPower: boolean) {
     new THREE.Vector3(0, 1, -1), [0, 0, 0], 0, { glow: [0.001, 0.001, 0.003] }))
   scene.add(meadow(u, lowPower), planet(u, lowPower), stars(u, lowPower))
   scene.add(scenePath(u, { length: LENGTH, amplitude: 1.7, turns: 1.25, lowPower }))
+  // Character rain over the far meadow, pale violet, kept well clear of the path and its photos.
+  scene.add(asciiRain(u, {
+    strands: lowPower ? 130 : 280, seed: 1801, name: 'prism-character-rain',
+    place: r => {
+      const z = mix(8, -LENGTH - 14, r())
+      const x = pathX(z) + (r() < 0.5 ? -1 : 1) * mix(8, 36, Math.pow(r(), 0.8))
+      return { x, z, top: ground(x, z) + mix(6, 15, r()) }
+    },
+    ground, tint: [0.7, 0.62, 1.0], length: [6, 16], gap: 0.3, size: 0.08, speed: [0.035, 0.08], fog: [0, 150],
+  }))
   return { scene, path, length: path.getLength(), ground }
 }

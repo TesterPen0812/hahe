@@ -266,6 +266,16 @@ const fieldPlacement = /* glsl */ `
     ${prismPlacement}
     ${scenePathPlacement}
     ${curveStreamPlacement}
+    } else if (uMode > 19.5 && uMode < 20.5) {
+      // Character rain: each strand falls as one, down its own column, and starts again at the top.
+      // aHang = (falls per second, phase, travel, this glyph's height above the ground).
+      float fall = fract(aHang.y + t * aHang.x);
+      float drop = fall * aHang.z;
+      p.y -= drop;
+      velocity = vec3(0.0, -aHang.x * aHang.z, 0.0);
+      // in at the top of the fall, out where it meets the ground
+      vFade = smoothstep(0.0, 0.06, fall) * (1.0 - smoothstep(aHang.w - 0.6, aHang.w, drop));
+      vTwinkle = 1.0;
     } else if (uMode > 12.5) {
       if (aHang.w > 1.5) {
         // Cave walls: one grain in six trickles down its vein and starts again.
@@ -522,7 +532,10 @@ export const fieldVertex = /* glsl */ `
     // Each one changes character now and then, slowly and out of step with its neighbours.
     vGlyph = -1.0;
     bool falls = (uMode > 10.5 && uMode < 12.5) || (uMode > 12.5 && uMode < 14.5 && (aHang.w > 1.5 ? aHang.x > 0.0 : aHang.w > 0.5));
-    if (falls && fract(aSeed * 53.17 + 0.37) < uGlyphShare && vFocus > 0.12) {
+    // The character rain is all characters; a door's dust turns to characters for a moment as it's crossed.
+    bool rain = uMode > 19.5 && uMode < 20.5;
+    bool burst = uMode > 13.5 && uMode < 14.5;
+    if ((rain || burst || (falls && vFocus > 0.12)) && fract(aSeed * 53.17 + 0.37) < uGlyphShare) {
       float rate = 0.08 + fract(aSeed * 7.77) * 0.35;
       float tick = floor(uTime * rate + aSeed * 31.0);
       vGlyph = floor(hash(aSeed * 97.31 + tick * 1.618) * ${GLYPH_COUNT}.0);

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { scenePath } from './scenePath'
+import { asciiRain } from './asciiRain'
 import { cloud, sky, type RGB, type SceneUniforms } from './worlds'
 
 const TAU = Math.PI * 2
@@ -230,5 +231,16 @@ export function buildGreenWorld(u: SceneUniforms, lowPower: boolean) {
   scene.add(floor)
   const trail = scenePath(u, { length: LENGTH, amplitude: PATH_AMPLITUDE, turns: PATH_TURNS, lowPower })
   scene.add(trail, exitLight())
+  // Characters drip from the upper walls of the tunnel, in its own green, and never over the path.
+  scene.add(asciiRain(u, {
+    strands: lowPower ? 90 : 170, seed: 1701, name: 'Green tunnel character drips',
+    place: r => {
+      const z = mix(START - 2, -LENGTH, r())
+      const angle = (r() < 0.5 ? -1 : 1) * mix(0.62, 1.12, r())
+      const out = -0.18 - r() * 0.2
+      return { x: pathX(z) + Math.sin(angle) * (WIDTH + out), z, top: SPRING + Math.cos(angle) * (RISE + out) }
+    },
+    ground: () => 0, tint: [0.34, 1.0, 0.5], length: [4, 9], gap: 0.17, size: 0.05, speed: [0.16, 0.32], fog: [0, 60],
+  }))
   return { scene, path, length: path.getLength(), ground }
 }

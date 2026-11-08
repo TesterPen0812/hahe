@@ -1084,6 +1084,8 @@ export class UniverseEngine implements WalkControls {
       const wall = (door.wall.material as THREE.ShaderMaterial).uniforms
       wall.uOpacity.value = door.presence * (1 - e)
       wall.uDoorSpeed.value = dt > 0 ? (m.uHalfWidth.value - before) / dt : 0
+      // the last few steps to a door: its dust breaks into characters, then it's gone
+      wall.uGlyphShare.value = 0.5 * (1 - THREE.MathUtils.smoothstep(remaining, 1.0, 4.5))
       door.portal.sparkMat.uniforms.uScale.value = this.host.clientHeight * this.renderer.getPixelRatio() * 0.055
       // the caption reads from afar and fades once the door fills the view
       door.caption?.setOpacity(door.presence * THREE.MathUtils.smoothstep(remaining, 3, 9))
