@@ -3,6 +3,9 @@ import { scenePath } from './scenePath'
 import { asciiRain } from './asciiRain'
 import { cloud, sky, type RGB, type SceneUniforms } from './worlds'
 
+/** The green of the tunnel's character strands; door 2's character wall is the same green. */
+export const TUNNEL_GLYPH_GREEN: RGB = [0.34, 1.0, 0.5]
+
 const TAU = Math.PI * 2
 const LENGTH = 48
 const PATH_AMPLITUDE = 1.5
@@ -260,7 +263,7 @@ export function buildGreenWorld(u: SceneUniforms, lowPower: boolean) {
       const out = -0.18 - r() * 0.2
       return { x: pathX(z) + Math.sin(angle) * (WIDTH + out), z, top: SPRING + Math.cos(angle) * (RISE + out) }
     },
-    ground: () => 0, tint: [0.34, 1.0, 0.5], length: [4, 9], gap: 0.17, size: 0.05, speed: [0.16, 0.32], fog: [0, 60],
+    ground: () => 0, tint: TUNNEL_GLYPH_GREEN, length: [4, 9], gap: 0.17, size: 0.05, speed: [0.16, 0.32], fog: [0, 60],
   }))
   return { scene, path, length: path.getLength(), ground }
 }

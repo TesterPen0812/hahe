@@ -29,7 +29,7 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
   // blues, over a fine textured floor. Same grain budget as the old bead field and clumps.
   scene.add(bulbMeadow(u, {
     bulbs: Math.floor(6000 * k), z: [14, -96], pathX, ground: homeHeight, spread: 11, lane: 0.8,
-    fog: [18, 120], seed: 3101, palette: 1, fogColor: MEADOW_FOG, name: 'today-bulb-meadow',
+    fog: [18, 120], seed: 3101, palette: 1, fogColor: MEADOW_FOG, name: 'today-bulb-meadow', chunks: 5,
   }))
   scene.add(groundGrains(u, Math.floor(25000 * k), {
     z: [16, -140], pathX, ground: (x, z) => homeHeight(x, z) + 0.02, reach: 30, size: 0.02,
