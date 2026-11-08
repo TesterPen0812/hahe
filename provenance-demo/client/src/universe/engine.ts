@@ -12,6 +12,8 @@ import {
 import { buildMeadow, qdayGate } from './scenery'
 import { buildGallery, type Gallery, type GalleryPhoto } from './gallery'
 import { Fluid } from './fluid'
+import { ParticleSimulation } from './particles'
+import { POINTER_REACH, WAKE_INTERVAL, dragDistance, dragVelocity, releasedVelocity, wheelDistance } from './input'
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
@@ -32,8 +34,6 @@ export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
 
 const EYE = 1.15
 const FOV = 50
-// a wake stamp every this many ms, so TRAIL_LENGTH stamps span WAKE_LIFE seconds
-const TRAIL_MS = (WAKE_LIFE * 1000) / TRAIL_LENGTH
 
 interface Universe {
   def: UniverseDef
@@ -48,7 +48,7 @@ interface Universe {
   open: number
   presence: number
   rtScale: number
-  wall: THREE.Points
+  wall: ReturnType<typeof cloud>
 }
 
 const v2 = (x: number, z: number) => new THREE.Vector3(x, 0, z)
@@ -67,10 +67,11 @@ export class UniverseEngine {
   private trunk = new THREE.CatmullRomCurve3([v2(0, 8), v2(1.4, -6), v2(-1.6, -20), v2(1.2, -34), v2(-0.6, -46), v2(0, -58)], false, 'centripetal')
   private L0: number
   private gateD: number
-  private gateCurtain: THREE.Points
+  private gateCurtain: ReturnType<typeof cloud>
   private homePath: THREE.Points
   private gallery: Gallery | null = null
   private fluid: Fluid
+  private particles = new Map<THREE.Object3D, { simulation: ParticleSimulation; time: number }>()
   private fluidLast = new THREE.Vector2(-1, -1)
 
   // travel state
@@ -95,15 +96,19 @@ export class UniverseEngine {
   // pointer
   private ndc = new THREE.Vector2(0, 0)
   private look = new THREE.Vector2(0, 0)
-  private trail: { dir: THREE.Vector3; t: number; weight: number }[] = []
-  private pointerEventAt = 0
+  private trail: { dir: THREE.Vector3; sweep: THREE.Vector3; t: number; weight: number }[] = []
+  private pointerIdle = 0
+  private idleBlend = 0
   private pulsePending: { ray: THREE.Vector3; origin: THREE.Vector3; world: number; time: number } | null = null
   private pointerSpeed = 0
-  private lastNdc = new THREE.Vector2()
+  private rawPointerSpeed = 0
+  private pointerPresence = 0
+  private pointerRadius = POINTER_REACH
+  private pointerVelocity = new THREE.Vector2()
+  private pointerDrag = new THREE.Vector3()
   private pointerIn = false
   private lastTrail = 0
-  private down: { x: number; y: number; door: number | null } | null = null
-  private touchY: number | null = null
+  private down: { id: number; x: number; y: number; lastY: number; lastAt: number; door: number | null } | null = null
 
   private startedAt = performance.now()
   private lastFrame = performance.now()
@@ -222,6 +227,8 @@ export class UniverseEngine {
     this.gallery?.dispose()
     this.universes.forEach(u => u.rt.dispose())
     this.fluid.dispose()
+    this.particles.forEach(p => p.simulation.dispose())
+    this.particles.clear()
     this.composer.dispose()
     this.renderer.dispose()
     this.canvas.remove()
@@ -264,7 +271,7 @@ export class UniverseEngine {
       const wall = cloud(this.homeU, w.pos, w.col, w.size, 14, [10, 95], 61, 0, {
         interaction: 0.35, center: door.group.position, axis,
       })
-      wall.geometry.setAttribute('aPortal', new THREE.BufferAttribute(w.shape, 4))
+      wall.geometry.setAttribute('aPortal', new THREE.InstancedBufferAttribute(w.shape, 4))
       const wallMat = wall.material as THREE.ShaderMaterial
       wallMat.defines = { PORTAL_DUST: 1 }
       Object.assign(wallMat.uniforms, {
@@ -318,8 +325,8 @@ export class UniverseEngine {
   private onWheel = (e: WheelEvent) => {
     e.preventDefault()
     this.target = null
-    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY
-    this.v = THREE.MathUtils.clamp(this.v + dy * 0.011, -14, 14)
+    this.v = 0
+    this.desiredRoute += wheelDistance(e.deltaY, e.deltaMode, this.canvas.clientHeight)
   }
   private onKeyDown = (e: KeyboardEvent) => {
     if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, button, a, [contenteditable="true"]')) return
@@ -338,39 +345,53 @@ export class UniverseEngine {
     if (k === 'escape' && this.seg >= 0) this.back()
   }
   private onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()) }
-  private onPointerMove = (e: PointerEvent) => {
-    this.pointerIn = true
+  private onPointerMove = (e: PointerEvent) => { this.updatePointer(e, true) }
+  private updatePointer(e: PointerEvent, dragging: boolean) {
+    if (!e.isPrimary) return
     this.keyboardDoor = null
     const rect = this.canvas.getBoundingClientRect()
-    const previous = this.ndc.clone()
-    this.ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
+    this.pointerIn = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom
+    this.ndc.set(((e.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1, -((e.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1)
+    this.pointerIdle = 0
     const now = performance.now()
-    if (now - this.lastTrail > TRAIL_MS) {
-      this.lastTrail = now
-      const speed = previous.distanceTo(this.ndc) / Math.max((now - this.pointerEventAt) / 1000, 1 / 120)
-      this.trail.unshift({ dir: this.pointerRay(), t: now, weight: Math.min(1, speed / 1.5) })
-      if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH
+    const down = this.down
+    if (dragging && down?.id === e.pointerId) {
+      const distance = dragDistance(down.lastY, e.clientY, rect.height)
+      this.desiredRoute += distance
+      this.v = dragVelocity(this.v, distance, (now - down.lastAt) / 1000)
+      down.lastY = e.clientY
+      down.lastAt = now
     }
-    this.pointerEventAt = now
   }
-  private onPointerEnter = () => { this.pointerIn = true }
-  private onPointerLeave = () => { this.pointerIn = false; this.fluidLast.set(-1, -1); this.down = null }
+  private onPointerEnter = (e: PointerEvent) => { if (e.isPrimary) this.pointerIn = true }
+  private onPointerLeave = (e?: PointerEvent) => {
+    if (e && !e.isPrimary) return
+    this.pointerIn = false; this.fluidLast.set(-1, -1)
+  }
+  private onPointerCancel = (e: PointerEvent) => {
+    if (e.isPrimary || this.down?.id === e.pointerId) this.onBlur()
+  }
   private onPointerDown = (e: PointerEvent) => {
-    if (e.button !== 0) return
+    if (e.button !== 0 || !e.isPrimary) return
     this.onPointerMove(e)
-    this.down = { x: e.clientX, y: e.clientY, door: this.pickDoor() }
+    this.target = null
+    this.v = 0
+    this.down = { id: e.pointerId, x: e.clientX, y: e.clientY, lastY: e.clientY, lastAt: performance.now(), door: this.pickDoor() }
+    this.canvas.setPointerCapture(e.pointerId)
   }
   private onPointerUp = (e: PointerEvent) => {
-    if (!this.down || e.button !== 0) return
+    if (!this.down || this.down.id !== e.pointerId || e.button !== 0) return
+    this.updatePointer(e, false)
     const moved = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y)
     const pressed = this.down.door
+    this.v = releasedVelocity(this.v, (performance.now() - this.down.lastAt) / 1000)
     this.down = null
-    this.onPointerMove(e)
+    if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId)
     if (moved > 6) return
     const world = this.insideIndex()
     const cam = world >= 0 ? this.universes[world].cam : this.camera
     this.pulsePending = this.reducedMotion ? null : {
-      ray: this.pointerRay(), origin: cam.position.clone(), world,
+      ray: this.pointerRay(this.ndc), origin: cam.position.clone(), world,
       time: (performance.now() - this.startedAt) / 1000,
     }
     // Resolve the release against the visible aperture, even between animation frames.
@@ -380,17 +401,9 @@ export class UniverseEngine {
       this.choose(pressed)
     }
   }
-  private onTouchStart = (e: TouchEvent) => { this.touchY = e.touches[0]?.clientY ?? null }
-  private onTouchMove = (e: TouchEvent) => {
-    const y = e.touches[0]?.clientY
-    if (y === undefined || this.touchY === null) return
-    e.preventDefault()
-    this.target = null
-    this.v = THREE.MathUtils.clamp(this.v + (this.touchY - y) * 0.05, -14, 14)
-    this.touchY = y
-  }
   private onBlur = () => {
-    this.keys.clear(); this.pointerIn = false; this.down = null; this.touchY = null
+    if (this.down && this.canvas.hasPointerCapture(this.down.id)) this.canvas.releasePointerCapture(this.down.id)
+    this.keys.clear(); this.pointerIn = false; this.down = null; this.v = 0
     this.pulsePending = null; this.fluidLast.set(-1, -1)
   }
 
@@ -401,9 +414,7 @@ export class UniverseEngine {
     this.canvas.addEventListener('pointerleave', this.onPointerLeave)
     this.canvas.addEventListener('pointerdown', this.onPointerDown)
     this.canvas.addEventListener('pointerup', this.onPointerUp)
-    this.canvas.addEventListener('pointercancel', this.onBlur)
-    this.canvas.addEventListener('touchstart', this.onTouchStart, { passive: true })
-    this.canvas.addEventListener('touchmove', this.onTouchMove, { passive: false })
+    this.canvas.addEventListener('pointercancel', this.onPointerCancel)
     window.addEventListener('keydown', this.onKeyDown)
     window.addEventListener('keyup', this.onKeyUp)
     window.addEventListener('blur', this.onBlur)
@@ -415,9 +426,7 @@ export class UniverseEngine {
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointerup', this.onPointerUp)
-    this.canvas.removeEventListener('pointercancel', this.onBlur)
-    this.canvas.removeEventListener('touchstart', this.onTouchStart)
-    this.canvas.removeEventListener('touchmove', this.onTouchMove)
+    this.canvas.removeEventListener('pointercancel', this.onPointerCancel)
     window.removeEventListener('keydown', this.onKeyDown)
     window.removeEventListener('keyup', this.onKeyUp)
     window.removeEventListener('blur', this.onBlur)
@@ -445,12 +454,12 @@ export class UniverseEngine {
       if (Math.abs(goal - before) < 0.04 && (tg.seg === this.seg || (tg.seg < 0 && this.seg < 0))) { this.target = null; this.v = 0 }
     } else if (fwd || bwd) {
       this.v = THREE.MathUtils.clamp(this.v + (fwd ? 16 : -16) * dt, -9, 9)
-    } else {
-      this.v *= Math.exp(-dt * 3.2)
     }
 
     const destination = this.universes[this.seg >= 0 ? this.seg : this.selected ?? 0]
-    this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + this.v * dt, 0, this.L0 + destination.len + 22)
+    const travelStep = !this.down && Math.abs(this.v) >= 0.01 ? this.v * dt : 0
+    this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + travelStep, 0, this.L0 + destination.len + 22)
+    if (!this.target && !this.down && !fwd && !bwd) this.v *= Math.exp(-dt * 3.2)
     let r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
     if (this.seg < 0) {
       if (r < 0) { r = 0; this.v = Math.max(0, this.v) }
@@ -528,7 +537,6 @@ export class UniverseEngine {
 
   private tmpM = new THREE.Matrix4()
   private tmpQ = new THREE.Quaternion()
-  private tmpE = new THREE.Euler(0, 0, 0, 'YXZ')
   private gaze = new THREE.Vector3(0, 0, -1)
 
   private placeCamera(blend: number) {
@@ -555,12 +563,12 @@ export class UniverseEngine {
       target = ahead
     }
 
-    this.gaze.lerp(target.sub(pos).normalize(), blend)
+    target.sub(pos)
+    target.x += this.look.x * 0.36
+    target.y += this.look.y * 0.216
+    this.gaze.lerp(target, blend)
     this.tmpM.lookAt(pos, target.copy(pos).add(this.gaze), THREE.Object3D.DEFAULT_UP)
     this.tmpQ.setFromRotationMatrix(this.tmpM)
-    // The view leans gently toward the pointer.
-    this.tmpE.set(this.look.y * 0.1, -this.look.x * 0.2, 0)
-    this.tmpQ.multiply(new THREE.Quaternion().setFromEuler(this.tmpE))
     this.camera.position.copy(pos)
     this.camera.quaternion.copy(this.tmpQ)
     this.camera.updateMatrixWorld()
@@ -577,7 +585,7 @@ export class UniverseEngine {
     this.lastFrame = now
     const t = (now - this.startedAt) / 1000
 
-    this.look.lerp(this.ndc, 1 - Math.exp(-dt * 5))
+    this.updatePointerMotion(dt, t)
     this.travel(dt, t)
     this.placeCamera(1 - Math.exp(-dt * 3))
     this.updatePreviewCameras()
@@ -587,6 +595,26 @@ export class UniverseEngine {
     this.updateLabels()
     this.stirFluid(dt)
     this.render()
+  }
+
+  private updatePointerMotion(dt: number, t: number) {
+    this.pointerIdle += dt
+    const idle = !this.reducedMotion && this.pointerIdle > 3
+    this.idleBlend += ((idle ? 1 : 0) - this.idleBlend) * (1 - Math.exp(-dt * (idle ? 0.6 : 4)))
+    const idleX = Math.sin(t * 0.37) * 0.55 + Math.sin(t * 0.91 + 1.7) * 0.15
+    const idleY = -0.18 + Math.sin(t * 0.53 + 0.6) * 0.22 + Math.sin(t * 1.31) * 0.05
+    const targetX = this.ndc.x + (idleX - this.ndc.x) * this.idleBlend
+    const targetY = this.ndc.y + (idleY - this.ndc.y) * this.idleBlend
+    const alpha = 1 - Math.exp(-dt * 7)
+    this.pointerVelocity.set((targetX - this.look.x) * alpha, (targetY - this.look.y) * alpha)
+    this.look.add(this.pointerVelocity)
+    this.pointerVelocity.multiplyScalar(dt > 0 ? 1 / dt : 0)
+    this.rawPointerSpeed = Math.min(1, Math.hypot(this.pointerVelocity.x * this.camera.aspect, this.pointerVelocity.y) / 5)
+    const speedRate = this.rawPointerSpeed > this.pointerSpeed ? 10 : 2.5
+    this.pointerSpeed += (this.rawPointerSpeed - this.pointerSpeed) * (1 - Math.exp(-dt * speedRate))
+    const presence = this.reducedMotion ? 0 : Math.max(this.pointerIn ? 1 : 0, this.idleBlend * 0.65)
+    this.pointerPresence += (presence - this.pointerPresence) * (1 - Math.exp(-dt * 3))
+    this.pointerRadius += (POINTER_REACH - this.pointerRadius) * (1 - Math.exp(-Math.min(dt, 0.05) * (this.pointerRadius < POINTER_REACH ? 28 : 2.5)))
   }
 
   /** The pointer pushes the screen fluid along the way it moves. */
@@ -685,16 +713,20 @@ export class UniverseEngine {
     for (const u of all) u.uTime.value = t
     this.homeU.uPixelRatio.value = pr
     this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * u.rtScale })
-    this.updateLens(inside)
+    this.updateLens(inside, dt)
 
     // The pointer stirs whichever world the camera is in: its live ray, its wake and clicks.
     const now = performance.now()
     const active = inside >= 0 ? this.universes[inside].u : this.homeU
     const cam = inside >= 0 ? this.universes[inside].cam : this.camera
-    const moved = this.ndc.distanceTo(this.lastNdc) / Math.max(dt, 1e-3)
-    this.lastNdc.copy(this.ndc)
-    this.pointerSpeed += (Math.min(1, moved / 1.5) - this.pointerSpeed) * Math.min(1, dt * (moved > this.pointerSpeed ? 10 : 2.5))
-    const presence = this.pointerIn && !this.reducedMotion ? 0.3 + 0.7 * this.pointerSpeed : 0
+    const tanFov = Math.tan(THREE.MathUtils.degToRad(cam.fov * 0.5))
+    this.pointerDrag.set(this.pointerVelocity.x * cam.aspect, this.pointerVelocity.y, 0).multiplyScalar(tanFov).applyQuaternion(cam.quaternion)
+    const direction = this.pointerRay()
+    if (t - this.lastTrail >= WAKE_INTERVAL) {
+      this.lastTrail = t
+      this.trail.unshift({ dir: direction.clone(), sweep: this.pointerDrag.clone(), t: now, weight: this.pointerPresence * this.rawPointerSpeed })
+      if (this.trail.length > TRAIL_LENGTH) this.trail.length = TRAIL_LENGTH
+    }
     for (const u of all) {
       const arr = u.uTrail.value
       const on = u === active
@@ -703,13 +735,17 @@ export class UniverseEngine {
         const e = on ? this.trail[i] : undefined
         const age = e ? (now - e.t) / 1000 : 99
         u.uTrailWeight.value[i] = e && age < WAKE_LIFE ? e.weight : 0
+        if (e && age < WAKE_LIFE) u.uTrailSweep.value[i].copy(e.sweep)
+        else u.uTrailSweep.value[i].set(0, 0, 0)
         if (e && age < WAKE_LIFE) { arr[i].set(e.dir.x, e.dir.y, e.dir.z, age); alive = i + 1 }
         else arr[i].set(0, 0, -1, 99)
       }
       u.uWakeN.value = alive
       u.uPointerSpeed.value = this.pointerSpeed
+      u.uPointerRadius.value = this.pointerRadius
+      u.uPointerDrag.value.copy(this.pointerDrag)
       u.uPointerFrom.value.copy(cam.position)
-      if (on) { const d = this.pointerRay(); u.uPointer.value.set(d.x, d.y, d.z, presence) }
+      if (on) u.uPointer.value.set(direction.x, direction.y, direction.z, this.pointerPresence)
       else u.uPointer.value.w = 0
     }
     // A click (press without drag) sends a ring of light out from the pointer.
@@ -758,20 +794,20 @@ export class UniverseEngine {
 
   /** Focus the lens on what the visitor is walking toward: the path ahead, then the door. */
   private tmpV = new THREE.Vector3()
-  private updateLens(inside: number) {
-    const aperture = this.lowPower ? 0.08 : 0.12
-    const maxBlur = this.lowPower ? 30 : 56
+  private updateLens(inside: number, dt: number) {
+    const aperture = 0.0025
+    const maxBlur = 48
     let focus = 8
     if (inside < 0) {
       const sel = this.seg >= 0 ? this.seg : this.pastGate() ? Math.min(this.hovered ?? Math.floor(this.universes.length / 2), this.universes.length - 1) : -1
       if (sel >= 0) {
         const g = this.universes[sel].door.group.position
         this.tmpV.set(g.x, g.y + DOOR.height * 0.45, g.z)
-        focus = THREE.MathUtils.clamp(this.camera.position.distanceTo(this.tmpV), 4, 40)
+        focus = THREE.MathUtils.clamp(this.camera.position.distanceTo(this.tmpV), 3, 18)
       }
     }
     const h = this.homeU
-    h.uFocus.value += (focus - h.uFocus.value) * 0.06
+    h.uFocus.value += (focus - h.uFocus.value) * (1 - Math.exp(-2.5 * dt))
     h.uAperture.value = aperture
     h.uMaxBlur.value = maxBlur
     this.universes.forEach(u => {
@@ -782,10 +818,10 @@ export class UniverseEngine {
   }
 
   /** Direction of the ray from the active camera through the pointer, in that world's space. */
-  private pointerRay() {
+  private pointerRay(position = this.look) {
     const inside = this.insideIndex()
     const cam = inside >= 0 ? this.universes[inside].cam : this.camera
-    this.raycaster.setFromCamera(this.ndc, cam)
+    this.raycaster.setFromCamera(position, cam)
     return this.raycaster.ray.direction.clone()
   }
 
@@ -864,15 +900,18 @@ export class UniverseEngine {
     const inside = this.insideIndex()
     if (inside >= 0) {
       const u = this.universes[inside]
+      this.simulateParticles(u.scene, u.cam, true)
       this.renderPass.scene = u.scene
       this.renderPass.camera = u.cam
     } else {
+      this.simulateParticles(this.home, this.camera, true)
       this.projScreen.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)
       this.frustum.setFromProjectionMatrix(this.projScreen)
       for (const u of this.universes) {
         if (u.open < 0.004) continue
         const c = u.door.group.position
         if (!this.frustum.intersectsSphere(new THREE.Sphere(new THREE.Vector3(c.x, c.y + DOOR.height / 2, c.z), DOOR.height))) continue
+        this.simulateParticles(u.scene, u.cam, false)
         this.renderer.setRenderTarget(u.rt)
         this.renderer.render(u.scene, u.cam)
       }
@@ -881,6 +920,26 @@ export class UniverseEngine {
       this.renderPass.camera = this.camera
     }
     this.composer.render()
+  }
+
+  private simulateParticles(scene: THREE.Scene, camera: THREE.PerspectiveCamera, active: boolean) {
+    const time = this.homeU.uTime.value
+    scene.traverse(object => {
+      if (!object.userData.particleCloud || !object.visible) return
+      let entry = this.particles.get(object)
+      if (!entry) {
+        entry = { simulation: new ParticleSimulation(object as ReturnType<typeof cloud>), time: -1 }
+        this.particles.set(object, entry)
+      }
+      if (entry.time === time) return
+      // The distant preview has no pointer; integrate it at 30 Hz while drawing at
+      // display refresh. The active world's input/springs always run every frame.
+      if (!active && entry.time >= 0 && time - entry.time < 1 / 30 - 0.001) return
+      // A dormant scene starts its springs anew; it never inherits a previous world's wake.
+      if (entry.time >= 0 && time - entry.time > 0.2) entry.simulation.reset()
+      entry.simulation.step(this.renderer, camera, this.fluid, entry.time < 0 ? 1 / 60 : time - entry.time, active && !this.reducedMotion)
+      entry.time = time
+    })
   }
 
   private resize() {

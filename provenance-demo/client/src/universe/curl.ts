@@ -83,13 +83,13 @@ export const curlField = /* glsl */ `
     vec3(  0.03989758,  -0.03542153,  -0.73819732),
     vec3(  0.08835829,   0.43105448,   0.43967540)
   );
-  vec3 pointerCurl(vec3 point, float time) {
-    vec3 p = point * 1.4;
+  vec3 curlNoise(vec3 p, float time) {
     vec3 flow = vec3(0.0);
     for (int i = 0; i < 24; i++) {
-      float phase = dot(K_VEC[i], p) + OMEGA[i] * time * 0.35 + PHI[i];
+      float phase = dot(K_VEC[i], p) + OMEGA[i] * time + PHI[i];
       flow += COEFF[i] * cos(phase) + COEFF_B[i] * sin(phase);
     }
     return flow / max(length(flow), 0.0001);
   }
+  vec3 pointerCurl(vec3 point, float time) { return curlNoise(point * 1.4, time * 0.35); }
 `

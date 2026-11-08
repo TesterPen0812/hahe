@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { fbm, rng } from './noise'
+import { hangingCave } from './cave'
 import {
   TRAIL_LENGTH, fieldFragment, fieldVertex, pathFragment, pathVertex,
   portalFragment, portalVertex, skyFragment, skyVertex, sparkFragment, sparkVertex,
@@ -23,6 +24,9 @@ export interface SceneUniforms {
   uWakeN: { value: number }
   uTrailWeight: { value: Float32Array }
   uPointerSpeed: { value: number }
+  uPointerRadius: { value: number }
+  uPointerDrag: { value: THREE.Vector3 }
+  uTrailSweep: { value: THREE.Vector3[] }
   uPulseFrom: { value: THREE.Vector3 }
   /** Lens: focal distance (m), aperture radius, largest bokeh disc (css px). */
   uFocus: { value: number }
@@ -43,10 +47,13 @@ export function sceneUniforms(): SceneUniforms {
     uWakeN: { value: 0 },
     uTrailWeight: { value: new Float32Array(TRAIL_LENGTH) },
     uPointerSpeed: { value: 0 },
+    uPointerRadius: { value: 0.06075 },
+    uPointerDrag: { value: new THREE.Vector3() },
+    uTrailSweep: { value: Array.from({ length: TRAIL_LENGTH }, () => new THREE.Vector3()) },
     uPulseFrom: { value: new THREE.Vector3() },
     uFocus: { value: 10 },
-    uAperture: { value: 0.07 },
-    uMaxBlur: { value: 44 },
+    uAperture: { value: 0.0025 },
+    uMaxBlur: { value: 48 },
   }
 }
 
@@ -66,6 +73,9 @@ export function fieldMaterial(u: SceneUniforms, mode: number, fog: [number, numb
     fragmentShader: fieldFragment,
     uniforms: {
       ...u,
+      uPositions: { value: null }, uVelocities: { value: null },
+      uOffsets: { value: null }, uDrifts: { value: null },
+      uStateReady: { value: 0 }, uDelta: { value: 1 / 60 },
       uMode: { value: mode },
       uInteraction: { value: style.interaction ?? 1 },
       uFogNear: { value: fog[0] },
@@ -81,7 +91,6 @@ export function fieldMaterial(u: SceneUniforms, mode: number, fog: [number, numb
   })
 }
 
-/** A Points cloud from explicit arrays (positions, colours, sizes). */
 export function cloud(
   u: SceneUniforms, pos: Float32Array, col: Float32Array, size: Float32Array, mode: number,
   fog: [number, number], seed: number, opacity = 1, style: FieldStyle = {},
@@ -89,12 +98,21 @@ export function cloud(
   const n = pos.length / 3, r = rng(seed)
   const sd = new Float32Array(n)
   for (let i = 0; i < n; i++) sd[i] = r()
-  const g = new THREE.BufferGeometry()
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3))
-  g.setAttribute('aSize', new THREE.BufferAttribute(size, 1))
-  g.setAttribute('aSeed', new THREE.BufferAttribute(sd, 1))
-  const p = new THREE.Points(g, fieldMaterial(u, mode, fog, opacity, style))
+  const width = Math.min(1024, n), height = Math.ceil(n / width)
+  const stateUv = new Float32Array(n * 2)
+  for (let i = 0; i < n; i++) stateUv.set([(i % width + 0.5) / width, (Math.floor(i / width) + 0.5) / height], i * 2)
+  const g = new THREE.InstancedBufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3))
+  g.setIndex([0, 1, 2, 0, 2, 3])
+  g.instanceCount = n
+  g.setAttribute('aBasePosition', new THREE.InstancedBufferAttribute(pos, 3))
+  g.setAttribute('aColor', new THREE.InstancedBufferAttribute(col, 3))
+  g.setAttribute('aSize', new THREE.InstancedBufferAttribute(mode === 13 ? size : size.map(s => s * 0.5), 1))
+  g.setAttribute('aSeed', new THREE.InstancedBufferAttribute(sd, 1))
+  g.setAttribute('aHang', new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4))
+  g.setAttribute('aStateUv', new THREE.InstancedBufferAttribute(stateUv, 2))
+  const p = new THREE.Mesh(g, fieldMaterial(u, mode, fog, opacity, style))
+  p.userData.particleCloud = true
   p.frustumCulled = false
   return p
 }
@@ -501,9 +519,6 @@ export const HYBRID_PATH = new THREE.CatmullRomCurve3([
   new THREE.Vector3(0.8, 0, -86),
 ], false, 'centripetal')
 
-/** The tunnel's roof: high in the middle, falling away toward the walls. */
-const vault = (x: number) => 15 - 0.06 * x * x
-
 function buildHybrid(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
   const k = lowPower ? 0.45 : 1
   const fog = { fogColor: HYBRID_FOG }
@@ -523,33 +538,16 @@ function buildHybrid(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
     yJitter: (r) => r() * r() * 0.2,
   }))
 
-  // The tunnel: columns of glass beads hanging from the vault, thick along the walls and thinning
-  // toward the middle, so the walk runs down a lit nave. Bead sizes run from dust to marbles.
-  const br = rng(13), columns = Math.floor(3400 * k)
-  const bp: number[] = [], bc: number[] = [], bs: number[] = []
-  for (let c = 0; c < columns; c++) {
-    const z = -1 - br() * 150
-    const around = HYBRID_PATH.getPointAt(Math.min(1, Math.max(0, -z / 86))).x
-    const side = br() < 0.5 ? -1 : 1
-    const off = 2.0 + Math.pow(br(), 1.3) * 17
-    const x = around + side * off
-    const top = vault(off) + (br() - 0.5) * 3
-    if (top < 3) continue
-    const ground = hybridHeight(x, z)
-    const reach = top * (br() < 0.6 ? 1 : 0.45 + br() * 0.5)
-    const beads = Math.floor(reach * (7 + br() * 7))
-    const warm = 1 - Math.min(1, off / 18) // brighter toward the nave
-    for (let b = 0; b < beads; b++) {
-      const f = b / beads
-      const y = ground + top - f * reach
-      bp.push(x + (br() - 0.5) * 0.08, y, z + (br() - 0.5) * 0.08)
-      const big = br()
-      bs.push(big < 0.07 ? 0.1 + br() * 0.17 : big < 0.32 ? 0.045 + br() * 0.045 : 0.016 + br() * 0.024)
-      const w = (0.45 + br() * 0.6) * (0.55 + 0.6 * warm) * (0.6 + 0.4 * (1 - f))
-      bc.push((0.38 + br() * 0.2) * w, (0.95 + br() * 0.1) * w, (0.8 + br() * 0.12) * w)
-    }
+  const hanging = hangingCave({
+    walls: Math.floor(189235 * k), roots: Math.floor(252 * k), threads: Math.floor(1190 * k), length: 96,
+    pathX: (z) => HYBRID_PATH.getPointAt(Math.min(1, Math.max(0, -z / 86))).x,
+    ground: hybridHeight,
+  })
+  for (const [index, layer] of [hanging.walls, hanging.roots, hanging.threads].entries()) {
+    const beads = cloud(u, layer.positions, layer.colors, layer.sizes, 13, [10, 120], 14 + index, 1, fog)
+    beads.geometry.setAttribute('aHang', new THREE.InstancedBufferAttribute(layer.hang, 4))
+    scene.add(beads)
   }
-  scene.add(cloud(u, new Float32Array(bp), new Float32Array(bc), new Float32Array(bs), 13, [10, 120], 14, 1, fog))
 
   // Loose beads drifting in the air of the nave, lit by the light ahead.
   const mr = rng(10), mn = Math.floor(4500 * k)

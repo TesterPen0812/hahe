@@ -82,7 +82,7 @@ const sprite = /* glsl */ `
 `
 
 /** Shared by every particle field: idle motion per world, pointer wake, click pulse, Q-Day shock. */
-export const fieldVertex = /* glsl */ `
+const fieldPlacement = /* glsl */ `
   uniform float uTime;
   uniform float uPixelRatio;
   uniform float uSizeScale;
@@ -104,6 +104,9 @@ export const fieldVertex = /* glsl */ `
   uniform vec3 uCenter;           // pivot for ring / sphere modes
   uniform float uOpacity;
   uniform vec3 uAxis;
+  attribute vec3 aBasePosition;
+  attribute vec4 aHang;
+  attribute vec2 aStateUv;
   attribute vec3 aColor;
   attribute float aSize;
   attribute float aSeed;
@@ -124,7 +127,6 @@ export const fieldVertex = /* glsl */ `
 
   float hash(float n) { return fract(sin(n) * 43758.5453); }
 
-  ${curlField}
 
   // How close a grain sits to a ray from the camera, as an angle, and its distance along it.
   // Measuring by angle keeps the pointer's reach the same size on screen, near or far.
@@ -135,12 +137,12 @@ export const fieldVertex = /* glsl */ `
     return vec2(ang, along);
   }
 
-  void main() {
-    vec3 p = position;
+  void placeParticle(out vec3 p, out vec3 velocity) {
+    p = aBasePosition;
     float t = uTime;
     vTwinkle = 1.0;
     vFade = 1.0;
-    vec3 velocity = vec3(0.0);
+    velocity = vec3(0.0);
 
     #ifdef PORTAL_DUST
       p += uAxis * aPortal.x * uHalfWidth;
@@ -249,14 +251,21 @@ export const fieldVertex = /* glsl */ `
       vFade = smoothstep(0.0, 0.2, slide) * (1.0 - smoothstep(0.75, 1.0, slide));
       vTwinkle = 0.75 + 0.35 * sin(t * (0.8 + aSeed) + aSeed * 60.0);
     } else if (uMode > 12.5) {
-      // Glass beads strung on hanging columns: they creep down their strand and sway together.
-      float slide = fract(t * (0.012 + fract(aSeed * 5.7) * 0.02) + aSeed * 7.0);
-      p.y -= slide * 1.6;
-      velocity.y = -(0.012 + fract(aSeed * 5.7) * 0.02) * 1.6;
-      float sway = sin(t * 0.35 + p.x * 0.15 + p.z * 0.05);
-      p.x += sway * 0.06 * (1.0 + p.y * 0.04);
-      vFade = smoothstep(0.0, 0.25, slide) * (1.0 - smoothstep(0.7, 1.0, slide));
-      vTwinkle = 0.9 + 0.2 * sin(t * (0.5 + aSeed) + aSeed * 40.0);
+      if (aHang.w > 1.5) {
+        // Cave walls: one grain in six trickles down its vein and starts again.
+        float fall = fract(aHang.y + t * aHang.x);
+        p.xy -= vec2(aHang.z * 0.15, 1.6) * fall;
+        velocity = -vec3(aHang.z * 0.15, 1.6, 0.0) * aHang.x;
+        vTwinkle = smoothstep(-0.3, 0.4, p.y);
+      } else {
+        float phase = t * aHang.x + aHang.y;
+        float amplitude = aHang.w < 0.5 ? 0.12 : 0.012;
+        float sideways = aHang.w < 0.5 ? 0.4 : 0.6;
+        float sway = sin(phase) * amplitude * aHang.z;
+        p.x += sway;
+        p.z += sway * sideways;
+        velocity = vec3(1.0, 0.0, sideways) * cos(phase) * aHang.x * amplitude * aHang.z;
+      }
     } else {
       // The Q-Day curtain: a bead curtain hung from one roof line. Each strand moves as a unit,
       // swinging from its top like a pendulum: idle, it breathes in a slow shared draught; once
@@ -279,46 +288,6 @@ export const fieldVertex = /* glsl */ `
 
     #endif
 
-    float lit = 0.0;
-    if (uInteraction > 0.0) {
-      vec3 relative = p - uPointerFrom;
-      vec2 ray = nearRay(p, uPointer.xyz);
-      float near = ray.y > 0.9 ? exp(-ray.x * ray.x / 0.0064) * uPointer.w : 0.0;
-      float wake = 0.0;
-      for (int i = 0; i < ${TRAIL_LENGTH}; i++) {
-        if (float(i) >= uWakeN) break;
-        vec4 stamp = uTrail[i];
-        vec2 r = nearRay(p, stamp.xyz);
-        if (r.y <= 0.9) continue;
-        float fade = max(0.0, 1.0 - stamp.w / ${WAKE_LIFE.toFixed(2)});
-        float impulse = (1.0 - exp(-stamp.w * 12.0)) * exp(-stamp.w * 2.0);
-        wake += exp(-r.x * r.x / 0.016384) * fade * fade * uTrailWeight[i] * impulse;
-      }
-      if (near + wake > 0.01) {
-        vec3 flow = pointerCurl(p, t);
-        float distance = length(relative);
-        vec3 target = flow * max(ray.y, 0.0) * 0.08 * 0.22 * near * (0.3 + uPointerSpeed * 0.9);
-        vec3 wakeVelocity = flow * distance * min(wake, 2.0) * 0.18;
-        p += (target + wakeVelocity * 0.22) * uInteraction;
-        velocity += wakeVelocity * uInteraction;
-        lit = near * (0.25 + uPointerSpeed * 0.8) + min(wake, 1.5) * 0.35;
-      }
-      // The click travels from its original ray even after the cursor moves away.
-      float age = t - uPulse.w;
-      if (age >= 0.0 && age < 3.0) {
-        vec3 rel = p - uPulseFrom;
-        float along = dot(rel, uPulse.xyz);
-        vec3 across = rel - uPulse.xyz * along;
-        float angle = length(across) / max(along, 0.0001);
-        float front = angle - age * 0.9;
-        float ring = exp(-front * front / 0.0025) * exp(-age * 1.6) * step(0.9, along);
-        vec3 push = across / max(length(across), 0.0001);
-        p += push * along * 0.015 * ring * uInteraction;
-        velocity += push * along * 0.03 * ring * uInteraction;
-        lit += ring * 2.0;
-      }
-    }
-
     // Q-Day shock ring.
     if (uShock.w > 0.0) {
       float age = t - uShock.z;
@@ -329,70 +298,250 @@ export const fieldVertex = /* glsl */ `
       vTwinkle += ring * 1.6;
     }
 
-    vec4 mv = modelViewMatrix * vec4(p, 1.0);
-    gl_Position = projectionMatrix * mv;
-    vDist = -mv.z;
-    float diameter = lensSize(aSize, vDist);
-    vec4 tail = projectionMatrix * (modelViewMatrix * vec4(p - velocity * 0.08, 1.0));
-    vec2 axis = (gl_Position.xy / max(gl_Position.w, 0.05) - tail.xy / max(tail.w, 0.05));
+  }
+`
+
+const particleState = /* glsl */ `
+  uniform sampler2D uPositions, uVelocities, uOffsets, uDrifts;
+  uniform float uStateReady, uDelta;
+`
+
+export const particleSimulationVertex = /* glsl */ `
+  ${fieldPlacement}
+  ${particleState}
+  ${curlField}
+  uniform float uPointerRadius;
+  uniform sampler2D uFluidVelocity;
+  uniform vec2 uFluidTexel;
+  uniform mat4 uViewProjection;
+  uniform vec3 uCameraRight, uCameraUp, uCameraPosition;
+  uniform float uFluidCoupling;
+  uniform vec3 uMoteBox, uWind;
+  uniform float uRise, uTurbulence;
+  varying vec4 nextPosition, nextVelocity, nextOffset, nextDrift;
+
+  vec4 pointerField(vec3 point) {
+    vec3 relative = point - uPointerFrom;
+    float along = dot(relative, uPointer.xyz);
+    vec4 result = vec4(0.0);
+    if (uPointer.w <= 0.001 || along < 0.3) return result;
+    vec3 across = relative - uPointer.xyz * along;
+    float angle = length(across) / along;
+    float reach = max(uPointerRadius, 0.0001);
+    float falloff = exp(-angle * angle / (reach * reach));
+    if (falloff > 0.01) {
+      vec3 swirl = pointerCurl(point, uTime) * along * reach * 0.22 * falloff * (0.3 + uPointerSpeed * 0.9);
+      result = vec4(swirl * uPointer.w, falloff * uPointer.w * (0.25 + uPointerSpeed * 0.8));
+    }
+    float age = uTime - uPulse.w;
+    if (age >= 0.0 && age < 3.0) {
+      float pulseAlong = dot(relative, uPulse.xyz);
+      vec3 pulseAcross = relative - uPulse.xyz * pulseAlong;
+      float pulseAngle = length(pulseAcross) / max(pulseAlong, 0.0001);
+      float front = pulseAngle - age * 0.9;
+      float band = exp(-front * front / 0.0025) * exp(-age * 1.6) * step(0.3, pulseAlong);
+      result += vec4(pulseAcross / max(length(pulseAcross), 0.0001) * pulseAlong * 0.015 * band, band * 2.0);
+    }
+    return result;
+  }
+
+  vec3 wakeFlow(vec3 point) {
+    vec3 relative = point - uPointerFrom;
+    float distance = length(relative);
+    if (distance < 0.3) return vec3(0.0);
+    float reach = max(uPointerRadius * 1.6, 0.0001);
+    float weight = 0.0;
+    for (int i = 0; i < ${TRAIL_LENGTH}; i++) {
+      if (float(i) >= uWakeN) break;
+      vec4 ray = uTrail[i];
+      if (ray.w >= 1.6 || uTrailWeight[i] <= 0.001) continue;
+      float along = max(dot(relative, ray.xyz), 0.3);
+      vec3 across = (relative - ray.xyz * along) / along;
+      float fade = 1.0 - ray.w / 1.6;
+      weight += exp(-dot(across, across) / (reach * reach)) * fade * fade * uTrailWeight[i];
+    }
+    if (weight < 0.01) return vec3(0.0);
+    return curlNoise(point * 1.4 + vec3(7.0), uTime * 0.35 + 7.0) * distance * min(weight, 2.0) * 0.18;
+  }
+
+  vec3 fluidPush(vec3 point) {
+    vec4 clip = uViewProjection * vec4(point, 1.0);
+    if (clip.w < 0.2 || uFluidCoupling <= 0.0) return vec3(0.0);
+    vec2 device = clip.xy / clip.w;
+    if (any(greaterThan(abs(device), vec2(1.0)))) return vec3(0.0);
+    // WebGL fluid textures use bottom-left UV, unlike wgpu's top-left origin.
+    vec2 uv = device * 0.5 + 0.5;
+    ivec2 dimensions = textureSize(uFluidVelocity, 0);
+    ivec2 cell = ivec2(min(uv * vec2(dimensions), vec2(dimensions - 1)));
+    vec2 flow = texelFetch(uFluidVelocity, cell, 0).xy * uFluidTexel;
+    return (uCameraRight * flow.x + uCameraUp * flow.y) * clip.w * uFluidCoupling;
+  }
+
+  uint particlePcg(uint value) {
+    uint state = value * 747796405u + 2891336453u;
+    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+    return (word >> 22u) ^ word;
+  }
+  float fixedRandom(uint salt) {
+    return float(particlePcg(uint(gl_VertexID) ^ particlePcg(particlePcg(salt)))) / 4294967295.0;
+  }
+
+  void main() {
+    vec3 place, baseVelocity;
+    placeParticle(place, baseVelocity);
+    vec4 oldPosition = texture2D(uPositions, aStateUv);
+    vec3 oldOffset = texture2D(uOffsets, aStateUv).xyz;
+    vec4 oldDrift = texture2D(uDrifts, aStateUv);
+    vec3 velocity = texture2D(uVelocities, aStateUv).xyz;
+    float delta = max(uDelta, 0.0001);
+    vec3 offset = oldOffset, drift = oldDrift.xyz;
+    vec3 p = place;
+    vec4 field;
+    bool fresh = uStateReady < 0.5 || oldDrift.w < 0.5 || any(isnan(oldPosition)) || any(isnan(oldDrift));
+    if (uMode > 7.5 && uMode < 8.5) {
+      // Free motes retain velocity and wrap in a box travelling with the camera.
+      p = oldPosition.xyz;
+      if (fresh) {
+        vec3 random = vec3(fixedRandom(42u), fixedRandom(43u), fixedRandom(44u));
+        p = uCameraPosition + (random * 2.0 - 1.0) * uMoteBox;
+        velocity = vec3(0.0);
+      }
+      field = pointerField(p);
+      vec3 flow = uWind + vec3(0.0, uRise * mix(0.5, 1.5, fixedRandom(45u)), 0.0)
+        + curlNoise(p * 0.35, uTime * 0.15) * uTurbulence * 0.6;
+      velocity = mix(velocity, flow, 1.0 - exp(-1.5 * delta)) + (field.xyz * 9.0 + wakeFlow(p) * 3.0) * delta * uInteraction;
+      vec3 push = fluidPush(p) * uInteraction;
+      velocity = mix(velocity, push, clamp(length(push) * 0.5, 0.0, 1.0) * (1.0 - exp(-8.0 * delta)));
+      p += velocity * delta;
+      vec3 wrapped = (fract((p - uCameraPosition) / (uMoteBox * 2.0) + 0.5) - 0.5) * uMoteBox * 2.0;
+      p = uCameraPosition + wrapped;
+      vec3 edge = abs(wrapped) / uMoteBox;
+      vFade = 1.0 - smoothstep(0.7, 1.0, max(edge.x, max(edge.y, edge.z)));
+      vTwinkle = 0.4 * mix(0.3, 1.0, pow(fixedRandom(46u), 2.0)) * (1.0 + min(field.w, 2.0) * 1.5);
+      offset = vec3(0.0); drift = vec3(0.0);
+    } else {
+      vec3 previous = oldPosition.xyz - oldOffset;
+      fresh = fresh || distance(place, previous) > 4.0;
+      field = pointerField(place);
+      if (fresh) { offset = vec3(0.0); drift = vec3(0.0); velocity = vec3(0.0); }
+      else {
+        drift += ((field.xyz * uInteraction - offset) * 12.0 + wakeFlow(place) * 3.0 * uInteraction) * delta;
+        drift *= exp(-6.5 * delta);
+        offset += (drift + fluidPush(place + offset) * uInteraction) * delta;
+        velocity = (place - previous) / delta + drift;
+      }
+      p = place + offset;
+      vTwinkle *= 1.0 + min(field.w, 2.0) * 1.2;
+    }
+    nextPosition = vec4(p, vTwinkle);
+    nextVelocity = vec4(velocity, vFade);
+    nextOffset = vec4(offset, min(field.w, 2.0));
+    nextDrift = vec4(drift, 1.0);
+    gl_Position = vec4(aStateUv * 2.0 - 1.0, 0.0, 1.0);
+    gl_PointSize = 1.0;
+  }
+`
+
+export const particleSimulationFragment = /* glsl */ `
+  varying vec4 nextPosition, nextVelocity, nextOffset, nextDrift;
+  layout(location = 0) out vec4 statePosition;
+  layout(location = 1) out vec4 stateVelocity;
+  layout(location = 2) out vec4 stateOffset;
+  layout(location = 3) out vec4 stateDrift;
+  void main() {
+    statePosition = nextPosition; stateVelocity = nextVelocity;
+    stateOffset = nextOffset; stateDrift = nextDrift;
+  }
+`
+
+export const fieldVertex = /* glsl */ `
+  ${fieldPlacement}
+  ${particleState}
+  varying vec2 vLocal;
+  varying float vFocus;
+  void main() {
+    vec3 p, velocity;
+    float glow = 0.0;
+    if (uStateReady > 0.5) {
+      vec4 state = texture2D(uPositions, aStateUv);
+      vec4 motion = texture2D(uVelocities, aStateUv);
+      p = state.xyz; vTwinkle = state.w; velocity = motion.xyz; vFade = motion.w;
+      glow = texture2D(uOffsets, aStateUv).w;
+    } else placeParticle(p, velocity);
+    vec4 head = modelViewMatrix * vec4(p, 1.0);
+    vec4 tail = modelViewMatrix * vec4(p - velocity * 0.03, 1.0);
+    vDist = -head.z;
+    if (vDist <= 0.05 || any(isnan(p)) || any(isnan(velocity))) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return;
+    }
+    if (tail.z > -0.05) tail = head;
+    vec4 clipHead = projectionMatrix * head, clipTail = projectionMatrix * tail;
     vec2 halfResolution = vec2(projectionMatrix[1][1] / projectionMatrix[0][0], 1.0) * uSizeScale * uPixelRatio / projectionMatrix[1][1];
-    axis *= halfResolution;
-    float axisLength = tail.w > 0.05 ? min(length(axis), diameter * 3.0) : 0.0;
-    vStrokeDirection = length(axis) > 0.001 ? normalize(axis) : vec2(1.0, 0.0);
-    gl_Position.xy -= vStrokeDirection * axisLength * 0.5 / halfResolution * gl_Position.w;
-    vStrokeLength = axisLength / max(diameter, 1.0);
-    vEnergy *= sqrt(1.0 / (1.0 + vStrokeLength));
-    gl_PointSize = min(diameter + axisLength, 128.0);
-    // Points enclose the capsule in a square; hardware limits are respected below.
-    vStrokeLength = min(vStrokeLength, max(0.0, 128.0 / diameter - 1.0));
-    // grains the pointer touches catch its light: brighter, and washed toward white
-    vColor = aColor * (1.0 + lit) + lit * 0.3 * vec3(0.8, 0.88, 1.0);
+    float margin = 1.0 + 48.0 / halfResolution.y;
+    if (any(greaterThan(abs(clipHead.xy), vec2(clipHead.w * margin)))) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return;
+    }
+    float scale = uSizeScale * uPixelRatio / vDist;
+    float large = fract(aSeed * 91.7) < 0.08 ? 2.8 : 1.0;
+    float sharp = max(aSize * large * scale, 0.5);
+    float blur = min(abs(vDist - uFocus) * uAperture * scale, 48.0);
+    float radius = sqrt(sharp * sharp + blur * blur);
+    float energy = sharp * sharp / (radius * radius);
+    vFocus = smoothstep(0.15, 0.7, energy);
+    if (radius < 1.0) { energy *= radius * radius; radius = 1.0; }
+    vec2 screenHead = clipHead.xy / clipHead.w * halfResolution;
+    vec2 screenTail = clipTail.xy / clipTail.w * halfResolution;
+    vec2 axis = screenHead - screenTail;
+    float axisLength = length(axis);
+    vec2 direction = axisLength > 0.001 ? axis / axisLength : vec2(1.0, 0.0);
+    float halfLength = axisLength * 0.5;
+    energy *= sqrt(radius / (radius + halfLength));
+    vec2 normal = vec2(-direction.y, direction.x);
+    vec2 extent = vec2(halfLength + radius, radius);
+    vec2 center = screenHead - direction * halfLength;
+    vec2 screen = center + direction * position.x * extent.x + normal * position.y * extent.y;
+    vLocal = position.xy * extent / radius;
+    vStrokeLength = halfLength / radius;
+    vStrokeDirection = direction;
+    float twinkle = pow(max(sin(uTime * (2.0 + aSeed * 7.0) + aSeed * 100.0), 0.0), 24.0) * step(0.8, fract(aSeed * 13.7));
+    vColor = mix(aColor, vec3(max(aColor.r, max(aColor.g, aColor.b))), clamp(glow * 0.4, 0.0, 1.0));
+    vEnergy = energy * smoothstep(0.05, 0.8, vDist) * (1.0 + twinkle * 5.0);
+    gl_Position = vec4(screen / halfResolution * clipHead.w, clipHead.z, clipHead.w);
   }
 `
 
 export const fieldFragment = /* glsl */ `
-  uniform float uFogNear;
-  uniform float uFogFar;
-  uniform float uOpacity;
-  uniform float uMode;
-  uniform vec3 uFogColor;
+  uniform float uFogFar, uOpacity, uMode;
   varying vec3 vColor;
-  varying float vDist;
-  varying float vTwinkle;
-  varying float vFade;
-  varying float vBlur;
-  varying float vEnergy;
-  varying vec2 vStrokeDirection;
+  varying float vDist, vTwinkle, vFade, vEnergy, vFocus;
+  varying vec2 vLocal, vStrokeDirection;
   varying float vStrokeLength;
-
   void main() {
-    vec2 screen = (gl_PointCoord * 2.0 - 1.0) * vec2(1.0, -1.0) * (1.0 + vStrokeLength);
-    vec2 side = vec2(-vStrokeDirection.y, vStrokeDirection.x);
-    vec2 local = vec2(dot(screen, vStrokeDirection), dot(screen, side));
-    float along = max(abs(local.x) - vStrokeLength, 0.0);
-    float rr = along * along + local.y * local.y;
-    if (rr > 1.0 || vDist <= 0.05) discard;
+    float along = max(abs(vLocal.x) - vStrokeLength, 0.0);
+    float rr = along * along + vLocal.y * vLocal.y;
+    if (rr > 1.0) discard;
     float radius = sqrt(rr);
     float disc = 1.0 - smoothstep(0.82, 1.0, radius);
     float rim = smoothstep(0.5, 0.92, radius);
-    float taper = mix(0.15, 1.0, clamp(local.x / (vStrokeLength + 1.0) * 0.5 + 0.5, 0.0, 1.0));
-    vec2 planar = vStrokeDirection * sign(local.x) * along + side * local.y;
-    vec3 normal = normalize(vec3(planar, sqrt(max(1.0 - rr, 0.0))));
-    vec3 light = normalize(vec3(-0.42, 0.55, 0.72));
-    float diffuse = max(dot(normal, light), 0.0);
-    float highlight = pow(max(reflect(-light, normal).z, 0.0), 36.0);
-    float fresnel = pow(1.0 - normal.z, 3.0);
-    float fog = smoothstep(uFogNear, uFogFar, vDist);
-    vec3 color = mix(vColor * vTwinkle, uFogColor, fog * 0.7);
-    float peak = max(color.r, max(color.g, color.b));
-    vec3 bead = color * (0.18 + diffuse * 1.1 + fresnel * 0.7) + vec3(peak) * highlight * 2.2;
+    float taper = mix(0.15, 1.0, clamp(vLocal.x / (vStrokeLength + 1.0) * 0.5 + 0.5, 0.0, 1.0));
+    vec3 color = vColor * vTwinkle * vEnergy * exp(-vDist * 2.0 / uFogFar);
     vec3 bokeh = color * (0.55 + rim * 0.6);
-    float focus = smoothstep(0.15, 0.7, 1.0 - vBlur * vBlur);
+    vec3 shaded = bokeh;
+    if (vFocus > 0.0) {
+      vec2 side = vec2(-vStrokeDirection.y, vStrokeDirection.x);
+      vec2 planar = vStrokeDirection * sign(vLocal.x) * along + side * vLocal.y;
+      vec3 normal = normalize(vec3(planar, sqrt(max(1.0 - rr, 0.0))));
+      vec3 light = vec3(-0.42, 0.55, 0.72);
+      float diffuse = max(dot(normal, light), 0.0);
+      float highlight = pow(max(reflect(-light, normal).z, 0.0), 36.0);
+      float fresnel = pow(1.0 - normal.z, 3.0);
+      float peak = max(color.r, max(color.g, color.b));
+      vec3 bead = color * (0.18 + diffuse * 1.1 + fresnel * 0.7) + vec3(peak) * highlight * 2.2;
+      shaded = mix(bokeh, bead, vFocus);
+    }
     float opacity = (uMode > 6.5 && uMode < 7.5) ? 1.0 : uOpacity;
-    float alpha = disc * taper * 0.42 * vEnergy * (1.0 - fog * fog) * smoothstep(0.05, 0.8, vDist) * opacity * vFade;
-    gl_FragColor = vec4(mix(bokeh, bead, focus), alpha);
+    gl_FragColor = vec4(shaded, disc * taper * 0.42 * opacity * vFade);
   }
-
 `
 
 /** The glowing timeline: a stream of light that flows toward the future. */
