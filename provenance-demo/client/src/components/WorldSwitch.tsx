@@ -17,12 +17,12 @@ export function WorldSwitch({ world, onSet, onReset }: { world: WorldState; onSe
     <div className={`world ${q ? 'world-q' : ''}`}>
       <div className="world-toggle" role="group" aria-label="World">
         <button className={!q ? 'on' : ''} aria-pressed={!q} disabled={pending} onClick={() => void switchTo('today')}>Today</button>
-        <button className={q ? 'on' : ''} aria-pressed={q} disabled={pending} onClick={() => void switchTo('q-day')}>Q-Day{q ? ` · ${world.headlineYear}` : ''}</button>
+        <button className={q ? 'on' : ''} aria-pressed={q} disabled={pending} onClick={() => void switchTo('q-day')}>Post-Quantum Day{q ? ` · ${world.headlineYear}` : ''}</button>
       </div>
       {onReset && <ResetDemoButton onReset={onReset} disabled={pending} />}
       {q && (
         <div className="world-banner" role="status">
-          <strong>Q-Day · {world.headlineYear}.</strong> A quantum computer has broken RSA and elliptic-curve signatures. Classical seals can now be forged; pre-Q-Day log anchors still count.
+          <strong>Post-Quantum Day · {world.headlineYear}.</strong> A quantum computer has broken RSA and elliptic-curve signatures. Classical seals can now be forged; log anchors made before Post-Quantum Day still count.
           {world.qDayAt && <> Since <time dateTime={world.qDayAt}>{new Date(world.qDayAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>.</>}
         </div>
       )}

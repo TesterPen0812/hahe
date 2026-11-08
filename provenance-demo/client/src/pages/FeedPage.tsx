@@ -38,7 +38,7 @@ export default function FeedPage() {
     <main className={`page feed ${world.mode === 'q-day' ? 'is-qday' : ''}`}>
       <header className="feed-head">
         <div>
-          <p className="kicker">{world.mode === 'q-day' ? `Q-Day · ${world.headlineYear}` : new Date().toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
+          <p className="kicker">{world.mode === 'q-day' ? `Post-Quantum Day · ${world.headlineYear}` : new Date().toLocaleDateString([], { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}</p>
           <h1>Good morning, Mara.</h1>
           <p className="lede">{items.length ? `${counts.green} verified, ${counts.amber} edited, ${counts.grey} of unknown origin overnight.` : 'Nothing in your briefing yet.'}</p>
         </div>

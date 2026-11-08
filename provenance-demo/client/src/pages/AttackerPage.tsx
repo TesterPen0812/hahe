@@ -63,17 +63,17 @@ function AttackerConsole({ world, setWorld, reset }: { world: WorldState; setWor
   return <main className={`page attacker ${qDay ? 'is-qday' : ''}`}>
     <header className="attack-header">
       <p className="kicker">The quantum break · an interactive demonstration</p>
-      <div className="attack-title"><h1>Attacker · Q-Day</h1><span className="attack-simulated">Simulated</span></div>
+      <div className="attack-title"><h1>Attacker · Post-Quantum Day</h1><span className="attack-simulated">Simulated</span></div>
       <p className="lede">Simulated — stands in for Shor’s algorithm on a quantum computer.</p>
       <p className="small muted">Real signatures. Real verification. The quantum key recovery is simulated.</p>
       <ResetDemoButton onReset={reset} disabled={!!busy} />
     </header>
 
     {!qDay && <aside className="attack-callout">
-      <div><strong>The attacker needs a quantum computer.</strong><p>Flip to Q-Day to simulate the moment RSA and elliptic-curve keys become forgeable.</p></div>
-      <button className="primary danger" disabled={!!busy} onClick={() => void run('world', () => setWorld('q-day'))}>{busy === 'world' ? 'Switching…' : 'Flip to Q-Day'}</button>
+      <div><strong>The attacker needs a quantum computer.</strong><p>Flip to Post-Quantum Day to simulate the moment RSA and elliptic-curve keys become forgeable.</p></div>
+      <button className="primary danger" disabled={!!busy} onClick={() => void run('world', () => setWorld('q-day'))}>{busy === 'world' ? 'Switching…' : 'Flip to Post-Quantum Day'}</button>
     </aside>}
-    {qDay && <p className="small muted">Q-Day · {world.headlineYear} <span aria-hidden> / </span> RSA and Ed25519 are broken in this simulated world.</p>}
+    {qDay && <p className="small muted">Post-Quantum Day · {world.headlineYear} <span aria-hidden> / </span> RSA and Ed25519 are broken in this simulated world.</p>}
     {error && <p className="status error" role="alert">{error} Retry the step when ready.</p>}
 
     <ol className="attack-flow">

@@ -104,7 +104,7 @@ async function forgedImage(camera: LegacyCamera, n: bigint): Promise<Blob> {
  */
 export async function runToyBreak(onStage?: (s: ToyBreakStage) => void, signal?: AbortSignal): Promise<ToyBreakResult> {
   const world = await api.world()
-  if (world.mode !== 'q-day') throw new ToyBreakError('Flip to Q-Day first: the attack is what Q-Day makes possible.')
+  if (world.mode !== 'q-day') throw new ToyBreakError('Flip to Post-Quantum Day first: the attack is what Post-Quantum Day makes possible.')
 
   const trust = await api.trust()
   const camera = trust.legacyCameras.find((c) => c.alg === TOY_RSA_ALG)

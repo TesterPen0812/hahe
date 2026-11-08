@@ -10,7 +10,7 @@ import HandPreview from './HandPreview'
 import './gesture.css'
 
 const TRACK = 90 // roughly the walk from Today to our door
-const MARKS = [{ at: 0, label: 'Today' }, { at: 34, label: 'Q-Day gate' }, { at: 86, label: 'Our door' }]
+const MARKS = [{ at: 0, label: 'Today' }, { at: 34, label: 'Post-Quantum Day gate' }, { at: 86, label: 'Our door' }]
 
 interface Recorded { step: string; t: number; pose: Pose; hold: Hold; armed: boolean; lm: number[][][]; wl: number[][][]; hd: string[] }
 type LogLine = { id: number; text: string }

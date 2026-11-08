@@ -54,7 +54,7 @@ export default function ToyRsaTestPage() {
     <main style={{ maxWidth: 860, margin: '0 auto', padding: 24, fontFamily: 'system-ui, sans-serif' }} data-testid="toy-rsa">
       <h1>Toy RSA live break (test harness)</h1>
       <p>World: <code data-testid="world">{world?.mode ?? '…'}</code>{' '}
-        <button type="button" onClick={() => flip('q-day')}>Flip to Q-Day</button>{' '}
+        <button type="button" onClick={() => flip('q-day')}>Flip to Post-Quantum Day</button>{' '}
         <button type="button" onClick={() => flip('today')}>Back to today</button>
       </p>
       <p>

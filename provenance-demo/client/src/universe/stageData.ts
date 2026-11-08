@@ -72,7 +72,7 @@ function stepFor(c: Check, item: ItemSummary, i: number): CaptureStep {
     case 'Person approved capture':
       return {
         ...base,
-        text: c.pass ? 'Face ID approved' : c.brokenSinceQDay ? 'Face ID · broken since Q-Day' : 'Face ID not proven',
+        text: c.pass ? 'Face ID approved' : c.brokenSinceQDay ? 'Face ID · broken since Post-Quantum Day' : 'Face ID not proven',
         detail: short(c.alg ?? 'es256'),
       }
     case 'Verified human':
@@ -82,7 +82,7 @@ function stepFor(c: Check, item: ItemSummary, i: number): CaptureStep {
     case 'Camera signature':
       return {
         ...base,
-        text: c.pass ? 'Camera signature' : c.brokenSinceQDay ? 'Camera signature · broken since Q-Day' : 'Camera signature fails',
+        text: c.pass ? 'Camera signature' : c.brokenSinceQDay ? 'Camera signature · broken since Post-Quantum Day' : 'Camera signature fails',
         detail: c.alg ? short(c.alg) : undefined,
       }
     case 'Logged': {

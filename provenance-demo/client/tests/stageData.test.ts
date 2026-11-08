@@ -58,7 +58,7 @@ test('after Q-Day an unanchored photo stays green on ML-DSA, and Face ID reads a
   assert.equal(it.verification.status, 'green')
   const steps = captureSteps(it)
   const face = steps.find(s => s.text.startsWith('Face ID'))!
-  assert.equal(face.text, 'Face ID · broken since Q-Day')
+  assert.equal(face.text, 'Face ID · broken since Post-Quantum Day')
   assert.equal(face.tone, 'warn')
   assert.equal(steps.at(-1)!.text, 'Device verified')
   assert.deepEqual(partsFromVerification(it.verification), [
