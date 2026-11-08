@@ -6,12 +6,13 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { TRAIL_LENGTH, WAKE_LIFE, finishShader } from './shaders'
 import {
-  DOOR, HYBRID_PATH, UNIVERSES, type RGB, cloud, doorHalfWidth, doorProgress, gateWall, glowingPath, homeHeight, hybridHeight, portal, sceneUniforms,
-  universeScene, type SceneUniforms, type UniverseDef,
+  DOOR, UNIVERSES, type RGB, cloud, doorHalfWidth, doorProgress, gateWall, homeHeight, portal, sceneUniforms,
+  tintGateWall, type SceneUniforms,
 } from './worlds'
-import { buildMeadow, qdayGate } from './scenery'
+import { buildMeadow } from './scenery'
 import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from './gallery'
-import { LiveFrame, PHONE_HOST, type Arrival } from './liveFrame'
+import { PHONE_HOST, type Arrival } from './liveFrame'
+import { createLiveSequence } from './liveSequence'
 import { Fluid } from './fluid'
 import { buildGreenWorld } from './greenWorld'
 import { buildPrismWorld } from './prismWorld'
@@ -19,6 +20,11 @@ import { curveStream } from './scenePath'
 import { ParticleSimulation } from './particles'
 import { POINTER_REACH, WAKE_INTERVAL, dragDistance, dragVelocity, releasedVelocity, wheelDistance } from './input'
 import { driveVelocity, type HandControl } from '../gesture/handControl'
+import { doorCaption, type DoorCaption } from './doorCaption'
+import { Warp, cardAt, glideSeconds, slowFactor, type Zone } from './walk'
+import type {
+  DoorId, DoorTints, ForgeryArrival, LiveSequence, Region, WalkControls, WalkState,
+} from './contract'
 
 export type WorldView = 'journey' | 'foliage' | 'prism'
 
@@ -34,57 +40,102 @@ interface Showcase {
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
-  phase: Phase
-  branch: number | null     // branch being walked or entered
-  hovered: number | null    // portal under the pointer / keyboard focus at the fork
-  qday: boolean             // camera is past the Q-Day gate
+  phase: Phase              // 'inside' in the Prism (after Q-Day), 'trunk' before it
+  branch: number | null     // 0 in the Prism, else null
+  hovered: number | null    // door under the pointer: 0 door 1, 1 door 2
+  qday: boolean             // camera is past door 2
   started: boolean          // the visitor has moved off the start
-  stop: number              // the story stop reached, or being glided to (0 today, 1 Q-Day gate, 2 live frame)
+  stop: number              // the story stop reached, or being glided to (index into the walk's stops)
   gliding: boolean          // the autopilot is walking to that stop
+  // Always emitted; optional only so pages that build an initial EngineState keep compiling.
+  stopCount?: number        // stops on the walk now (grows as live photos arrive)
+  walk?: WalkState
 }
 export interface EngineCallbacks {
   onState: (s: EngineState) => void
   onQDay: (crossed: boolean) => void
 }
-export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2'
+export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2' | 'door1' | 'door2'
 
-/** The worlds behind the gate. For now there is one door: into the world that went hybrid. */
+/** The world behind door 2 (kept for the page's panel): the one that went hybrid. */
 export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
 
-// The two-minute story, one key press per stop: today's start, just through the Q-Day gate (it
-// freezes there while the seals change), and inside our world in front of the live frame.
-export const STOP_COUNT = 3
-const STOP_START = 6
-const STOP_PAST_GATE = 1.5     // how far past the gate the walk holds
-const STOP_INSIDE = 14         // how far into our world the visitor stands
-const LIVE_AHEAD = 8         // the live frame stands this far beyond that
-// Glide times: today to the gate is a walk past the photos; the gate to the frame a rush through the door.
-const GLIDE_TO_GATE = 12
-const GLIDE_TO_FRAME = 5.5
-const GLIDE_BACK = 3.5
+// ── The walk ────────────────────────────────────────────────────────────────
+// Green Foliage tunnel → door 1 → the blue world (today) → door 2 "Q-Day · 2035" → the Prism.
+// Stops, one press each (Space / → / PageDown on, ← / PageUp back, or the hand's "next"):
+//   0 tunnel start · 1 blue arrival (card 'today') · 2 just inside the Prism (card 'qday'; the
+//   freeze: wheel, drag, keys and hands hold here until "next") · 3… each live photo station ·
+//   then a break (card 'break') and the end (card 'end').
+// Glides keep an even pace through the warped route (walk.ts, GLIDE_PACE 6.5), so they ease to
+// 25 % in every slow zone. Glide times (scratch calculation over this route): tunnel → today 10.0 s,
+// today → Q-Day 12.2 s, Q-Day → first live photo 6.2 s, photo → photo about 3.2 s, last photo →
+// break 3.6 s, break → end 3.8 s: about 36 s of walking with one live photo, leaving the rest of
+// two minutes for talking. Walking back runs at twice the pace.
+// Slow zones (centre ± full-slow / back-to-speed, in route units): today 2 / 9, Q-Day 2 / 7 (it
+// begins right at door 2), each live station 1.2 / 4, break and end 1.5 / 5.
+export const STOP_COUNT = 6 // with one live station; EngineState.stopCount is authoritative
+const TUNNEL_STOP = 4
+const DOOR1_AT = 46        // door 1 on the tunnel's path (48 long)
+const TODAY_AT = 10        // blue arrival, after door 1
+const DOOR2_BEFORE_END = 9 // door 2 stands this far before the blue path's end
+const QDAY_AT = 7          // the freeze, just inside the Prism
+const LIVE_START = 30      // first live frame station on the Prism path (its middle)
+const LIVE_SPACING = 8
+const BREAK_AFTER = 9
+const END_AFTER = 9
+const PRISM_TAIL = 3       // the walk ends this far before the Prism path's end
+const DOOR_TINTS: DoorTints = { door1: [0.55, 0.75, 1.0], door2: [1.0, 0.38, 0.22] }
+const DOOR_CAPTIONS: Partial<Record<DoorId, string>> = { door2: 'Q-Day · 2035' }
 
 const EYE = 1.15
 const FOV = 50
+const RT_SCALE = 0.45
+const HEIGHT_STEP = 0.25
 
-interface Universe {
-  def: UniverseDef
-  scene: THREE.Scene
-  u: SceneUniforms
+interface Door {
+  id: DoorId
+  s: number                 // distance along its world's path
+  tint: RGB
   rt: THREE.WebGLRenderTarget
-  door: ReturnType<typeof portal>
-  cam: THREE.PerspectiveCamera
-  curve: THREE.CatmullRomCurve3
-  len: number
-  base: number
+  portal: ReturnType<typeof portal>
+  wall: ReturnType<typeof cloud>
+  wallBright: Float32Array
+  caption: DoorCaption | null
   open: number
   presence: number
   rtScale: number
-  wall: ReturnType<typeof cloud>
+  toNext: THREE.Matrix4     // this world's coordinates → the next world's
+  fromNext: THREE.Matrix4
+}
+
+interface Stage {
+  region: Region
+  scene: THREE.Scene
+  u: SceneUniforms
+  path: THREE.Curve<THREE.Vector3>
+  len: number
+  ground: (x: number, z: number) => number
+  start: number             // route distance at this world's path start
+  cam: THREE.PerspectiveCamera
+  door: Door | null         // the door at the far end, into the next world
+  exposure: number
+  lift: number              // how far above the path ahead the eye looks
+  heights: Float32Array     // smoothed ground under the walk, from s = -8 every HEIGHT_STEP
 }
 
 const v2 = (x: number, z: number) => new THREE.Vector3(x, 0, z)
 
-export class UniverseEngine {
+/** A stretch [0, upTo] of a curve, as its own curve. */
+class SubCurve extends THREE.Curve<THREE.Vector3> {
+  private base: THREE.Curve<THREE.Vector3>
+  private f: number
+  constructor(base: THREE.Curve<THREE.Vector3>, upTo: number) {
+    super(); this.base = base; this.f = upTo / base.getLength(); this.arcLengthDivisions = 600
+  }
+  getPoint(t: number, target = new THREE.Vector3()) { return this.base.getPointAt(t * this.f, target) }
+}
+
+export class UniverseEngine implements WalkControls {
   private canvas = document.createElement('canvas')
   private renderer: THREE.WebGLRenderer
   private composer: EffectComposer
@@ -92,46 +143,45 @@ export class UniverseEngine {
   private bloom: UnrealBloomPass
   private finish: ShaderPass
   private camera = new THREE.PerspectiveCamera(FOV, 1, 0.05, 900)
-  private home = new THREE.Scene()
-  private homeU = sceneUniforms()
-  private universes: Universe[] = []
+  private stages: Stage[] = []
+  private active = 0
   private worldView: WorldView = 'journey'
   private showcases = new Map<WorldView, Showcase>()
   private journeyDesired = 0
-  private journeyTarget: { seg: number; d: number } | null = null
+  private journeyTarget: number | null = null
 
   private get showcase() { return this.showcases.get(this.worldView) }
   private trunk = new THREE.CatmullRomCurve3([v2(0, 8), v2(1.4, -6), v2(-1.6, -20), v2(1.2, -34), v2(-0.6, -46), v2(0, -58)], false, 'centripetal')
-  private L0: number
-  private gateD: number
-  private gateCurtain: ReturnType<typeof cloud>
-  private homePath: THREE.Points
-  private galleries: Gallery[] = []
-  private live: LiveFrame | null = null
-  private liveWorld = -1
+  private galleries: { gallery: Gallery; stage: number }[] = []
+  private live!: LiveSequence
   private fluid: Fluid
   private particles = new Map<THREE.Object3D, { simulation: ParticleSimulation; time: number }>()
   private fluidLast = new THREE.Vector2(-1, -1)
 
+  // the walk's stops, zones and warped route; rebuilt when the live stations change
+  private walkKey = ''
+  private stopList: number[] = []
+  private zones: Zone[] = []
+  private warp: Warp | null = null
+  private stations: number[] = []
+  private maxRoute = 0
+
   // travel state
-  private seg = -1
-  private d = 0
+  private r = 0                 // route distance the camera stands at
   private desiredRoute = 0
   private v = 0
   private keys = new Set<string>()
   private hands: HandControl | null = null
-  private target: { seg: number; d: number } | null = { seg: -1, d: 6 }
-  private selected: number | null = null
+  private target: number | null = TUNNEL_STOP
+  private holdQday = true       // the Q-Day freeze holds continuous travel until "next"
   private hovered: number | null = null
-  private keyboardDoor: number | null = null
-  // autopilot: an eased walk to the next story stop
+  // autopilot: an eased walk to a story stop, through the warped route
   private glide: { index: number; from: number; to: number; t0: number; dur: number } | null = null
   private glideClock = 0
   private handLatch = false // a hand hold that already counted as "next" doesn't also drive
   private qdayAt = -1
   private flash = 0
   private flashColor = new THREE.Color(1, 1, 1)
-  private wasInside = -1
 
   private exposure = 0.95
   private flashedQday = -1
@@ -185,15 +235,10 @@ export class UniverseEngine {
     this.renderer.setClearColor(0x020308, 1)
 
     this.fluid = new Fluid(this.renderer, this.lowPower)
-    this.L0 = this.trunk.getLength()
-    this.gateD = this.L0 - 9
+    this.buildStages()
+    this.refreshWalk()
 
-    this.buildHome()
-    this.buildUniverses()
-    this.gateCurtain = this.buildGate()
-    this.homePath = this.buildPaths()
-
-    this.renderPass = new RenderPass(this.home, this.camera)
+    this.renderPass = new RenderPass(this.stages[0].scene, this.camera)
     this.composer = new EffectComposer(this.renderer)
     this.composer.addPass(this.renderPass)
     this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), this.lowPower ? 0.55 : 0.7, 0.5, 0.58)
@@ -222,17 +267,11 @@ export class UniverseEngine {
     else this.labels.delete(id)
   }
 
-  /** The story stops along the walk, as distances on the route. */
-  private stops() {
-    const inside = this.universes[0] ? this.L0 + this.universes[0].len + STOP_INSIDE : this.L0
-    return [STOP_START, this.gateD + STOP_PAST_GATE, inside]
-  }
-
   /** The stop the visitor is standing at (autopilot idle), or null between stops. */
   private heldStop(): number | null {
     if (this.glide) return null
     const r = this.desiredRoute
-    const i = this.stops().findIndex(x => Math.abs(r - x) < 0.8)
+    const i = this.stopList.findIndex(x => Math.abs(r - x) < 0.8)
     return i < 0 ? null : i
   }
 
@@ -241,7 +280,7 @@ export class UniverseEngine {
     if (this.glide) return this.glide.index
     const r = this.desiredRoute
     let i = 0
-    this.stops().forEach((x, k) => { if (r >= x - 0.8) i = k })
+    this.stopList.forEach((x, k) => { if (r >= x - 0.8) i = k })
     return i
   }
 
@@ -249,20 +288,19 @@ export class UniverseEngine {
   next() {
     if (this.showcase) return
     const r = this.desiredRoute
-    // a second press while already walking to the next stop doesn't skip it
-    if (this.glide && this.glide.to > r) return
+    // a second press while already walking forward doesn't skip the stop
+    if (this.glide && this.stopList[this.glide.index] > r) return
     const held = this.heldStop()
-    const i = held !== null ? held + 1 : this.stops().findIndex(x => x > r + 0.8)
-    if (i >= 0 && i < STOP_COUNT) this.goStop(i)
+    const i = held !== null ? held + 1 : this.stopList.findIndex(x => x > r + 0.8)
+    if (i >= 0 && i < this.stopList.length) this.goStop(i)
   }
 
   /** Walk back to the previous stop. */
   prev() {
     if (this.showcase) return
     const r = this.desiredRoute
-    const stops = this.stops()
     let i = -1
-    stops.forEach((x, k) => { if (x < r - 0.8) i = k })
+    this.stopList.forEach((x, k) => { if (x < r - 0.8) i = k })
     this.goStop(Math.max(0, i))
   }
 
@@ -270,32 +308,71 @@ export class UniverseEngine {
   handNext() {
     if (this.showcase) return
     const held = this.heldStop()
-    if (held === null || held >= STOP_COUNT - 1) return
+    if (held === null || held >= this.stopList.length - 1) return
     this.handLatch = true
     this.goStop(held + 1)
   }
   handRelease() { this.handLatch = false }
 
   private goStop(index: number) {
-    const to = this.stops()[index]
+    const to = this.stopList[index]
     const from = this.desiredRoute
-    const dist = to - from
-    if (Math.abs(dist) < 0.05) { this.glide = null; return }
-    const stops = this.stops()
-    let dur = GLIDE_BACK * Math.min(1, Math.abs(dist) / (stops[1] - stops[0]))
-    if (dist > 0) {
-      dur = index === 1 ? GLIDE_TO_GATE * dist / (stops[1] - stops[0]) : GLIDE_TO_FRAME * dist / (stops[2] - stops[1])
-    }
+    if (to === undefined || !this.warp) return
+    if (index > 2) this.holdQday = false
+    if (Math.abs(to - from) < 0.05) { this.glide = null; return }
+    const w0 = this.warp.at(from), w1 = this.warp.at(to)
+    // walking back is a quick rewind, not the story told again
+    const dur = to > from ? glideSeconds(w1 - w0) : Math.max(1.2, glideSeconds(w1 - w0) * 0.5)
     this.target = null
     this.v = 0
-    this.glide = { index, from, to, t0: this.glideClock, dur: Math.max(1.2, dur) }
+    this.glide = { index, from: w0, to: w1, t0: this.glideClock, dur }
   }
 
-  /** Hang the live frame's next photo: it flies in once the visitor is inside our world. */
-  showArrival(a: Arrival) { this.live?.arrive(a) }
+  /** A new phone photo: it takes the next live frame in the Prism. */
+  showArrival(a: Arrival) {
+    this.live.arrive({ id: a.url, url: a.url, status: a.status, label: a.title, parts: [] })
+  }
 
-  /** The server's verdicts after Q-Day, by photo id, for the gallery captions. */
-  setVerdicts(v: Map<string, SealVerdict>) { this.galleries.forEach(g => g.setVerdicts(v)) }
+  /** The toy-RSA fake has been judged: it hangs beside the live photos. */
+  showForgery(f: ForgeryArrival) { this.live.showForgery(f) }
+
+  /** The server's verdicts after Q-Day, by photo id, for the Prism gallery's captions. */
+  setVerdicts(v: Map<string, SealVerdict>) {
+    for (const g of this.galleries) if (this.stages[g.stage].region === 'qday') g.gallery.setVerdicts(v)
+  }
+
+  setDoorTint(id: DoorId, rgb: RGB) {
+    const door = this.door(id)
+    if (!door) return
+    door.tint = [rgb[0], rgb[1], rgb[2]]
+    ;(door.portal.contentMat.uniforms.uTint.value as THREE.Color).setRGB(rgb[0], rgb[1], rgb[2])
+    const colors = door.wall.geometry.getAttribute('aColor') as THREE.InstancedBufferAttribute
+    tintGateWall(colors.array as Float32Array, door.wallBright, rgb)
+    colors.needsUpdate = true
+    door.caption?.setTint(rgb)
+  }
+
+  doorTints(): DoorTints {
+    const tint = (id: DoorId) => [...(this.door(id)?.tint ?? DOOR_TINTS[id])] as RGB
+    return { door1: tint('door1'), door2: tint('door2') }
+  }
+
+  /** Write a door's name in light above its frame, or remove it (null) when the screen pins its own. */
+  setDoorCaption(id: DoorId, text: string | null) {
+    const door = this.door(id)
+    if (!door) return
+    if (text === null) {
+      if (door.caption) { door.portal.group.remove(door.caption.mesh); door.caption.dispose(); door.caption = null }
+      return
+    }
+    if (door.caption) door.caption.setText(text)
+    else {
+      door.caption = doorCaption(text, door.tint)
+      door.portal.group.add(door.caption.mesh)
+    }
+  }
+
+  private door(id: DoorId) { return this.stages.find(s => s.door?.id === id)?.door ?? null }
 
   /** Select a landscape without advancing or rewinding the shared story. */
   setWorld(view: WorldView) {
@@ -320,12 +397,12 @@ export class UniverseEngine {
     this.fluid.clear()
     this.look.set(0, 0); this.ndc.set(0, 0)
     this.pointerSpeed = 0; this.pointerPresence = 0; this.pointerIdle = 0; this.idleBlend = 0
-    this.hovered = null; this.keyboardDoor = null; this.flash = 0; this.zoom = 0
+    this.hovered = null; this.flash = 0; this.zoom = 0
     this.canvas.style.cursor = ''
     for (const u of this.allUniforms()) u.uPulse.value.w = -99
     this.resize()
     if (this.showcase) this.placeShowcaseCamera(1)
-    else { this.placeCamera(1); this.updatePreviewCameras() }
+    else { this.placeCamera(1); this.updatePreviewCamera() }
     this.updateLabels()
     this.canvas.focus({ preventScroll: true })
   }
@@ -337,29 +414,19 @@ export class UniverseEngine {
   }
 
   private allUniforms() {
-    return [this.homeU, ...this.universes.map(x => x.u), ...[...this.showcases.values()].map(x => x.u)]
-  }
-
-  private activeCamera() {
-    const inside = this.insideIndex()
-    return !this.showcase && inside >= 0 ? this.universes[inside].cam : this.camera
+    return [...this.stages.map(s => s.u), ...[...this.showcases.values()].map(x => x.u)]
   }
 
   private activeWorldIndex() {
-    return this.worldView === 'foliage' ? -2 : this.worldView === 'prism' ? -3 : this.insideIndex()
+    return this.worldView === 'foliage' ? -2 : this.worldView === 'prism' ? -3 : this.active
   }
 
-  /** Walk into a universe. */
+  /** Walk through the next door ahead (the page's door pins call this). */
   choose(branch: number) {
-    if (this.showcase || !this.universes[branch]) return
-    this.glide = null
-    if (!this.pastGate()) {
-      this.target = { seg: -1, d: this.L0 }
-      this.selected = branch
-      return
-    }
-    this.selected = branch
-    this.target = { seg: branch, d: this.universes[branch].len + 14 }
+    void branch
+    if (this.showcase) return
+    const ahead = this.stages.findIndex((s, i) => s.door && i >= this.active)
+    if (ahead >= 0) this.goStop(ahead + 1)
   }
 
   /** A short glow when a new photo lands in the world the visitor is standing in. */
@@ -373,33 +440,38 @@ export class UniverseEngine {
   setHands(c: HandControl | null) { this.hands = c }
 
   /**
-   * Hang real photos from the feed along the walk: the first half on today's side of the gate,
-   * the rest on the path to our door, where they're in view while the walk holds at the gate.
-   * Q-Day's wave tests their seals.
+   * Hang the feed's photos twice: in the blue world, as they are today, and in the Prism, where
+   * Q-Day's wave tests their seals (legacy RSA greys out, hybrid holds).
    */
   setGallery(photos: GalleryPhoto[]) {
-    for (const g of this.galleries) { this.home.remove(g.group); g.dispose() }
+    for (const g of this.galleries) { this.stages[g.stage].scene.remove(g.gallery.group); g.gallery.dispose() }
     this.galleries = []
-    if (!photos.length || !this.universes[0]) return
-    const half = Math.ceil(photos.length / 2)
-    const today = photos.slice(0, half), after = photos.slice(half)
-    this.galleries.push(buildGallery(today, this.trunk, 13 / this.L0, (this.gateD - 5) / this.L0))
-    if (after.length) this.galleries.push(buildGallery(after, this.universes[0].curve, 0.15, 0.72, today.length))
-    for (const g of this.galleries) this.home.add(g.group)
+    if (!photos.length) return
+    const blue = this.stages[1], prism = this.stages[2]
+    const gate = blue.door!.s
+    this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, blue.ground) })
+    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, 10 / prism.len, (LIVE_START - 4) / prism.len, 1, prism.ground) })
+    for (const g of this.galleries) this.stages[g.stage].scene.add(g.gallery.group)
   }
 
-  /** Walk back to the fork. */
-  back() { this.glide = null; this.target = { seg: -1, d: this.L0 } }
+  /** Walk back to the world before the last door. */
+  back() {
+    if (this.showcase) return
+    this.goStop(this.active >= 2 ? 1 : 0)
+  }
 
   /** Walk back to today, before Q-Day. */
-  rewind() { this.glide = null; this.selected = null; this.target = { seg: -1, d: STOP_START } }
+  rewind() { if (!this.showcase) this.goStop(1) }
 
   dispose() {
     this.disposed = true
     cancelAnimationFrame(this.raf)
     this.resizeObserver.disconnect()
     this.unbind()
-    const scenes = [this.home, ...this.universes.map(u => u.scene), ...[...this.showcases.values()].map(u => u.scene)]
+    for (const s of this.stages) s.door?.caption?.dispose()
+    this.galleries.forEach(g => g.gallery.dispose())
+    this.live.dispose()
+    const scenes = [...this.stages.map(s => s.scene), ...[...this.showcases.values()].map(u => u.scene)]
     for (const s of scenes) {
       s.traverse(o => {
         const m = o as THREE.Mesh
@@ -409,9 +481,7 @@ export class UniverseEngine {
         else mat?.dispose()
       })
     }
-    this.galleries.forEach(g => g.dispose())
-    this.live?.dispose()
-    this.universes.forEach(u => u.rt.dispose())
+    this.stages.forEach(s => s.door?.rt.dispose())
     this.fluid.dispose()
     this.particles.forEach(p => p.simulation.dispose())
     this.particles.clear()
@@ -422,11 +492,111 @@ export class UniverseEngine {
 
   // ── scene construction ───────────────────────────────────────────────────
 
-  private buildHome() {
-    buildMeadow(this.home, this.homeU, this.lowPower, this.trunkX())
+  private buildStages() {
+    const lp = this.lowPower
+    // 1. The green Foliage tunnel.
+    const tu = sceneUniforms()
+    const tunnel = buildGreenWorld(tu, lp)
+    // Door 1 is the light at the end of the tunnel; the landscape's own exit glow would only wash it out.
+    const exit = tunnel.scene.getObjectByName('Green tunnel exit light')
+    if (exit) exit.visible = false
+    // 2. The blue world: today's meadow under hanging light, the white stream to door 2.
+    const bu = sceneUniforms()
+    const blueScene = new THREE.Scene()
+    blueScene.name = 'Blue world (today)'
+    buildMeadow(blueScene, bu, lp, this.trunkX())
+    const blueLen = this.trunk.getLength()
+    const door2At = blueLen - DOOR2_BEFORE_END
+    blueScene.add(curveStream(bu, new SubCurve(this.trunk, door2At), { lowPower: lp, ground: homeHeight, fog: 130 }))
+    // 3. The Prism meadow, after Q-Day.
+    const pu = sceneUniforms()
+    const prism = buildPrismWorld(pu, lp)
+
+    const stage = (region: Region, scene: THREE.Scene, u: SceneUniforms, path: THREE.Curve<THREE.Vector3>, len: number,
+      ground: (x: number, z: number) => number, exposure: number, lift: number): Stage => {
+      const s: Stage = {
+        region, scene, u, path, len, ground, start: 0, exposure, lift, door: null,
+        cam: new THREE.PerspectiveCamera(FOV, 1, 0.05, 900), heights: new Float32Array(0),
+      }
+      s.heights = this.sampleHeights(s)
+      return s
+    }
+    this.stages = [
+      stage('tunnel', tunnel.scene, tu, tunnel.path, tunnel.length, tunnel.ground, 1.0, 0.3),
+      stage('today', blueScene, bu, this.trunk, blueLen, homeHeight, 0.95, -0.5),
+      stage('qday', prism.scene, pu, prism.path, prism.length, prism.ground, 1.05, 0.1),
+    ]
+    this.addDoor(0, 'door1', DOOR1_AT)
+    this.addDoor(1, 'door2', door2At)
+    this.stages[1].start = this.stages[0].start + DOOR1_AT
+    this.stages[2].start = this.stages[1].start + door2At
+
+    // The live photos stand in the middle of the Prism's path.
+    const p = this.stages[2]
+    this.live = createLiveSequence({
+      path: {
+        at: d => {
+          const position = this.pointAt(2, d)
+          position.y = p.ground(position.x, position.z)
+          return { position, tangent: this.tangentAt(2, d) }
+        },
+        ground: p.ground,
+      },
+      start: LIVE_START, spacing: LIVE_SPACING, host: PHONE_HOST,
+      onLand: (_i, a) => { if (this.active === 2) this.celebrate(a.status) },
+    })
+    p.scene.add(this.live.group)
   }
 
-  /** The walk's sideways position at a given depth: the trunk, then straight on to the door. */
+  /** A door at distance s on world j's path, and the frame that carries the walk into world j+1. */
+  private addDoor(j: number, id: DoorId, s: number) {
+    const st = this.stages[j]
+    const tint = DOOR_TINTS[id]
+    const rt = new THREE.WebGLRenderTarget(16, 16, { type: THREE.HalfFloatType })
+    const door = portal(tint, rt, this.lowPower)
+    const at = this.pointAt(j, s), tan = this.tangentAt(j, s)
+    const base = this.heightAt(j, s)
+    door.group.position.set(at.x, base, at.z)
+    door.group.lookAt(at.x - tan.x, base, at.z - tan.z) // +z faces the visitor; -z leads into the next world
+    door.group.updateMatrixWorld(true)
+    st.scene.add(door.group)
+    // Sliding slab and ground spill, in this world's coordinates for pointer interactions.
+    const w = gateWall(tint, this.lowPower)
+    const tmp = new THREE.Vector3()
+    for (let k = 0; k < w.pos.length; k += 3) {
+      tmp.set(w.pos[k], w.pos[k + 1], w.pos[k + 2]).applyMatrix4(door.group.matrixWorld)
+      w.pos.set([tmp.x, tmp.y, tmp.z], k)
+    }
+    const axis = new THREE.Vector3(1, 0, 0).transformDirection(door.group.matrixWorld)
+    const wall = cloud(st.u, w.pos, w.col, w.size, 14, [10, 95], 61, 0, { interaction: 0.35, center: door.group.position, axis })
+    wall.geometry.setAttribute('aPortal', new THREE.InstancedBufferAttribute(w.shape, 4))
+    const wallMat = wall.material as THREE.ShaderMaterial
+    wallMat.defines = { PORTAL_DUST: 1 }
+    Object.assign(wallMat.uniforms, {
+      uHalfWidth: door.contentMat.uniforms.uHalfWidth,
+      uDoorOpen: door.contentMat.uniforms.uOpen,
+      uImpact: door.contentMat.uniforms.uImpact,
+      uDoorOuter: { value: DOOR.width / 2 + DOOR.frame },
+      uDoorSpeed: { value: 0 },
+    })
+    wall.visible = false
+    st.scene.add(wall)
+    // The next world's entry frame: its path start, facing back along its path, like the door.
+    const p0 = this.pointAt(j + 1, 0), t0 = this.tangentAt(j + 1, 0)
+    const entry = new THREE.Object3D()
+    entry.position.set(p0.x, this.heightAt(j + 1, 0), p0.z)
+    entry.lookAt(p0.x - t0.x, entry.position.y, p0.z - t0.z)
+    entry.updateMatrixWorld(true)
+    const toNext = entry.matrixWorld.clone().multiply(door.group.matrixWorld.clone().invert())
+    st.door = {
+      id, s, tint: [...tint] as RGB, rt, portal: door, wall, wallBright: w.bright, caption: null,
+      open: 0, presence: 0, rtScale: RT_SCALE, toNext, fromNext: toNext.clone().invert(),
+    }
+    const text = DOOR_CAPTIONS[id]
+    if (text) this.setDoorCaption(id, text)
+  }
+
+  /** The blue walk's sideways position at a given depth. */
   private trunkX() {
     const samples = Array.from({ length: 241 }, (_, i) => this.trunk.getPointAt(i / 240))
     return (z: number) => {
@@ -439,129 +609,107 @@ export class UniverseEngine {
     }
   }
 
-  private buildUniverses() {
-    // Branches fan out from the end of the trunk (the fork) to three doors.
-    const fork = this.trunk.getPointAt(1)
-    const fan = {
-      rsa: [v2(fork.x, fork.z), v2(-3.2, -64), v2(-9, -72), v2(-13, -82)],
-      hybrid: [v2(fork.x, fork.z), v2(0, -66), v2(0, -76), v2(0, -88)],
-      unsigned: [v2(fork.x, fork.z), v2(3.2, -64), v2(9, -72), v2(13, -82)],
+  // ── paths ────────────────────────────────────────────────────────────────
+
+  /** A point on world j's walk at distance s, continuing straight past either end. */
+  private pointAt(j: number, s: number, out = new THREE.Vector3()) {
+    const st = this.stages[j]
+    if (s < 0) return st.path.getPointAt(0, out).addScaledVector(this.tangentAt(j, 0), s).setY(0)
+    if (s > st.len) return st.path.getPointAt(1, out).addScaledVector(this.tangentAt(j, st.len), s - st.len).setY(0)
+    return st.path.getPointAt(s / st.len, out).setY(0)
+  }
+
+  private tangentAt(j: number, s: number) {
+    const st = this.stages[j]
+    return st.path.getTangentAt(THREE.MathUtils.clamp(s / st.len, 0, 1)).setY(0).normalize()
+  }
+
+  /** Smoothed ground height under the walk, so the eye never steps (and meets the doors exactly). */
+  private sampleHeights(st: Stage) {
+    const n = Math.ceil((st.len + 24) / HEIGHT_STEP)
+    const raw = new Float32Array(n), out = new Float32Array(n)
+    const at = new THREE.Vector3()
+    for (let i = 0; i < n; i++) {
+      const s = -8 + i * HEIGHT_STEP
+      const c = THREE.MathUtils.clamp(s, 0, st.len)
+      st.path.getPointAt(c / st.len, at)
+      if (s !== c) at.addScaledVector(st.path.getTangentAt(c / st.len).setY(0).normalize(), s - c)
+      raw[i] = st.ground(at.x, at.z)
     }
-    const ends = ACTIVE_UNIVERSES.map(u => fan[u.id])
-    ACTIVE_UNIVERSES.forEach((def, i) => {
-      const curve = new THREE.CatmullRomCurve3(ends[i], false, 'centripetal')
-      const end = curve.getPointAt(1)
-      const tan = curve.getTangentAt(1).setY(0).normalize()
-      const base = homeHeight(end.x, end.z)
-      const rt = new THREE.WebGLRenderTarget(16, 16, { type: THREE.HalfFloatType })
-      const door = portal(def.tint, rt, this.lowPower)
-      door.group.position.set(end.x, base, end.z)
-      door.group.lookAt(end.x - tan.x, base, end.z - tan.z) // +z faces the visitor; -z leads into the universe
-      door.group.updateMatrixWorld(true)
-      this.home.add(door.group)
-      // Sliding slab and ground spill, in home-world coordinates for pointer interactions.
-      const w = gateWall(def.tint, this.lowPower)
-      const tmp = new THREE.Vector3()
-      for (let k = 0; k < w.pos.length; k += 3) {
-        tmp.set(w.pos[k], w.pos[k + 1], w.pos[k + 2]).applyMatrix4(door.group.matrixWorld)
-        w.pos.set([tmp.x, tmp.y, tmp.z], k)
-      }
-      const axis = new THREE.Vector3(1, 0, 0).transformDirection(door.group.matrixWorld)
-      const wall = cloud(this.homeU, w.pos, w.col, w.size, 14, [10, 95], 61, 0, {
-        interaction: 0.35, center: door.group.position, axis,
-      })
-      wall.geometry.setAttribute('aPortal', new THREE.InstancedBufferAttribute(w.shape, 4))
-      const wallMat = wall.material as THREE.ShaderMaterial
-      wallMat.defines = { PORTAL_DUST: 1 }
-      Object.assign(wallMat.uniforms, {
-        uHalfWidth: door.contentMat.uniforms.uHalfWidth,
-        uDoorOpen: door.contentMat.uniforms.uOpen,
-        uImpact: door.contentMat.uniforms.uImpact,
-        uDoorOuter: { value: DOOR.width / 2 + DOOR.frame },
-        uDoorSpeed: { value: 0 },
-      })
-      wall.visible = false
-      this.home.add(wall)
-      const u = sceneUniforms()
-      const scene = universeScene(def, u, this.lowPower)
-      if (def.id === 'hybrid') this.buildLiveFrame(scene, i)
-      this.universes.push({
-        def, u, rt, door, curve, base, open: 0, presence: 0, rtScale: RT_SCALE, wall,
-        len: curve.getLength(),
-        scene,
-        cam: new THREE.PerspectiveCamera(FOV, 1, 0.05, 900),
-      })
-    })
+    const k = Math.round(2 / HEIGHT_STEP)
+    for (let i = 0; i < n; i++) {
+      const a = raw[Math.max(0, i - k)], b = raw[Math.min(n - 1, i + k)]
+      out[i] = (a + raw[i] * 2 + b) / 4
+    }
+    return out
   }
 
-  /** The live frame stands on our world's path, a little left of centre so the side panel doesn't hide it. */
-  private buildLiveFrame(scene: THREE.Scene, world: number) {
-    const L = HYBRID_PATH.getLength()
-    const f = (STOP_INSIDE + LIVE_AHEAD) / L
-    const at = HYBRID_PATH.getPointAt(f)
-    const tan = HYBRID_PATH.getTangentAt(f).setY(0).normalize()
-    at.addScaledVector(new THREE.Vector3(-tan.z, 0, tan.x), -2)
-    at.y = hybridHeight(at.x, at.z) + EYE + 0.1
-    const toward = HYBRID_PATH.getPointAt(STOP_INSIDE / L)
-    const ahead = HYBRID_PATH.getPointAt(Math.min(1, (STOP_INSIDE + LIVE_AHEAD + 22) / L))
-    ahead.y = at.y + 1.4
-    this.live = new LiveFrame(at, toward, ahead, PHONE_HOST, status => this.celebrate(status))
-    this.liveWorld = world
-    scene.add(this.live.group)
+  private heightAt(j: number, s: number) {
+    const h = this.stages[j].heights
+    const x = THREE.MathUtils.clamp((s + 8) / HEIGHT_STEP, 0, h.length - 1)
+    const i = Math.min(h.length - 2, Math.floor(x))
+    return h[i] + (h[i + 1] - h[i]) * (x - i)
   }
 
-  private buildGate() {
-    // A curtain of hanging light across the path: the moment Q-Day arrives.
-    const p = this.trunk.getPointAt(this.gateD / this.L0)
-    const tan = this.trunk.getTangentAt(this.gateD / this.L0).setY(0).normalize()
-    const center = new THREE.Vector3(p.x, homeHeight(p.x, p.z) + 4.6, p.z)
-    const gate = qdayGate(this.homeU, center, tan, this.lowPower)
-    this.home.add(gate)
-    return gate
+  /** The world the route is in: each door hands over just before its plane (the near plane). */
+  private stageAt(r: number) {
+    let a = 0
+    for (let j = 1; j < this.stages.length; j++) if (r >= this.stages[j].start - 0.08) a = j
+    return a
   }
 
-  private buildPaths() {
-    const fork = this.trunk.getPointAt(1)
-    const gate = this.trunk.getPointAt(this.gateD / this.L0)
-    const tan = this.trunk.getTangentAt(this.gateD / this.L0)
-    const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize()
-    // The walk itself is the landscapes' white stream: fine grains flowing toward the door, in the
-    // particle simulation, so the pointer stirs the path like everything else.
-    const walk = new THREE.CurvePath<THREE.Vector3>()
-    walk.add(this.trunk)
-    const door = this.universes[0]
-    if (door) walk.add(door.curve)
-    this.home.add(curveStream(this.homeU, walk, { lowPower: this.lowPower, ground: homeHeight, fog: 130 }))
-    const path = glowingPath(this.homeU, [
-      // the Q-Day threshold line across the path
-      { curve: new THREE.LineCurve3(gate.clone().addScaledVector(side, -5.6), gate.clone().addScaledVector(side, 5.6)), branch: 0, density: 60 },
-    ], [0, 1, 2].map(i => (this.universes[i] ?? this.universes[0]).def.tint) as [RGB, RGB, RGB], 9, 130, homeHeight)
-    void fork
-    this.home.add(path)
-    return path
+  /** Rebuild the stops, slow zones and warped route whenever the live stations change. */
+  private refreshWalk() {
+    const prism = this.stages[2]
+    const stations = this.live.stations()
+    const key = stations.join(',')
+    if (key === this.walkKey && this.warp) return
+    this.walkKey = key
+    const [s0, s1, s2] = this.stages.map(s => s.start)
+    const last = prism.len - PRISM_TAIL
+    const live = stations.map(s => s2 + Math.min(s, last - 8))
+    const lastLive = live.length ? live[live.length - 1] : s2 + QDAY_AT
+    const brk = Math.min(lastLive + BREAK_AFTER, s2 + last - 4)
+    const end = Math.max(brk + 4, Math.min(brk + END_AFTER, s2 + last))
+    this.stations = live
+    this.stopList = [s0 + TUNNEL_STOP, s1 + TODAY_AT, s2 + QDAY_AT, ...live, brk, end]
+    this.zones = [
+      { at: s1 + TODAY_AT, inner: 2, outer: 9, card: 'today' },
+      { at: s2 + QDAY_AT, inner: 2, outer: 7, card: 'qday' },
+      ...live.map(at => ({ at, inner: 1.2, outer: 4 })),
+      { at: brk, inner: 1.5, outer: 5, card: 'break' as const },
+      { at: end, inner: 1.5, outer: 5, card: 'end' as const },
+    ]
+    this.maxRoute = Math.max(end, s2 + last)
+    this.warp = new Warp(this.zones, this.maxRoute + 1)
+    // a glide under way keeps going to the same stop, over the new route
+    if (this.glide) this.goStop(Math.min(this.glide.index, this.stopList.length - 1))
   }
 
   // ── input ────────────────────────────────────────────────────────────────
+
+  /** Every way of travelling eases to a quarter speed inside a slow zone. */
+  private slow() { return slowFactor(this.desiredRoute, this.zones) }
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault()
     this.target = null
     this.glide = null
     this.v = 0
-    this.desiredRoute += wheelDistance(e.deltaY, e.deltaMode, this.canvas.clientHeight)
+    const step = wheelDistance(e.deltaY, e.deltaMode, this.canvas.clientHeight)
+    this.desiredRoute += this.showcase ? step : step * this.slow()
   }
   private onKeyDown = (e: KeyboardEvent) => {
     const el = e.target as HTMLElement | null
     if (el?.closest?.('input, textarea, select, [contenteditable="true"]') || e.metaKey || e.ctrlKey || e.altKey) return
     const k = e.key.toLowerCase()
     const code = e.code
-    const doors = this.universes.length > 1 && (this.atFork() || this.seg >= 0)
     // The story: space, → and a clicker's PageDown walk on; ← and PageUp walk back. Works even
     // with a button focused (after "Fake one"), so a clicker never re-presses it. Matched on the
     // physical key too, since some remotes and automation send an empty `key`.
     const is = (key: string, phys: string) => k === key || code === phys
-    const fwd = is(' ', 'Space') || is('pagedown', 'PageDown') || (is('arrowright', 'ArrowRight') && !doors)
-    const back = is('pageup', 'PageUp') || (is('arrowleft', 'ArrowLeft') && !doors)
+    const fwd = is(' ', 'Space') || is('pagedown', 'PageDown') || is('arrowright', 'ArrowRight')
+    const back = is('pageup', 'PageUp') || is('arrowleft', 'ArrowLeft')
     if (!this.showcase && (fwd || back)) {
       e.preventDefault()
       if (el?.closest?.('button, a')) el.blur()
@@ -570,23 +718,13 @@ export class UniverseEngine {
     }
     if (el?.closest?.('button, a')) return
     if (['w', 's', 'arrowup', 'arrowdown'].includes(k)) { this.keys.add(k); this.target = null; this.glide = null; e.preventDefault() }
-    if (!this.showcase && (this.atFork() || this.seg >= 0)) {
-      const n = Number(k)
-      if (n >= 1 && n <= this.universes.length) this.choose(n - 1)
-      if (doors && k === 'arrowleft') this.keyboardDoor = Math.max(0, (this.keyboardDoor ?? 0) - 1)
-      if (doors && k === 'arrowright') this.keyboardDoor = Math.min(this.universes.length - 1, (this.keyboardDoor ?? 0) + 1)
-      if (k === 'enter') {
-        const door = this.hovered ?? this.keyboardDoor ?? (this.universes.length === 1 ? 0 : null)
-        if (door !== null) { this.choose(door); e.preventDefault() }
-      }
-    }
-    if (!this.showcase && k === 'escape' && this.seg >= 0) this.back()
+    if (!this.showcase && k === 'enter' && this.hovered !== null) { this.goStop(this.hovered + 1); e.preventDefault() }
+    if (!this.showcase && k === 'escape') this.back()
   }
   private onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()) }
   private onPointerMove = (e: PointerEvent) => { this.updatePointer(e, true) }
   private updatePointer(e: PointerEvent, dragging: boolean) {
     if (!e.isPrimary) return
-    this.keyboardDoor = null
     const rect = this.canvas.getBoundingClientRect()
     this.pointerIn = e.clientX >= rect.left && e.clientX <= rect.right && e.clientY >= rect.top && e.clientY <= rect.bottom
     this.ndc.set(((e.clientX - rect.left) / Math.max(rect.width, 1)) * 2 - 1, -((e.clientY - rect.top) / Math.max(rect.height, 1)) * 2 + 1)
@@ -594,7 +732,7 @@ export class UniverseEngine {
     const now = performance.now()
     const down = this.down
     if (dragging && down?.id === e.pointerId) {
-      const distance = dragDistance(down.lastY, e.clientY, rect.height)
+      const distance = dragDistance(down.lastY, e.clientY, rect.height) * (this.showcase ? 1 : this.slow())
       this.desiredRoute += distance
       this.v = dragVelocity(this.v, distance, (now - down.lastAt) / 1000)
       down.lastY = e.clientY
@@ -627,17 +765,15 @@ export class UniverseEngine {
     this.down = null
     if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId)
     if (moved > 6) return
-    const world = this.activeWorldIndex()
-    const cam = this.activeCamera()
     this.pulsePending = this.reducedMotion ? null : {
-      ray: this.pointerRay(this.ndc), origin: cam.position.clone(), world,
+      ray: this.pointerRay(this.ndc), origin: this.camera.position.clone(), world: this.activeWorldIndex(),
       time: (performance.now() - this.startedAt) / 1000,
     }
     // Resolve the release against the visible aperture, even between animation frames.
     const released = this.pickDoor()
     if (pressed !== null && pressed === released) {
-      this.universes[pressed].door.contentMat.uniforms.uImpact.value = this.reducedMotion ? 0 : 1
-      this.choose(pressed)
+      this.stages[pressed].door!.portal.contentMat.uniforms.uImpact.value = this.reducedMotion ? 0 : 1
+      this.goStop(pressed + 1) // through the door, to the stop just past it
     }
   }
   private onBlur = () => {
@@ -673,11 +809,6 @@ export class UniverseEngine {
 
   // ── travel ───────────────────────────────────────────────────────────────
 
-  private route() { return this.seg < 0 ? this.d : this.L0 + this.d }
-  private pastGate() { return this.route() >= this.gateD }
-  private atFork() { return this.seg < 0 && this.d >= this.L0 - 0.6 }
-  private insideIndex() { return this.seg >= 0 && this.d >= this.universes[this.seg].len - 0.08 ? this.seg : -1 }
-
   private travelShowcase(dt: number) {
     const world = this.showcase!
     const fwd = this.keys.has('w') || this.keys.has('arrowup')
@@ -704,8 +835,8 @@ export class UniverseEngine {
     this.camera.updateMatrixWorld()
   }
 
-  private travel(dt: number, t: number, realDt = dt) {
-    const before = this.route()
+  private travel(dt: number, realDt = dt) {
+    const before = this.r
     const fwd = this.keys.has('w') || this.keys.has('arrowup')
     const bwd = this.keys.has('s') || this.keys.has('arrowdown')
 
@@ -716,133 +847,89 @@ export class UniverseEngine {
 
     // The autopilot keeps wall-clock time, so a stop takes as long on a slow frame rate as a fast one.
     this.glideClock += realDt
-    if (this.glide) {
+    if (this.glide && this.warp) {
       const g = this.glide
       const k = Math.min(1, (this.glideClock - g.t0) / g.dur)
-      // ease in and out, so the walk starts and settles gently
-      this.desiredRoute = g.from + (g.to - g.from) * (0.5 - 0.5 * Math.cos(Math.PI * k))
+      // ease in and out through the warped route: slow zones slow it, the stop settles it
+      this.desiredRoute = this.warp.inverse(g.from + (g.to - g.from) * (0.5 - 0.5 * Math.cos(Math.PI * k)))
+      if (k >= 1) { this.desiredRoute = this.stopList[g.index] ?? this.desiredRoute; this.glide = null }
       this.v = 0
-      if (k >= 1) this.glide = null
-    } else if (this.target) {
-      const tg = this.target
-      if (this.seg < 0 && tg.seg >= 0) this.selected = tg.seg
-      const goal = this.seg >= 0 && tg.seg !== this.seg ? this.L0 : (tg.seg < 0 ? tg.d : this.L0 + tg.d)
-      const err = goal - this.desiredRoute
+    } else if (this.target !== null) {
+      const err = this.target - this.desiredRoute
       const want = THREE.MathUtils.clamp(err * 1.3, -15, 15)
       this.v += (want - this.v) * Math.min(1, dt * 3)
-      if (Math.abs(goal - before) < 0.04 && (tg.seg === this.seg || (tg.seg < 0 && this.seg < 0))) { this.target = null; this.v = 0 }
+      if (Math.abs(this.target - before) < 0.04) { this.target = null; this.v = 0 }
     } else if (hand?.active) {
       this.v = hand.v
     } else if (fwd || bwd) {
       this.v = THREE.MathUtils.clamp(this.v + (fwd ? 16 : -16) * dt, -9, 9)
     }
 
-    const destination = this.universes[this.seg >= 0 ? this.seg : this.selected ?? 0]
-    const travelStep = !this.down && !this.glide && Math.abs(this.v) >= 0.01 ? this.v * dt : 0
-    this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + travelStep, 0, this.L0 + destination.len + 22)
-    if (!this.target && !this.down && !fwd && !bwd && !hand?.active) this.v *= Math.exp(-dt * 3.2)
-    let r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
-    if (this.seg < 0) {
-      if (r < 0) { r = 0; this.v = Math.max(0, this.v) }
-      if (r >= this.L0) {
-        // With a single door there is nothing to choose: keep walking straight through it.
-        if (this.selected === null && this.universes.length === 1) this.selected = 0
-        const b = this.selected
-        if (b !== null) { this.seg = b; this.d = r - this.L0 }
-        else { this.d = this.L0; this.v = Math.min(0, this.v) }
-      } else this.d = r
+    const travelStep = !this.down && !this.glide && Math.abs(this.v) >= 0.01 ? this.v * dt * this.slow() : 0
+    this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + travelStep, 0, this.maxRoute)
+    // The Q-Day freeze: continuous travel holds just inside the Prism until "next".
+    const q = this.stopList[2]
+    if (this.desiredRoute < q - 1) this.holdQday = true
+    if (this.holdQday && !this.glide && before <= q + 0.05 && this.desiredRoute > q) {
+      this.desiredRoute = q; this.v = Math.min(0, this.v)
     }
-    if (this.seg >= 0) {
-      let d = this.seg >= 0 && r >= this.L0 ? r - this.L0 : -1
-      if (d < 0 || (this.target?.seg === -1 && r <= this.L0 + 0.04 && this.desiredRoute <= this.L0)) {
-        // walked back past the fork
-        this.seg = -1
-        this.selected = null
-        this.d = Math.max(0, r)
-      } else {
-        const u = this.universes[this.seg]
-        // a door that hasn't opened can't be walked through
-        if (u.open < 0.95 && d > u.len - 1.2) {
-          d = u.len - 1.2; this.desiredRoute = this.L0 + d; this.v = Math.min(0, this.v)
-        }
-        if (d > u.len + 22) { d = u.len + 22; this.v = Math.min(0, this.v) }
-        this.d = d
-      }
-    }
+    if (this.target === null && !this.down && !fwd && !bwd && !hand?.active) this.v *= Math.exp(-dt * 3.2)
+    this.r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
+    if (this.r < 0) { this.r = 0; this.v = Math.max(0, this.v) }
+  }
 
-    // Q-Day gate crossings
-    const after = this.route()
-    if (before < this.gateD && after >= this.gateD) {
+  /** Crossing a door: the camera now lives in the next (or previous) world's coordinates. */
+  private switchStage(to: number, t: number) {
+    const from = this.active
+    const rot = new THREE.Matrix3()
+    for (let j = from; j < to; j++) this.gaze.applyMatrix3(rot.setFromMatrix4(this.stages[j].door!.toNext))
+    for (let j = from - 1; j >= to; j--) this.gaze.applyMatrix3(rot.setFromMatrix4(this.stages[j].door!.fromNext))
+    // Pointer rays belong to a world's coordinate frame, never the next world's.
+    this.trail.length = 0
+    this.fluidLast.set(-1, -1)
+    this.fluid.clear()
+    for (const s of this.stages) s.u.uPulse.value.w = -99
+    const crossed = this.stages[Math.min(from, to)].door
+    if (crossed) { this.flash = Math.max(this.flash, 0.035); this.flashColor.setRGB(...crossed.tint) }
+    const wasQ = this.stages[from].region === 'qday', isQ = this.stages[to].region === 'qday'
+    this.active = to
+    if (isQ && !wasQ) {
       this.qdayAt = t
-      const g = this.trunk.getPointAt(this.gateD / this.L0)
-      this.homeU.uShock.value.set(g.x, g.z, t, this.reducedMotion ? 0.35 : 1)
+      this.stages[to].u.uShock.value.set(0, 0, t, this.reducedMotion ? 0.35 : 1)
       this.cb.onQDay(true)
-    } else if (before >= this.gateD && after < this.gateD) {
+    } else if (wasQ && !isQ) {
       this.qdayAt = -1
       this.cb.onQDay(false)
     }
-  }
-
-  /** The camera follows the same curve that draws the white path, across the threshold too. */
-  private pointAt(seg: number, d: number, out = new THREE.Vector3()) {
-    if (seg < 0) return this.trunk.getPointAt(THREE.MathUtils.clamp(d / this.L0, 0, 1), out)
-    const u = this.universes[seg]
-    if (d <= u.len) return u.curve.getPointAt(Math.max(0, d / u.len), out)
-    if (u.def.id === 'hybrid') {
-      return HYBRID_PATH.getPointAt(Math.min(1, (d - u.len) / HYBRID_PATH.getLength()), out).applyMatrix4(u.door.group.matrixWorld)
-    }
-    const end = u.curve.getPointAt(1, out)
-    const tan = u.curve.getTangentAt(1).setY(0).normalize()
-    return end.addScaledVector(tan, d - u.len)
-  }
-
-  private groundAt(seg: number, d: number) {
-    const p = this.pointAt(seg, d)
-    if (seg >= 0) {
-      const u = this.universes[seg]
-      if (d >= u.len) {
-        const local = p.clone().applyMatrix4(u.door.group.matrixWorld.clone().invert())
-        return u.base + (u.def.id === 'hybrid' ? hybridHeight(local.x, local.z) : 0)
-      }
-      // ease into the doorway's floor height so there's no step at the threshold
-      const k = THREE.MathUtils.smoothstep(d, u.len - 6, u.len)
-      return THREE.MathUtils.lerp(this.smoothHeight(seg, d, p), u.base, k)
-    }
-    return this.smoothHeight(seg, d, p)
-  }
-
-  private smoothHeight(seg: number, d: number, p: THREE.Vector3) {
-    const a = this.pointAt(seg, d - 2), b = this.pointAt(seg, d + 2)
-    return (homeHeight(a.x, a.z) + homeHeight(p.x, p.z) * 2 + homeHeight(b.x, b.z)) / 4
   }
 
   private tmpM = new THREE.Matrix4()
   private tmpQ = new THREE.Quaternion()
   private gaze = new THREE.Vector3(0, 0, -1)
 
-  private placeCamera(blend: number) {
-    const seg = this.seg, d = this.d
-    // On a portrait screen the camera stands back from the fork so all three doors fit.
-    const pull = seg < 0 && this.camera.aspect < 0.8 && this.universes.length > 1 ? THREE.MathUtils.smoothstep(d, this.L0 - 20, this.L0) * 15 : 0
-    const pos = this.pointAt(seg, d - pull)
-    pos.y = this.groundAt(seg, d - pull) + EYE + Math.sin(this.d * 1.6) * 0.025 * Math.min(1, Math.abs(this.v) / 4)
-
-    let target: THREE.Vector3
-    if (seg < 0) {
-      const ahead = this.pointAt(-1, d + 6)
-      ahead.y = this.groundAt(-1, Math.min(d + 6, this.L0)) + EYE - 0.55
-      // Near the fork, turn to take in all three doors.
-      const k = THREE.MathUtils.smoothstep(d, this.L0 - 14, this.L0)
-      const mid = this.universes[Math.floor(this.universes.length / 2)]
-      const focus = new THREE.Vector3(mid.door.group.position.x, mid.base + 2.6, mid.door.group.position.z + 4)
-      target = ahead.lerp(focus, k * 0.85)
-    } else {
-      const u = this.universes[seg]
-      const ahead = this.pointAt(seg, d + 6)
-      const dip = 0.45 * (1 - THREE.MathUtils.smoothstep(d, u.len - 8, u.len))
-      ahead.y = this.groundAt(seg, d + 6) + EYE - dip
-      target = ahead
+  /** A point on the walk ahead, seen from world j: past a door it is the next world's path, mapped back. */
+  private aheadPoint(j: number, s: number) {
+    const st = this.stages[j]
+    if (st.door && s > st.door.s && this.stages[j + 1]) {
+      const n = s - st.door.s
+      const p = this.pointAt(j + 1, n)
+      p.y = this.heightAt(j + 1, n)
+      return p.applyMatrix4(st.door.fromNext)
     }
+    const p = this.pointAt(j, s)
+    p.y = this.heightAt(j, s)
+    return p
+  }
+
+  private placeCamera(blend: number) {
+    const j = this.active, st = this.stages[j]
+    const s = this.r - st.start
+    const pos = this.pointAt(j, s)
+    pos.y = this.heightAt(j, s) + EYE + Math.sin(this.r * 1.6) * 0.025 * Math.min(1, Math.abs(this.v) / 4)
+    const target = this.aheadPoint(j, s + 6)
+    // Walking up to a door, the eye levels to look straight through it.
+    const toDoor = st.door ? st.door.s - s : 99
+    target.y += EYE + THREE.MathUtils.lerp(0.2, st.lift, THREE.MathUtils.smoothstep(toDoor, 2, 12))
 
     target.sub(pos)
     target.x += this.look.x * 0.36
@@ -853,6 +940,15 @@ export class UniverseEngine {
     this.camera.position.copy(pos)
     this.camera.quaternion.copy(this.tmpQ)
     this.camera.updateMatrixWorld()
+  }
+
+  /** Map the visitor's camera through the door ahead into the next world's own space. */
+  private updatePreviewCamera() {
+    const door = this.stages[this.active].door, next = this.stages[this.active + 1]
+    if (!door || !next) return
+    this.tmpM.multiplyMatrices(door.toNext, this.camera.matrixWorld)
+    this.tmpM.decompose(next.cam.position, next.cam.quaternion, new THREE.Vector3())
+    next.cam.updateMatrixWorld()
   }
 
   // ── per-frame ────────────────────────────────────────────────────────────
@@ -872,9 +968,12 @@ export class UniverseEngine {
       this.travelShowcase(dt)
       this.placeShowcaseCamera(1 - Math.exp(-dt * 3))
     } else {
-      this.travel(dt, t, realDt)
+      this.refreshWalk()
+      this.travel(dt, realDt)
+      const a = this.stageAt(this.r)
+      if (a !== this.active) this.switchStage(a, t)
       this.placeCamera(1 - Math.exp(-dt * 3))
-      this.updatePreviewCameras()
+      this.updatePreviewCamera()
       this.updateDoors(dt, t)
       this.emitState()
     }
@@ -937,78 +1036,72 @@ export class UniverseEngine {
     } else p.good = 0
   }
 
-  /** Only the currently visible rectangle is actionable; discarded shader pixels never hit. */
+  /** The door under the pointer (its world's index), if its open aperture is under it. */
   private pickDoor(): number | null {
-    if (this.showcase || !this.pointerIn || !this.pastGate() || this.insideIndex() >= 0) return null
+    if (this.showcase || !this.pointerIn) return null
+    const door = this.stages[this.active].door
+    if (!door || door.presence < 0.05) return null
     this.raycaster.setFromCamera(this.ndc, this.camera)
-    const hits = this.raycaster.intersectObjects(this.universes.map(u => u.door.content), false)
-    for (const hit of hits) {
-      const i = this.universes.findIndex(u => u.door.content === hit.object)
-      const u = this.universes[i]
-      if (u.presence < 0.05 || !hit.uv) continue
-      if (Math.abs(hit.uv.x - 0.5) * DOOR.width <= doorHalfWidth(u.open)) return i
-    }
-    return null
+    const hit = this.raycaster.intersectObject(door.portal.content, false)[0]
+    if (!hit?.uv) return null
+    return Math.abs(hit.uv.x - 0.5) * DOOR.width <= doorHalfWidth(door.open) ? this.active : null
   }
 
   private updateDoors(dt: number, t: number) {
-    const past = this.pastGate()
-    const since = this.qdayAt < 0 ? 99 : t - this.qdayAt
-    this.universes.forEach((u, i) => {
-      const before = doorHalfWidth(u.open)
-      const remaining = this.seg === i ? u.len - this.d : this.L0 - this.route() + u.len
+    this.stages.forEach((st, j) => {
+      const door = st.door
+      if (!door) return
+      const before = doorHalfWidth(door.open)
+      const s = this.r - st.start
+      const remaining = door.s - s
       const progress = doorProgress(remaining)
-      u.presence = past ? progress.presence * THREE.MathUtils.smoothstep(since, 0, 0.6) : 0
-      u.open = past ? progress.open : 0
-      const m = u.door.contentMat.uniforms
-      m.uOpen.value = u.open
-      m.uHalfWidth.value = doorHalfWidth(u.open)
-      m.uPresence.value = u.presence
+      door.presence = j <= this.active ? progress.presence : 0
+      door.open = progress.open
+      const m = door.portal.contentMat.uniforms
+      m.uOpen.value = door.open
+      m.uHalfWidth.value = doorHalfWidth(door.open)
+      m.uPresence.value = door.presence
       m.uImpact.value *= Math.exp(-dt * 3.5)
       m.uTime.value = t
       // Clear the last foreground spill grains as the camera crosses the near plane.
-      const e = this.seg !== i ? 0 : this.d >= u.len ? 1 : THREE.MathUtils.smoothstep(this.d, u.len - 0.6, u.len - 0.08)
-      // The physical aperture fills the view naturally; scaling it breaks occlusion.
-      u.door.content.scale.setScalar(1)
-      u.door.group.visible = u.presence > 0.001
-      u.wall.visible = u.presence > 0.001
-      const wall = (u.wall.material as THREE.ShaderMaterial).uniforms
-      wall.uOpacity.value = u.presence * (1 - e)
+      const e = j < this.active ? 1 : THREE.MathUtils.smoothstep(s, door.s - 0.6, door.s - 0.08)
+      door.portal.group.visible = door.presence > 0.001
+      door.wall.visible = door.presence > 0.001
+      const wall = (door.wall.material as THREE.ShaderMaterial).uniforms
+      wall.uOpacity.value = door.presence * (1 - e)
       wall.uDoorSpeed.value = dt > 0 ? (m.uHalfWidth.value - before) / dt : 0
-      u.door.sparkMat.uniforms.uScale.value = this.host.clientHeight * this.renderer.getPixelRatio() * 0.055
+      door.portal.sparkMat.uniforms.uScale.value = this.host.clientHeight * this.renderer.getPixelRatio() * 0.055
+      // the caption reads from afar and fades once the door fills the view
+      door.caption?.setOpacity(door.presence * THREE.MathUtils.smoothstep(remaining, 3, 9))
       // render the world behind the door at full resolution once it's about to fill the screen
-      const rtWant = this.seg === i && this.d > u.len - 10 ? 1 : RT_SCALE
-      if (rtWant !== u.rtScale) { u.rtScale = rtWant; this.resize() }
+      const rtWant = j === this.active && remaining < 10 ? 1 : RT_SCALE
+      if (rtWant !== door.rtScale) { door.rtScale = rtWant; this.resize() }
     })
-    this.hovered = this.pickDoor() ?? (past && this.insideIndex() < 0 ? this.keyboardDoor : null)
+    this.hovered = this.pickDoor()
     this.canvas.style.cursor = this.hovered !== null ? 'pointer' : ''
-    const gate = this.trunk.getPointAt(this.gateD / this.L0)
-    for (const g of this.galleries) g.update(t, this.qdayAt, gate)
-    this.live?.update(t, this.liveWorld >= 0 && this.insideIndex() === this.liveWorld)
-    const gains = this.homePath.material as THREE.ShaderMaterial
-    const g = gains.uniforms.uBranchGain.value as THREE.Vector3
-    const sel = this.seg >= 0 ? this.seg : this.hovered
-    g.set(...([0, 1, 2].map(i => (sel === null ? (past ? 1 : 0.55) : sel === i ? 1.25 : 0.35)) as [number, number, number]))
-    const curtain = (this.gateCurtain.material as THREE.ShaderMaterial).uniforms.uOpacity
-    // the curtain starts to part as you walk up to it, so you pass through an opening, not a wall
-    const near = this.route() >= this.gateD - 7
-    curtain.value += ((near ? 0.12 : 0.55) - curtain.value) * Math.min(1, dt * 1.3)
+    for (const g of this.galleries) {
+      const q = this.stages[g.stage].region === 'qday'
+      g.gallery.update(t, q ? this.qdayAt : -1, q ? this.stages[g.stage].path.getPointAt(0) : this.camera.position)
+    }
+    const prism = this.stages[2]
+    this.live.update(t, this.active === 2 ? this.camera : prism.cam)
   }
 
   private updateUniforms(t: number, dt: number) {
-    const inside = this.insideIndex()
     const pr = this.renderer.getPixelRatio()
     const all = this.allUniforms()
     for (const u of all) u.uTime.value = t
-    this.homeU.uPixelRatio.value = pr
     this.showcases.forEach(s => { s.u.uPixelRatio.value = pr })
-    this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * u.rtScale })
-    this.updateLens(inside, dt)
+    this.stages.forEach((s, j) => {
+      const behind = this.stages[j - 1]?.door
+      s.u.uPixelRatio.value = j === this.active + 1 && behind ? pr * behind.rtScale : pr
+    })
+    this.updateLens(dt)
 
     // The pointer stirs whichever world the camera is in: its live ray, its wake and clicks.
     const now = performance.now()
-    const active = this.showcase?.u ?? (inside >= 0 ? this.universes[inside].u : this.homeU)
-    const cam = this.activeCamera()
+    const active = this.showcase?.u ?? this.stages[this.active].u
+    const cam = this.camera
     const tanFov = Math.tan(THREE.MathUtils.degToRad(cam.fov * 0.5))
     this.pointerDrag.set(this.pointerVelocity.x * cam.aspect, this.pointerVelocity.y, 0).multiplyScalar(tanFov).applyQuaternion(cam.quaternion)
     const direction = this.pointerRay()
@@ -1034,9 +1127,10 @@ export class UniverseEngine {
       u.uPointerSpeed.value = this.pointerSpeed
       u.uPointerRadius.value = this.pointerRadius
       u.uPointerDrag.value.copy(this.pointerDrag)
-      u.uPointerFrom.value.copy(cam.position)
-      if (on) u.uPointer.value.set(direction.x, direction.y, direction.z, this.pointerPresence)
-      else u.uPointer.value.w = 0
+      if (on) {
+        u.uPointerFrom.value.copy(cam.position)
+        u.uPointer.value.set(direction.x, direction.y, direction.z, this.pointerPresence)
+      } else u.uPointer.value.w = 0
     }
     // A click (press without drag) sends a ring of light out from the pointer.
     if (this.pulsePending) {
@@ -1059,7 +1153,7 @@ export class UniverseEngine {
     this.zoom = Math.max(0, this.zoom - dt * 1.6)
 
     // The eye adapts: a crossing over-exposes for a moment, then settles.
-    const want = (this.showcase ? 1 : inside >= 0 ? 1.05 : 0.95) + this.flash * 1.2
+    const want = (this.showcase ? 1 : this.stages[this.active].exposure) + this.flash * 1.2
     this.exposure += (want - this.exposure) * Math.min(1, dt * (want > this.exposure ? 8 : 1.4))
     this.renderer.toneMappingExposure = this.exposure
 
@@ -1068,12 +1162,7 @@ export class UniverseEngine {
     this.flash = Math.max(0, this.flash - dt * 1.4)
     f.uFlash.value = this.flash * 0.8
     f.uZoom.value = this.zoom * this.zoom
-    for (const s of this.home.children) {
-      const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
-      if (m?.uniforms?.uPixelRatio && !('uSizeScale' in m.uniforms)) m.uniforms.uPixelRatio.value = pr
-      if (m?.uniforms?.uTime && !('uSizeScale' in m.uniforms)) m.uniforms.uTime.value = t
-    }
-    for (const u of [...this.universes, ...this.showcases.values()]) {
+    for (const u of [...this.stages, ...this.showcases.values()]) {
       for (const s of u.scene.children) {
         const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
         if (m?.uniforms?.uPixelRatio && !('uSizeScale' in m.uniforms)) m.uniforms.uPixelRatio.value = pr
@@ -1084,142 +1173,117 @@ export class UniverseEngine {
 
   /** Focus the lens on what the visitor is walking toward: the path ahead, then the door. */
   private tmpV = new THREE.Vector3()
-  private updateLens(inside: number, dt: number) {
+  private updateLens(dt: number) {
     if (this.showcase) return
     const aperture = 0.0025
     const maxBlur = 48
-    let focus = 8
-    if (inside < 0) {
-      const sel = this.seg >= 0 ? this.seg : this.pastGate() ? Math.min(this.hovered ?? Math.floor(this.universes.length / 2), this.universes.length - 1) : -1
-      if (sel >= 0) {
-        const g = this.universes[sel].door.group.position
+    this.stages.forEach((st, j) => {
+      st.u.uAperture.value = aperture
+      st.u.uMaxBlur.value = maxBlur
+      if (j !== this.active) { st.u.uFocus.value = 10; return }
+      let focus = 8
+      if (st.door && st.door.presence > 0.05) {
+        const g = st.door.portal.group.position
         this.tmpV.set(g.x, g.y + DOOR.height * 0.45, g.z)
         focus = THREE.MathUtils.clamp(this.camera.position.distanceTo(this.tmpV), 3, 18)
       }
-    }
-    const h = this.homeU
-    h.uFocus.value += (focus - h.uFocus.value) * (1 - Math.exp(-2.5 * dt))
-    h.uAperture.value = aperture
-    h.uMaxBlur.value = maxBlur
-    this.universes.forEach(u => {
-      u.u.uFocus.value = 10
-      u.u.uAperture.value = aperture
-      u.u.uMaxBlur.value = maxBlur
+      st.u.uFocus.value += (focus - st.u.uFocus.value) * (1 - Math.exp(-2.5 * dt))
     })
   }
 
-  /** Direction of the ray from the active camera through the pointer, in that world's space. */
+  /** Direction of the ray from the camera through the pointer, in the active world's space. */
   private pointerRay(position = this.look) {
-    const cam = this.activeCamera()
-    this.raycaster.setFromCamera(position, cam)
+    this.raycaster.setFromCamera(position, this.camera)
     return this.raycaster.ray.direction.clone()
   }
 
   private updateLabels() {
-    const inside = this.insideIndex() >= 0
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight
-    const past = this.pastGate()
-    const route = this.route()
+    const j = this.active, st = this.stages[j]
+    const s = this.r - st.start
+    const doorTop = (id: DoorId) => {
+      const d = st.door
+      if (!d || d.id !== id) return { p: new THREE.Vector3(), show: false }
+      const g = d.portal.group.position
+      return { p: new THREE.Vector3(g.x, g.y + DOOR.height + 0.9, g.z), show: d.presence > 0.2 }
+    }
+    const todayAt = this.aheadPoint(1, TODAY_AT + 3)
+    todayAt.y += 2.6
+    const hidden = { p: new THREE.Vector3(), show: false }
     const spots: Record<LabelId, { p: THREE.Vector3; show: boolean }> = {
-      today: { p: this.at(-1, 9, 2.6), show: route < 30 },
-      qday: { p: this.at(-1, this.gateD, 6.2), show: route < this.gateD + 3 },
-      u0: { p: this.doorTop(0), show: past && this.seg < 0 },
-      u1: { p: this.doorTop(1), show: past && this.seg < 0 && this.universes.length > 1 },
-      u2: { p: this.doorTop(2), show: past && this.seg < 0 && this.universes.length > 2 },
+      today: { p: todayAt, show: st.region === 'today' && s < 30 },
+      qday: hidden, u0: hidden, u1: hidden, u2: hidden,
+      door1: doorTop('door1'),
+      door2: doorTop('door2'),
     }
     for (const [id, el] of this.labels) {
-      const s = spots[id]
-      const p = s.p.clone().project(this.camera)
-      const visible = !this.showcase && !inside && s.show && p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2
+      const spot = spots[id]
+      const p = spot.p.clone().project(this.camera)
+      const visible = !this.showcase && spot.show && p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2
       el.style.opacity = visible ? '1' : '0'
       el.style.pointerEvents = visible ? 'auto' : 'none'
       // keep a label's centre far enough from the edges that its text stays on screen
       const half = Math.min(el.offsetWidth / 2 + 8, w / 2)
       const x = THREE.MathUtils.clamp(((p.x + 1) / 2) * w, half, w - half)
       el.style.transform = `translate(${x}px, ${((1 - p.y) / 2) * h}px) translate(-50%, -100%)`
-      if (id.startsWith('u')) el.dataset.hover = String(this.hovered === Number(id.slice(1)))
+      if (id.startsWith('door')) el.dataset.hover = String(this.hovered !== null && this.stages[this.hovered].door?.id === id)
     }
-  }
-
-  private at(seg: number, d: number, up: number) {
-    const p = this.pointAt(seg, d)
-    p.y = homeHeight(p.x, p.z) + up
-    return p
-  }
-  private doorTop(i: number) {
-    const g = (this.universes[i] ?? this.universes[0]).door.group.position
-    return new THREE.Vector3(g.x, g.y + DOOR.height + 0.9, g.z)
   }
 
   private emitState() {
-    const inside = this.insideIndex()
-    const phase: 'trunk' | 'fork' | 'branch' | 'inside' = inside >= 0 ? 'inside' : this.seg >= 0 ? 'branch' : this.atFork() ? 'fork' : 'trunk'
-    if (inside !== this.wasInside) {
-      // Pointer rays belong to a world's coordinate frame, never the next world's.
-      this.trail.length = 0
-      this.fluidLast.set(-1, -1)
-      this.fluid.clear()
-      for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uPulse.value.w = -99
-      if (inside >= 0) {
-        this.flash = 0.035
-        this.flashColor.setRGB(...this.universes[inside].def.tint)
-      }
-      this.wasInside = inside
+    const st = this.stages[this.active]
+    const inPrism = st.region === 'qday'
+    const card = cardAt(this.r, this.zones)
+    const i = this.stations.findIndex(x => Math.abs(this.r - x) < 1.5)
+    const walk: WalkState = {
+      region: st.region,
+      // quantised so the page re-renders a few dozen times across a fade, not every frame
+      card: card ? { id: card.id, strength: Math.round(card.strength * 50) / 50 } : null,
+      liveIndex: i < 0 ? null : i,
     }
     const s: EngineState = {
-      phase,
-      branch: this.seg >= 0 ? this.seg : null,
+      phase: inPrism ? 'inside' : 'trunk',
+      branch: inPrism ? 0 : null,
       hovered: this.hovered,
-      qday: this.pastGate(),
-      started: this.route() > 8 || this.glide !== null,
+      qday: inPrism,
+      started: this.r > TUNNEL_STOP + 2 || this.glide !== null,
       stop: this.stopIndex(),
       gliding: this.glide !== null,
+      stopCount: this.stopList.length,
+      walk,
     }
     const key = JSON.stringify(s)
     if (key !== this.lastState) { this.lastState = key; this.cb.onState(s) }
   }
 
-  private updatePreviewCameras() {
-    for (const u of this.universes) {
-      // Map the visitor's camera through the doorway into that universe's own space.
-      this.tmpM.copy(u.door.group.matrixWorld).invert().multiply(this.camera.matrixWorld)
-      this.tmpM.decompose(u.cam.position, u.cam.quaternion, new THREE.Vector3())
-      u.cam.updateMatrixWorld()
-    }
-  }
-
   private render() {
-    const inside = this.insideIndex()
     if (this.showcase) {
       this.simulateParticles(this.showcase.scene, this.camera, true)
       this.renderPass.scene = this.showcase.scene
       this.renderPass.camera = this.camera
-    } else if (inside >= 0) {
-      const u = this.universes[inside]
-      this.simulateParticles(u.scene, u.cam, true)
-      this.renderPass.scene = u.scene
-      this.renderPass.camera = u.cam
-    } else {
-      this.simulateParticles(this.home, this.camera, true)
+      this.composer.render()
+      return
+    }
+    const st = this.stages[this.active], door = st.door, next = this.stages[this.active + 1]
+    this.simulateParticles(st.scene, this.camera, true)
+    if (door && next && door.open >= 0.004) {
       this.projScreen.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)
       this.frustum.setFromProjectionMatrix(this.projScreen)
-      for (const u of this.universes) {
-        if (u.open < 0.004) continue
-        const c = u.door.group.position
-        if (!this.frustum.intersectsSphere(new THREE.Sphere(new THREE.Vector3(c.x, c.y + DOOR.height / 2, c.z), DOOR.height))) continue
-        this.simulateParticles(u.scene, u.cam, false)
-        this.renderer.setRenderTarget(u.rt)
-        this.renderer.render(u.scene, u.cam)
+      const c = door.portal.group.position
+      if (this.frustum.intersectsSphere(new THREE.Sphere(new THREE.Vector3(c.x, c.y + DOOR.height / 2, c.z), DOOR.height))) {
+        this.simulateParticles(next.scene, next.cam, false)
+        this.renderer.setRenderTarget(door.rt)
+        this.renderer.render(next.scene, next.cam)
       }
-      this.renderer.setRenderTarget(null)
-      this.renderPass.scene = this.home
-      this.renderPass.camera = this.camera
     }
+    this.renderer.setRenderTarget(null)
+    this.renderPass.scene = st.scene
+    this.renderPass.camera = this.camera
     this.composer.render()
   }
 
   private simulateParticles(scene: THREE.Scene, camera: THREE.PerspectiveCamera, active: boolean) {
-    const time = this.homeU.uTime.value
+    const time = this.stages[0].u.uTime.value
     scene.traverse(object => {
       if (!object.userData.particleCloud || !object.visible) return
       let entry = this.particles.get(object)
@@ -1240,10 +1304,12 @@ export class UniverseEngine {
 
   private resize() {
     const w = Math.max(1, this.host.clientWidth), h = Math.max(1, this.host.clientHeight)
+    // Render to a pixel budget rather than full Retina density: soft bokeh looks the same at a
+    // lower resolution, and fill rate is what this scene spends. Quality adapts to the frame rate.
     const budget = 1.1e6
     const pr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, Math.sqrt(budget / (w * h))) * this.quality)
     const fov = w / h < 0.8 ? 78 : FOV
-    for (const cam of [this.camera, ...this.universes.map(u => u.cam)]) {
+    for (const cam of [this.camera, ...this.stages.map(s => s.cam)]) {
       cam.fov = fov
       cam.aspect = w / h
       cam.updateProjectionMatrix()
@@ -1257,11 +1323,11 @@ export class UniverseEngine {
     this.finish.uniforms.uAspect.value = w / h
     this.finish.uniforms.uResolution.value.set(Math.floor(w * pr), Math.floor(h * pr))
     this.fluid.resize(w, h)
-    for (const u of this.universes) {
-      u.rt.setSize(Math.ceil(w * pr * u.rtScale), Math.ceil(h * pr * u.rtScale))
-      ;(u.door.contentMat.uniforms.uRes.value as THREE.Vector2).set(w * pr, h * pr)
+    for (const s of this.stages) {
+      const d = s.door
+      if (!d) continue
+      d.rt.setSize(Math.ceil(w * pr * d.rtScale), Math.ceil(h * pr * d.rtScale))
+      ;(d.portal.contentMat.uniforms.uRes.value as THREE.Vector2).set(w * pr, h * pr)
     }
   }
 }
-
-const RT_SCALE = 0.45
