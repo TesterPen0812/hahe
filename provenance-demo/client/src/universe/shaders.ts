@@ -3,6 +3,7 @@ import { greenMotion } from './greenMotion'
 import { prismHelpers, prismPlacement } from './prismMotion'
 import { curveStreamMotion, curveStreamPlacement, scenePathMotion, scenePathPlacement } from './scenePathMotion'
 import { curlField } from './curl'
+import { grovePlacement } from './groveMotion'
 
 export const TRAIL_LENGTH = 16
 /** The glyph atlas the falling characters are drawn from (see glyphAtlas in worlds.ts). */
@@ -267,6 +268,7 @@ const fieldPlacement = /* glsl */ `
     ${prismPlacement}
     ${scenePathPlacement}
     ${curveStreamPlacement}
+    ${grovePlacement}
     } else if (uMode > 20.5 && uMode < 21.5) {
       // A door's colour leaking out: each mote leaves the opening, drifts out and settles (on the
       // floor, into the grains beside it, or in the air), lingers, fades, and starts again.

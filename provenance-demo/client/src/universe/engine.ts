@@ -15,7 +15,8 @@ import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from 
 import { PHONE_HOST } from './liveFrame'
 import { createLiveSequence, LIVE_VIEW, type LiveFrames } from './liveSequence'
 import { Fluid } from './fluid'
-import { PQ_TUNNEL, TUNNEL_GLYPH_GREEN, buildGreenWorld } from './greenWorld'
+import { TUNNEL_GLYPH_GREEN, buildGreenWorld } from './greenWorld'
+import { PQ_GROVE, buildGroveWorld } from './groveWorld'
 import { buildPrismWorld } from './prismWorld'
 import { curveStream } from './scenePath'
 import { ParticleSimulation } from './particles'
@@ -60,11 +61,11 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2' | 'door1' | 'door2'
 
 // ── The walk ────────────────────────────────────────────────────────────────
 // The Prism (the entrance, under the ringed planet) → door 1 → the blue world (today) → door 2
-// "Post-Quantum Day · 2035", through a wall of green characters → the green tunnel, the post-quantum
+// "Post-Quantum Day · 2035", through a wall of green characters → the grove, the post-quantum
 // world. Stops, one press each (Space / → / PageDown on, ← / PageUp back, or the hand's "next"):
-//   0 the Prism · 1 blue arrival (card 'today') · 2 inside the tunnel (card 'qday') · 3… each live
+//   0 the Prism · 1 blue arrival (card 'today') · 2 inside the grove (card 'qday') · 3… each live
 //   photo station, then the waiting frame · then a break (card 'break', the forgery hangs ahead of
-//   it) and the end (card 'end'). The tunnel holds the after gallery (the same photos re-judged),
+//   it) and the end (card 'end'). The grove holds the after gallery (the same photos re-judged),
 //   then the live frames, the break and the end.
 // Each card's slow zone lies just before its stop (walk.ts), so the text passes as the camera
 // slows into the stop and is gone when it arrives. Nothing holds the walk; it is all position.
@@ -78,8 +79,8 @@ const ENTRANCE_STOP = 4
 const DOOR1_AT = 40        // door 1 on the Prism's path
 const TODAY_AT = 10        // blue arrival, after door 1
 const DOOR2_BEFORE_END = 9 // door 2 stands this far before the blue path's end
-const QDAY_AT = 11         // inside the tunnel, once the character crossing has resolved
-const GALLERY_FROM = QDAY_AT + 8 // the after gallery starts here on the tunnel's path...
+const QDAY_AT = 11         // inside the grove, once the character crossing has resolved
+const GALLERY_FROM = QDAY_AT + 8 // the after gallery starts here on the grove's path...
 const GALLERY_GAP = 8      // ...one print every this far, on alternate walls...
 const GALLERY_MAX = 8      // ...at most this many
 const LIVE_AFTER = 13      // the first live frame stands this far past the last print
@@ -88,7 +89,7 @@ const BREAK_AFTER = 11
 const END_AFTER = 11        // the end card's zone must clear the break stop (walk.ts CARD_ZONE.short)
 const FORGERY_PAST_END = 4.5 // the forgery hangs this far past the end stop: from the break it is as large
                              // as the blue world's frames were from there
-const PQ_TAIL = 3          // the walk ends this far before the tunnel path's end
+const PQ_TAIL = 3          // the walk ends this far before the grove path's end
 const DOOR_TINTS: DoorTints = { door1: [0.55, 0.75, 1.0], door2: [1.0, 0.38, 0.22] }
 // The character crossing at door 2 (walk.ts `crossing`): the blue world's characters turn the green of
 // the tunnel's character strands as they close into the wall, and stay green as it clears.
@@ -174,6 +175,7 @@ export class UniverseEngine implements WalkControls {
   private trunk = new THREE.CatmullRomCurve3([v2(0, 8), v2(1.4, -6), v2(-1.6, -20), v2(1.2, -34), v2(-0.6, -46), v2(0, -58)], false, 'centripetal')
   private galleries: { gallery: Gallery; stage: number }[] = []
   private live!: LiveFrames
+  private grove!: ReturnType<typeof buildGroveWorld>
   private liveIds = new Set<string>()
   private fluid: Fluid
   private particles = new Map<THREE.Object3D, { simulation: ParticleSimulation; time: number }>()
@@ -194,7 +196,7 @@ export class UniverseEngine implements WalkControls {
   private keys = new Set<string>()
   private hands: HandControl | null = null
   private target: number | null = ENTRANCE_STOP
-  /** Where the first live frame stands on the tunnel's path: past the after gallery. */
+  /** Where the first live frame stands on the grove's path: past the after gallery. */
   private liveStart = GALLERY_FROM + LIVE_AFTER
   private hovered: number | null = null
   // autopilot: an eased walk to a story stop, through the warped route
@@ -503,7 +505,7 @@ export class UniverseEngine implements WalkControls {
 
   /**
    * Hang the feed's photos twice: in the blue world, as they are today, and in the post-quantum
-   * tunnel, where Q-Day's wave tests their seals (legacy RSA greys out, hybrid holds). The live frames
+   * grove, where Q-Day's wave tests their seals (legacy RSA greys out, hybrid holds). The live frames
    * stand past the after gallery.
    */
   setGallery(photos: GalleryPhoto[]) {
@@ -519,7 +521,7 @@ export class UniverseEngine implements WalkControls {
     const gate = blue.door!.s
     this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, { ground: blue.ground, look: CARD_LOOKS.blue }) })
     // the first prints hang well ahead of the Q-Day stop, so none is cut off at the screen's edge there;
-    // the tunnel is narrow, so its prints are small and hang against its walls, in the foliage's edge
+    // its prints are small and hang just aside of the path, at the edge of the trees
     const to = GALLERY_FROM + Math.max(1, after - 1) * GALLERY_GAP
     this.galleries.push({ stage: 2, gallery: buildGallery(photos.slice(0, after), pq.path, GALLERY_FROM / pq.len, to / pq.len, 1, {
       ground: pq.ground, look: CARD_LOOKS.green, width: 1.4, offset: 1.2, lift: 1.42, gap: GALLERY_GAP - 0.5,
@@ -580,12 +582,11 @@ export class UniverseEngine implements WalkControls {
     const blueLen = this.trunk.getLength()
     const door2At = blueLen - DOOR2_BEFORE_END
     blueScene.add(curveStream(bu, new SubCurve(this.trunk, door2At), { lowPower: lp, ground: homeHeight, fog: 130 }))
-    // 3. The green tunnel: Post-Quantum Day, a long hall of falling characters.
+    // 3. The grove: Post-Quantum Day, an open green landscape under a low sun, characters dripping
+    //    from its trees. The walk ends in a clearing where the path runs into a pillar of light.
     const tu = sceneUniforms()
-    const tunnel = buildGreenWorld(tu, lp, PQ_TUNNEL)
-    // The walk ends inside it: no light at its far end.
-    const exit = tunnel.scene.getObjectByName('Green tunnel exit light')
-    if (exit) exit.visible = false
+    const tunnel = buildGroveWorld(tu, lp, PQ_GROVE)
+    this.grove = tunnel
 
     const stage = (region: Region, scene: THREE.Scene, u: SceneUniforms, path: THREE.Curve<THREE.Vector3>, len: number,
       ground: (x: number, z: number) => number, exposure: number, lift: number, focus = 8, followDoor = false): Stage => {
@@ -606,7 +607,7 @@ export class UniverseEngine implements WalkControls {
     this.stages[1].start = this.stages[0].start + DOOR1_AT
     this.stages[2].start = this.stages[1].start + door2At
 
-    // The live photos stand on the tunnel's path, past the after gallery.
+    // The live photos stand on the grove's path, past the after gallery.
     const p = this.stages[2]
     p.path.getPointAt(0, this.qdayOrigin)
     // one sample, reused: the sequence reads it at once and keeps nothing
@@ -622,7 +623,7 @@ export class UniverseEngine implements WalkControls {
         ground: p.ground,
       },
       start: this.liveStart, spacing: LIVE_SPACING, host: PHONE_HOST, look: CARD_LOOKS.green,
-      // the tunnel is narrow and low: small frames, stepping just aside into its foliage
+      // small frames, stepping just aside of the path
       cardWidth: 1.45, aside: 1.15, lift: 0.55, forgeryScale: 1.5,
       onLand: (_i, a) => { if (this.active === 2) this.celebrate(a.status) },
     })
@@ -811,6 +812,8 @@ export class UniverseEngine implements WalkControls {
     // the forgery hangs where the end stop looks at it: ahead of the camera at the break (B there
     // shows it fly in) and at the end, never behind either
     this.live.setForgeryAt(end - s2 + FORGERY_PAST_END)
+    // the grove's path stops past the forgery, in a clearing round a pillar of light
+    this.grove.setEnd(end - s2)
     this.stopList = [s0 + ENTRANCE_STOP, s1 + TODAY_AT, s2 + QDAY_AT, ...live, brk, end]
     this.zones = [
       cardZone(s1 + TODAY_AT, 'today', CARD_ZONE.long),
@@ -819,7 +822,7 @@ export class UniverseEngine implements WalkControls {
       cardZone(brk, 'break', CARD_ZONE.short),
       cardZone(end, 'end', CARD_ZONE.short),
     ]
-    // the walk ends a little past the forgery: the rest of the tunnel is dark
+    // the walk ends a little past the forgery, short of the end light
     this.maxRoute = Math.min(s2 + last, end + FORGERY_PAST_END + 3)
     this.warp = new Warp(this.zones, this.maxRoute + 1)
     if (going !== null) this.goStop(this.stopIndexOf(going))
