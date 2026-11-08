@@ -240,6 +240,8 @@ export interface CardOptions {
   seed?: number
   /** Fade with distance: [start, end]. */
   fog?: [number, number]
+  /** Height of the label band, as a share of the card's width (0.2 by default). */
+  band?: number
 }
 
 const PHOTO_PX = 960
@@ -253,8 +255,27 @@ function ringOrder(parts: SealPart[]) {
 
 const RADII: Record<number, number[]> = { 1: [0.78], 2: [1, 0.72], 3: [1, 0.74, 0.48], 4: [1, 0.78, 0.56, 0.34] }
 
+/** The card's solid face, depth only: drawn after every card and before the path stream (render
+ * order 5), so the stream behind a card is hidden even where the glass is dimmed. */
+const DEPTH_ORDER = 4.5
+// Near cards only: one far down the path, fading into the fog, leaves the stream behind it whole.
+const depthOnly = new THREE.ShaderMaterial({
+  vertexShader: /* glsl */ `
+    varying float vDist;
+    void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vDist = -mv.z; gl_Position = projectionMatrix * mv; }
+  `,
+  fragmentShader: /* glsl */ `
+    varying float vDist;
+    void main() { if (vDist > 24.0) discard; gl_FragColor = vec4(0.0); }
+  `,
+  // in the transparent list, so its render order puts it after the cards and before the stream
+  transparent: true, colorWrite: false, depthWrite: true,
+})
+
 export class PhotoCard {
   readonly mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>
+  private face: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>
+  private band: number
   width: number
   height = 0
   private mat: THREE.ShaderMaterial
@@ -273,6 +294,7 @@ export class PhotoCard {
 
   constructor(o: CardOptions) {
     this.width = o.width
+    this.band = o.band ?? 0.2
     this.aspect = o.aspect ?? 4 / 3
     const blank = () => {
       const canvas = document.createElement('canvas')
@@ -303,6 +325,9 @@ export class PhotoCard {
     })
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.mat)
     this.mesh.renderOrder = 4
+    this.face = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), depthOnly)
+    this.face.renderOrder = DEPTH_ORDER
+    this.mesh.add(this.face)
     this.layout()
   }
 
@@ -312,7 +337,7 @@ export class PhotoCard {
     const a = THREE.MathUtils.clamp(this.aspect, 0.7, 1.6)
     const pad = W * 0.05
     const pw = W - pad * 2, ph = pw / a
-    const band = W * 0.2
+    const band = W * this.band
     const H = pad + ph + band
     this.height = H
     const margin = W * 0.22
@@ -331,6 +356,9 @@ export class PhotoCard {
     ;(this.u.uSeal.value as THREE.Vector3).set(sealX, bandMid, R)
     this.mesh.geometry.dispose()
     this.mesh.geometry = new THREE.PlaneGeometry(W + margin * 2, H + margin * 2)
+    // just inside the rounded corners, so no corner of nothing ever hides what's behind it
+    this.face.geometry.dispose()
+    this.face.geometry = new THREE.PlaneGeometry(W - W * 0.02, H - W * 0.02)
     this.applyRings()
   }
 
@@ -387,14 +415,33 @@ export class PhotoCard {
     ctx.clearRect(0, 0, cw, ch)
     ctx.textBaseline = 'middle'
     const k = cw / 1024
-    // kicker: small caps, tracked
-    let size = Math.round(ch * 0.25)
-    const track = size * 0.16
+    // kicker: small caps, tracked; a long one breaks onto two lines rather than shrinking to nothing
+    const full = Math.round(ch * 0.25)
+    const track = full * 0.16
     const kicker = label.kicker.toUpperCase()
     const maxW = cw * 0.98
-    do { ctx.font = `600 ${size}px ${SANS}` } while (trackedWidth(ctx, kicker, track) > maxW && --size > 10)
+    const fit = (text: string, from: number) => {
+      let size = from
+      do { ctx.font = `600 ${size}px ${SANS}` } while (trackedWidth(ctx, text, track) > maxW && --size > 10)
+      return size
+    }
+    let size = fit(kicker, full)
+    let lines = [kicker]
+    const words = kicker.split(' ')
+    if (size < full * 0.8 && words.length > 1) {
+      // break at the space nearest the middle
+      let best = 1
+      for (let w = 1; w < words.length; w++) {
+        const d = Math.abs(words.slice(0, w).join(' ').length - kicker.length / 2)
+        if (d < Math.abs(words.slice(0, best).join(' ').length - kicker.length / 2)) best = w
+      }
+      lines = [words.slice(0, best).join(' '), words.slice(best).join(' ')]
+      size = Math.min(fit(lines[0], Math.round(full * 0.82)), fit(lines[1], Math.round(full * 0.82)))
+      ctx.font = `600 ${size}px ${SANS}`
+    }
     const hasLine = !!label.parts?.length || !!label.text
-    const y1 = ch * (hasLine ? 0.28 : 0.5)
+    const two = lines.length > 1
+    const y1 = ch * (hasLine ? (two ? 0.17 : 0.28) : two ? 0.36 : 0.5)
     let x = 2 * k
     if (label.live) {
       // a saturated green: the caption's glare limit keeps its hue, so it still reads green under bloom
@@ -403,10 +450,11 @@ export class PhotoCard {
       x += size * 0.95
     }
     ctx.fillStyle = label.tone ? TONE[label.tone].css as string : TONE.dim.css
-    tracked(ctx, kicker, x, y1, track)
+    tracked(ctx, lines[0], x, y1, track)
+    if (two) tracked(ctx, lines[1], x, y1 + size * 1.18, track)
     // the line: seals with their marks, or plain text
-    const y2 = ch * 0.7
-    let s2 = Math.round(ch * 0.31)
+    const y2 = ch * (two ? 0.76 : 0.7)
+    let s2 = Math.round(ch * (two ? 0.27 : 0.31))
     if (label.parts?.length) {
       // the same order as the rings: post-quantum, classical, Face ID
       const items = ringOrder(label.parts).map(p => ({ p, text: SHORT[p.alg] }))
@@ -469,7 +517,11 @@ export class PhotoCard {
   set captionOn(v: number) { this.u.uCapOn.value = v }
   /** When the seal started drawing on (scene time). */
   get drawStart() { return this.u.uDrawT0.value as number }
-  set alpha(v: number) { this.u.uAlpha.value = v }
+  set alpha(v: number) {
+    this.u.uAlpha.value = v
+    // only a card that's really there hides the stream behind it
+    this.face.visible = v > 0.3
+  }
   get alpha() { return this.u.uAlpha.value as number }
   /** A sheen across the glass, now (Q-Day's wave passing). */
   sweep(at = this.now) { this.u.uSweep.value = at }
@@ -495,6 +547,7 @@ export class PhotoCard {
     this.caps.forEach(c => c.tex.dispose())
     this.mat.dispose()
     this.mesh.geometry.dispose()
+    this.face.geometry.dispose()
   }
 }
 
