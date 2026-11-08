@@ -15,17 +15,17 @@ import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from 
 import { afterPicks, type FeedPhoto } from './galleryPick'
 import { PHONE_HOST } from './liveFrame'
 import { createLiveSequence, LIVE_VIEW, type LiveFrames } from './liveSequence'
-import { endingBackground, stepEnding } from './ending'
+import { ENDING_SCROLL_MEMORY, closingOpacities, endingPassage, endingRate, stepEnding } from './ending'
 import { Fluid } from './fluid'
 import { TUNNEL_GLYPH_GREEN, buildGreenWorld } from './greenWorld'
-import { END_LIGHT_PAST, PQ_GROVE, buildGroveWorld } from './groveWorld'
+import { PQ_GROVE, buildGroveWorld } from './groveWorld'
 import { buildPrismWorld } from './prismWorld'
 import { curveStream } from './scenePath'
 import { ParticleSimulation } from './particles'
 import { POINTER_REACH, WAKE_INTERVAL, dragDistance, dragVelocity, noTap, noWheel, releasedVelocity, tapDown, tapUp, wheelDistance, wheelStep } from './input'
 import { driveVelocity, type HandControl } from '../gesture/handControl'
 import { doorCaption, type DoorCaption } from './doorCaption'
-import { CARD_ZONE, CROSSING_FROM, CROSSING_TO, Warp, cardAt, cardZone, crossing, glideSeconds, newHold, slowFactor, stepHold, type Zone } from './walk'
+import { CARD_REST, CARD_ZONE, CROSSING_FROM, CROSSING_TO, Warp, cardZone, crossing, glideSeconds, newCardPresence, newHold, slowFactor, stepCardPresence, stepHold, type Zone } from './walk'
 import type {
   DoorId, DoorTints, ForgeryArrival, LiveArrival, Region, WalkControls, WalkState,
 } from './contract'
@@ -72,8 +72,8 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2' | 'door1' | 'door2'
 // slows into the stop and is gone when it arrives.
 // Walking forward holds at the station until a photo has landed there this visit (walk.ts stepHold);
 // checkpoint jumps pass it, and so does simply keeping on walking for two seconds.
-// One more jump past the end (double-tap, 8 or PageDown) starts the ending: darkness closes in over the
-// finished image (ending.ts) and the scene stops rendering once it's black. Stepping back lifts it.
+// One more jump past the end (double-tap, 8 or PageDown) starts the ending: the whole view goes through a
+// threshold into the dark (ending.ts) and the scene stops rendering once it's black. Stepping back lifts it.
 // Glides keep an even pace through the warped route (walk.ts, GLIDE_PACE 6.5), so they ease to
 // 25 % in every slow zone. Walking back runs at twice the pace.
 // Slow zones (centre ± full-slow / back-to-speed, in route units): today and break 1.6 / 4.1, Q-Day
@@ -206,8 +206,9 @@ export class UniverseEngine implements WalkControls {
   private holdLanded = false
   private holdPrev = 0
   private pushAt = -1e9
-  // the ending: on, how far it has gone (0..1), where its last light is on screen, the mask's element
-  private ending = { on: false, k: 0, pending: false, x: 0, y: 0, placed: false, el: null as HTMLElement | null }
+  // the ending: on, how far it has gone (0..1), the mask's element; forward keys held since it began,
+  // the scroll it's been given lately, and its clock on the black (seconds of its calm pace)
+  private ending = { on: false, k: 0, pending: false, el: null as HTMLElement | null, held: new Set<string>(), scroll: 0, closeT: 0 }
   private taps = noTap()
   private wheel = noWheel()
   private fluid: Fluid
@@ -235,6 +236,8 @@ export class UniverseEngine implements WalkControls {
   private glide: { index: number; from: number; to: number; t0: number; dur: number } | null = null
   private glideClock = 0
   private crossingIdle = 0
+  private cardPresence = newCardPresence()
+  private cardPrevR = 0
   /** Visual QA can raise this to stand still inside the crossing. */
   crossingIdleLimit = CROSSING_IDLE
   private lastDesired = 0
@@ -357,7 +360,9 @@ export class UniverseEngine implements WalkControls {
   private startEnding() {
     this.ending.on = true
     this.ending.pending = false
-    this.ending.placed = false
+    this.ending.held.clear()
+    this.ending.scroll = 0
+    this.ending.closeT = 0
     this.keys.clear()
     this.v = 0
     this.target = null
@@ -443,6 +448,8 @@ export class UniverseEngine implements WalkControls {
   /** The toy-RSA fake has been judged: it hangs just ahead of the break stop, apart from the photos. */
   showForgery(f: ForgeryArrival) {
     this.forged.showForgery(f)
+    // the card clears at once for the forgery: the verdict waits for it, and the frame is behind it
+    this.cardPresence = { ...this.cardPresence, rest: CARD_REST, spent: true }
     this.goToBreak()
   }
 
@@ -910,9 +917,10 @@ export class UniverseEngine implements WalkControls {
     this.grove.setEnd(end - s2)
     this.stopList = [s0 + ENTRANCE_STOP, s1 + TODAY_AT, station, s2 - DOOR2_STOP, s2 + QDAY_AT, brk, end]
     this.zones = [
-      cardZone(s1 + TODAY_AT, 'today', CARD_ZONE.long),
+      // the words wait for the door each one comes through: never over a crossing
+      cardZone(s1 + TODAY_AT, 'today', CARD_ZONE.long, s1 + 1),
       { at: station, inner: 1.2, outer: 4 },
-      cardZone(s2 + QDAY_AT, 'qday', CARD_ZONE.short),
+      cardZone(s2 + QDAY_AT, 'qday', CARD_ZONE.short, s2 + 3.2),
       cardZone(brk, 'break', CARD_ZONE.long),
       // the end has no words; its stop just eases the walk in, like a card's would
       { at: end - CARD_ZONE.short.outer, inner: CARD_ZONE.short.inner, outer: CARD_ZONE.short.outer },
@@ -930,15 +938,16 @@ export class UniverseEngine implements WalkControls {
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault()
-    if (this.ending.on) return
-    this.target = null
-    this.glide = null
-    this.v = 0
     // the decaying events a trackpad keeps sending after the fingers lift don't walk
     const w = wheelStep(this.wheel, e.deltaY, performance.now())
     this.wheel = w.state
-    if (w.ignore && !this.showcase) return
     const step = wheelDistance(e.deltaY, e.deltaMode, this.canvas.clientHeight)
+    // in the dark, scrolling on hurries it along
+    if (this.ending.on) { if (step > 0 && !w.ignore) this.ending.scroll += step; return }
+    this.target = null
+    this.glide = null
+    this.v = 0
+    if (w.ignore && !this.showcase) return
     if (step > 0) this.pushAt = performance.now()
     this.desiredRoute += this.showcase ? step : step * this.slow()
   }
@@ -971,8 +980,9 @@ export class UniverseEngine implements WalkControls {
         if (walkKey === 'arrowleft') this.prev(); else this.next()
         return
       }
-      // in the dark only the jumps do anything
-      if (!this.ending.on) { this.keys.add(walkKey); this.target = null; this.glide = null }
+      // in the dark holding forward hurries it along, and only the jumps do anything else
+      if (this.ending.on) { if (walkKey !== 'arrowleft') this.ending.held.add(walkKey) }
+      else { this.keys.add(walkKey); this.target = null; this.glide = null }
       return
     }
     if (!this.showcase && k.length === 1 && k >= '1' && k <= String(ENDING_KEY)) {
@@ -981,13 +991,18 @@ export class UniverseEngine implements WalkControls {
       return
     }
     if (el?.closest?.('button, a')) return
-    if (['w', 's', 'arrowup', 'arrowdown'].includes(k) && !this.ending.on) { this.keys.add(k); this.target = null; this.glide = null; e.preventDefault() }
+    if (['w', 's', 'arrowup', 'arrowdown'].includes(k)) {
+      e.preventDefault()
+      if (!this.ending.on) { this.keys.add(k); this.target = null; this.glide = null }
+      else if (k === 'w' || k === 'arrowup') this.ending.held.add(k)
+    }
     if (!this.showcase && k === 'enter' && this.hovered !== null) { this.goStop(this.stopPastDoor(this.hovered)); e.preventDefault() }
     if (!this.showcase && k === 'escape') { if (this.ending.on) this.leaveEnding(); else this.back() }
   }
   private onKeyUp = (e: KeyboardEvent) => {
     const name = e.code === 'Space' ? ' ' : e.key.toLowerCase()
     this.keys.delete(name)
+    this.ending.held.delete(name)
     this.taps = tapUp(this.taps, name, performance.now())
   }
   private onPointerMove = (e: PointerEvent) => { this.updatePointer(e, true) }
@@ -1168,31 +1183,15 @@ export class UniverseEngine implements WalkControls {
   }
 
   /** Lay the dark over the screen, its last light on the path ahead (wherever that is on screen now). */
-  private endingV = new THREE.Vector3()
   private paintEnding() {
     const e = this.ending
     if (!e.el) return
     if (e.k <= 0) {
-      if (e.el.style.display !== 'none') { e.el.style.display = 'none'; e.el.style.background = '' }
+      if (e.el.style.display !== 'none') { e.el.style.display = 'none'; e.el.style.opacity = '' }
       return
     }
-    const w = this.host.clientWidth, h = this.host.clientHeight
-    if (e.k < 1) {
-      const j = this.active
-      // the last light is the grove's: the pillar the path runs into
-      this.endingV.copy(this.aheadPoint(j, this.stopList[STOP.end] - this.stages[j].start + END_LIGHT_PAST))
-      this.endingV.y += EYE
-      this.endingV.project(this.camera)
-      const x = (this.endingV.x + 1) / 2 * w, y = (1 - this.endingV.y) / 2 * h
-      // hold it steady: the camera drifts with the pointer, the light shouldn't chase it
-      e.x = e.placed ? e.x + (x - e.x) * 0.04 : x
-      e.y = e.placed ? e.y + (y - e.y) * 0.04 : y
-      e.placed = true
-    }
-    const far = Math.hypot(Math.max(e.x, w - e.x), Math.max(e.y, h - e.y))
     e.el.style.display = 'block'
-    e.el.style.opacity = String(Math.min(1, e.k / 0.12))
-    e.el.style.background = endingBackground(e.k, e.x, e.y, far)
+    e.el.style.opacity = endingPassage(e.k).dark.toFixed(4)
     e.el.style.cursor = e.k > 0.9 ? 'none' : ''
   }
 
@@ -1251,7 +1250,8 @@ export class UniverseEngine implements WalkControls {
       return
     }
     const j = this.active, st = this.stages[j]
-    const s = this.r - st.start
+    // going through into the dark, the camera pushes on down the path
+    const s = this.r - st.start + (this.reducedMotion ? 0 : endingPassage(this.ending.k).push)
     const pos = this.pointAt(j, s)
     pos.y = this.heightAt(j, s) + EYE + Math.sin(this.r * 1.6) * 0.025 * Math.min(1, Math.abs(this.v) / 4)
     const target = this.aheadPoint(j, s + 6)
@@ -1300,7 +1300,11 @@ export class UniverseEngine implements WalkControls {
     const realDt = Math.min((now - this.lastFrame) / 1000, 0.25)
     this.lastFrame = now
     const t = (now - this.startedAt) / 1000
-    this.ending.k = stepEnding(this.ending.k, this.ending.on, realDt)
+    const end = this.ending
+    end.scroll *= Math.exp(-realDt / ENDING_SCROLL_MEMORY)
+    const endRate = endingRate(end.held.size > 0, end.scroll / ENDING_SCROLL_MEMORY)
+    end.k = stepEnding(end.k, end.on, realDt, endRate)
+    end.closeT = end.on && end.k >= 1 ? end.closeT + realDt * endRate : 0
     this.paintEnding()
     if (this.ending.on && this.ending.k >= 1) {
       // fully dark: the scene stops altogether until the visitor steps back
@@ -1321,6 +1325,9 @@ export class UniverseEngine implements WalkControls {
       this.placeCamera(1 - Math.exp(-dt * 3))
       this.updatePreviewCamera()
       this.updateDoors(dt, t)
+      const speed = realDt > 0 ? Math.abs(this.r - this.cardPrevR) / realDt : 0
+      this.cardPrevR = this.r
+      this.cardPresence = stepCardPresence(this.cardPresence, this.r, speed, realDt, this.zones)
       this.emitState()
     }
     this.updateUniforms(t, dt)
@@ -1511,6 +1518,8 @@ export class UniverseEngine implements WalkControls {
     }
     if (this.flash > 0.5) this.zoom = this.reducedMotion ? 0 : 1 // crossing a doorway
     this.zoom = Math.max(0, this.zoom - dt * 1.6)
+    const passage = endingPassage(this.ending.k)
+    if (!this.reducedMotion) this.zoom = Math.max(this.zoom, passage.zoom)
 
     // The eye adapts: a crossing brightens for a beat, then settles. Kept short and shallow so the
     // Prism never washes out to white (bloom does the rest).
@@ -1532,6 +1541,7 @@ export class UniverseEngine implements WalkControls {
     this.flash = Math.max(0, this.flash - dt * 1.8)
     f.uFlash.value = this.flash * 0.8
     f.uZoom.value = this.zoom * this.zoom
+    f.uFlatten.value = passage.flatten
     for (const u of [...this.stages, ...this.showcases.values()]) {
       for (const s of u.scene.children) {
         const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
@@ -1613,15 +1623,17 @@ export class UniverseEngine implements WalkControls {
   private emitState() {
     const st = this.stages[this.active]
     const pq = st.region === 'qday'
-    const card = cardAt(this.r, this.zones)
+    const p = this.cardPresence
+    const card = p.id && p.level > 0.001 ? { id: p.id, strength: p.level, progress: p.progress, pace: p.pace } : null
     const i = this.stations.findIndex(x => Math.abs(this.r - x) < 1.5)
     const walk: WalkState = {
       region: st.region,
       // quantised so the page re-renders a few dozen times across a fade, not every frame
-      card: card ? { id: card.id, strength: Math.round(card.strength * 50) / 50, progress: Math.round((card.progress ?? 0.5) * 50) / 50 } : null,
+      card: card ? { id: card.id, strength: Math.round(card.strength * 50) / 50, progress: Math.round(card.progress * 50) / 50, pace: Math.round(card.pace * 10) / 10 } : null,
       liveIndex: i < 0 ? null : i,
       forgeryLanded: this.forged.forgeryLanded(),
       ending: this.ending.k >= 1 && this.ending.on ? 'black' : this.ending.k > 0 ? 'fading' : 'none',
+      closing: closingOpacities(this.ending.closeT).map(a => Math.round(a * 50) / 50) as [number, number],
     }
     const s: EngineState = {
       phase: pq ? 'inside' : 'trunk',

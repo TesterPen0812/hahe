@@ -1021,6 +1021,7 @@ export const finishShader = {
     uFlashColor: { value: [1, 1, 1] },
     uAspect: { value: 1 },
     uZoom: { value: 0 },
+    uFlatten: { value: 0 },
     uResolution: { value: new Vector2(1, 1) },
     uFluidTexel: { value: new Vector2(1, 1) },
     uDye: { value: null },
@@ -1046,6 +1047,7 @@ export const finishShader = {
     uniform float uFlash;
     uniform vec3 uFlashColor;
     uniform float uAspect;
+    uniform float uFlatten;      // 0..1: the highlights fall to the level of the rest of the picture
     uniform float uZoom;
     uniform sampler2D uFluid;
     uniform sampler2D uDye;
@@ -1158,6 +1160,7 @@ export const finishShader = {
       }
       col *= max(0.0, 1.0 - dot(c, c) * uVignette * 2.0);
       col = mix(col, uFlashColor, uFlash);
+      if (uFlatten > 0.001) col /= 1.0 + uFlatten * 14.0 * max(col.r, max(col.g, col.b));
       float g = rand(vUv * 1000.0 + fract(uTime * 7.13) * 61.0) - 0.5;
       // grain is strongest in the mid-tones, like film
       float lum = dot(col, vec3(0.299, 0.587, 0.114));

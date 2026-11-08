@@ -47,7 +47,7 @@
 
 /* ── story cards: the walk slows, the world blurs, a line arrives ─────── */
 .uv-card { position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center; }
-/* No timers: StoryCard sets --card-text / --card-veil from how deep the camera is in the card's zone, and
+/* StoryCard sets --card-text / --card-veil from the walk (where you are, and how fast you came), and
    --card-rise / --card-scale from how far through it, so the words travel with the walk. Veil and words
    each fade themselves, so the veil's backdrop blur never sits under a fading parent. */
 .uv-card-veil {
@@ -88,8 +88,8 @@
   text-shadow: calc(var(--g) * 0.05em) 0 rgba(255, 70, 120, calc(var(--g) * 0.7)), calc(var(--g) * -0.05em) 0 rgba(80, 230, 255, calc(var(--g) * 0.7));
 }
 /* …and the moment they come in, a short glitch: slices jump sideways, channels split, then it settles. */
-.uv-card.in h2 { animation: uv-glitch .46s backwards; }
-.uv-card.in p { animation: uv-glitch .46s .09s backwards; }
+.uv-card.in h2 { animation: uv-glitch var(--card-glitch-time, .46s) backwards; }
+.uv-card.in p { animation: uv-glitch var(--card-glitch-time, .46s) calc(var(--card-glitch-time, .46s) * .2) backwards; }
 @keyframes uv-glitch {
   0%   { clip-path: inset(14% 0 56% 0); transform: translateX(-0.05em); text-shadow: 0.09em 0 rgba(255, 70, 120, .85), -0.09em 0 rgba(80, 230, 255, .85); animation-timing-function: steps(1, end); }
   12%  { clip-path: inset(60% 0 6% 0); transform: translateX(0.06em); animation-timing-function: steps(1, end); }
@@ -305,15 +305,14 @@
   .uv-card.in h2, .uv-card.in p { animation: none; }
 }
 
-/* The ending: a mask over everything on stage (the scene sets its shape), then the closing line on black. */
-.uv-ending { position: absolute; inset: 0; z-index: 30; display: none; }
+/* The ending: black over everything on stage (the scene sets how much), then the closing lines on it. */
+.uv-ending { position: absolute; inset: 0; z-index: 30; display: none; background: #000; }
 .uv-closing {
   position: absolute; inset: 0; z-index: 31; pointer-events: none;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5em;
   font-family: var(--story); color: #f2f1ec; text-align: center; padding: 0 8vw;
 }
 .uv-closing p { margin: 0; font-size: clamp(22px, 3.4vw, 46px); font-weight: 300; letter-spacing: 0.01em; line-height: 1.25; }
+/* the engine sets each line's opacity from the ending's clock; stepping back just lets them go */
 .uv-closing p { opacity: 0; transition: opacity 0.5s ease-out; }
-.uv-closing.on p { opacity: 1; transition: opacity 3.2s ease-in-out 0.7s; }
-/* the second beat: once the first has come in and held for a little under two seconds */
-.uv-closing.on p:nth-child(2) { transition-delay: 5.65s; }
+.uv-closing.on p { transition: none; }

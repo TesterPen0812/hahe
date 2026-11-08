@@ -28,9 +28,11 @@ export type CardId = 'today' | 'qday' | 'break'
 export interface CardState {
   id: CardId
   strength: number
-  /** Where the camera is through the card's zone: 0 entering, 0.5 centre, 1 leaving. Purely positional
-   *  (no timers), so scrolling fast through a card moves the text and the slowness together. */
+  /** Where the camera is through the card's words: 0 coming, 0.5 at the stop, 1 leaving. Position alone,
+   *  so scrolling fast through a card moves the text and the slowness together. */
   progress?: number
+  /** How fast the walk is going (0 a walk, 1 fast): the arrival's glitch shortens with it. */
+  pace?: number
 }
 
 /** Emitted by the engine as `EngineState.walk`. */
@@ -43,6 +45,8 @@ export interface WalkState {
   forgeryLanded?: boolean
   /** The ending: darkness on its way (either direction), or fully black. */
   ending?: 'none' | 'fading' | 'black'
+  /** How far each closing line has come in on the black (0..1). */
+  closing?: [number, number]
 }
 
 /** Engine methods the screen calls (scene implements them on UniverseEngine). */

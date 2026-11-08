@@ -5,14 +5,21 @@
 // back up again. A zone is a bump: full slow within `inner` of its centre, back to full speed at
 // `outer`.
 //
-// A card's zone sits just BEFORE its stop, so the text and the slowness are one thing on the route:
-// gliding to a stop passes through the text and arrives with it gone, and scrolling past fast moves
-// both together. Nothing here keeps time; it is all position.
-import type { CardId, CardState } from './contract'
+// A card's zone sits just BEFORE its stop, so the slowness builds on the way in and the text and the
+// slowness are one thing on the route. Where the words are is position; how soon and how fast they come
+// is the walking speed (`stepCardPresence`): the faster you come, the earlier and quicker they arrive,
+// so they are always up by the time you reach their stop.
+import type { CardId } from './contract'
 
 export const SLOW = 0.25
 
-export interface Zone { at: number; inner: number; outer: number; card?: CardId }
+export interface Zone {
+  at: number; inner: number; outer: number; card?: CardId
+  /** The card's stop, where its words are up (a card zone only). */
+  stop?: number
+  /** The words may not arrive before this route distance (a door the walk crosses first). */
+  notBefore?: number
+}
 
 const smoothstep = (a: number, b: number, x: number) => {
   const t = Math.max(0, Math.min(1, (x - a) / (b - a)))
@@ -31,28 +38,82 @@ export function slowFactor(r: number, zones: readonly Zone[]) {
   return 1 - (1 - SLOW) * b
 }
 
-/** Where a card's zone ends, short of its stop, so a camera parked at the stop sees no text. */
+/** Where a card's zone ends, short of its stop: the walk is back to full speed for the stop itself. */
 export const CARD_GAP = 0.25
-/** Zone sizes, tuned so a Space glide spends about 3 s with the card past half strength (see tests):
- *  the long glides to today and the break run faster through the warp than the short ones to Q-Day and the end. */
+/** Zone sizes, tuned so a Space glide spends about 3 s in the slowness (see tests): the long glides to
+ *  today and the break run faster through the warp than the short ones to Q-Day and the end. */
 export const CARD_ZONE = { long: { inner: 1.6, outer: 4.1 }, short: { inner: 2.2, outer: 4.5 } } as const
 
 /** A card's slow zone, ending CARD_GAP before its stop. */
-export function cardZone(stop: number, card: CardId, size: { inner: number; outer: number }): Zone {
-  return { at: stop - CARD_GAP - size.outer, inner: size.inner, outer: size.outer, card }
+export function cardZone(stop: number, card: CardId, size: { inner: number; outer: number }, notBefore?: number): Zone {
+  return { at: stop - CARD_GAP - size.outer, inner: size.inner, outer: size.outer, card, stop, notBefore }
 }
 
-/** The card the route is in (the strongest one), with strength 0..1 and progress through its zone. */
-export function cardAt(r: number, zones: readonly Zone[]): CardState | null {
-  let best: CardState | null = null
+// ── How a card's words come and go ────────────────────────────────────────────────────────────────
+/** How far past its stop the words last before they start to go. */
+export const CARD_LEAVE = 0.6
+/** Seconds the words stay on at rest, once the walk has stopped, before they clear. */
+export const CARD_REST = 1
+/** Below this speed (route units a second) the walk counts as stopped. */
+export const CARD_MOVING = 0.05
+const CARD_FADE_CALM = 1.4
+const CARD_FADE_FASTEST = 0.14
+
+/** Route distance ahead of a zone at which the words start to arrive: further the faster you come. */
+export const cardLead = (speed: number) => Math.min(8, 0.6 + 0.3 * Math.max(0, speed))
+/** Seconds for the words to come fully in, or to go: a calm fade when slow, quick when fast. */
+export const cardFade = (speed: number) => Math.max(CARD_FADE_FASTEST, CARD_FADE_CALM / (1 + Math.max(0, speed) / 2.2))
+/** 0 at a walk, 1 when fast: the arrival's glitch shortens with it. */
+export const cardPace = (speed: number) => Math.min(1, Math.max(0, speed) / 12)
+
+export interface CardPresence {
+  id: CardId | null
+  /** 0..1, the story card's strength. */
+  level: number
+  /** Seconds at rest inside the card's window. */
+  rest: number
+  /** These words have had their time at this stop: they don't come back until the walk has left. */
+  spent: boolean
+  progress: number
+  pace: number
+}
+export const newCardPresence = (): CardPresence => ({ id: null, level: 0, rest: 0, spent: false, progress: 0.5, pace: 0 })
+
+/** The card whose words belong at route r at this speed. */
+export function cardWindow(r: number, speed: number, zones: readonly Zone[]): Zone | null {
   for (const z of zones) {
     if (!z.card) continue
-    const strength = bump(r, z)
-    if (strength > 0.001 && (!best || strength > best.strength)) {
-      best = { id: z.card, strength, progress: Math.max(0, Math.min(1, (r - z.at + z.outer) / (2 * z.outer))) }
-    }
+    const stop = z.stop ?? z.at + z.outer
+    if (r >= Math.max(z.at - z.outer - cardLead(speed), z.notBefore ?? -Infinity) && r <= stop + CARD_LEAVE) return z
   }
-  return best
+  return null
+}
+
+/** Where the walk is through a card's words: 0 coming, 0.5 at the stop, 1 leaving. Position alone. */
+function cardProgress(r: number, z: Zone) {
+  const start = z.at - z.outer, stop = z.stop ?? z.at + z.outer
+  return r <= stop ? 0.5 * Math.max(0, Math.min(1, (r - start) / (stop - start))) : 0.5 + 0.5 * Math.min(1, (r - stop) / CARD_LEAVE)
+}
+
+/**
+ * One frame of a card's words. Inside the card's window they come in, at a rate set by the speed; at rest
+ * they stay CARD_REST seconds and clear for good until the walk has left, so a camera parked at a stop
+ * has a clear view. Out of the window they go, at the same rate. Walking back reverses all of it.
+ */
+export function stepCardPresence(s: CardPresence, r: number, speed: number, dt: number, zones: readonly Zone[]): CardPresence {
+  const z = cardWindow(r, speed, zones)
+  const stopped = speed < CARD_MOVING
+  const rest = z && stopped ? s.rest + dt : 0
+  const spent = !!z && (s.spent || rest >= CARD_REST)
+  const want = z && !spent ? 1 : 0
+  const step = dt / cardFade(speed)
+  const level = s.level + Math.max(-step, Math.min(step, want - s.level))
+  return {
+    id: z?.card ?? (level > 0 ? s.id : null),
+    level, rest, spent,
+    progress: z ? cardProgress(r, z) : s.progress,
+    pace: cardPace(speed),
+  }
 }
 
 /**

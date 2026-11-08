@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { CLOSING_LINES, endingBackground, endingMask, stepEnding } from '../src/universe/ending.ts'
-import { CARD_GAP, CARD_ZONE, CROSSING_FROM, CROSSING_TO, HOLD_ESCAPE, SLOW, Warp, cardAt, cardZone, crossing, glideSeconds, newHold, slowFactor, stepHold, type HoldStep, type Zone } from '../src/universe/walk.ts'
+import { CLOSING_LINES, CLOSING_SECONDS, ENDING_FADE, ENDING_HOLD_RATE, ENDING_MAX_RATE, closingOpacities, endingPassage, endingRate, stepEnding } from '../src/universe/ending.ts'
+import { CARD_LEAVE, CARD_REST, CARD_ZONE, CROSSING_FROM, CROSSING_TO, HOLD_ESCAPE, SLOW, Warp, cardFade, cardLead, cardPace, cardWindow, cardZone, crossing, glideSeconds, newCardPresence, newHold, slowFactor, stepCardPresence, stepHold, type CardPresence, type HoldStep, type Zone } from '../src/universe/walk.ts'
 
 const zones: Zone[] = [
   { at: 20, inner: 1.5, outer: 4, card: 'today' },
@@ -26,59 +26,87 @@ test('the warped route inverts back to the same distance', () => {
   assert.ok(Math.abs(w.at(40) - w.at(30) - 10) < 1e-6)
 })
 
-test('cards rise to full strength at their zone centre and vanish outside it', () => {
-  assert.deepEqual(cardAt(20, zones), { id: 'today', strength: 1, progress: 0.5 })
-  assert.equal(cardAt(30, zones), null)
-  assert.equal(cardAt(24.5, zones), null) // a card's zone is tight: nothing until 4 units out
-  // ...and it comes up fast: past half strength a metre and a half before the centre
-  assert.ok(cardAt(18, zones)!.strength > 0.5)
-  assert.equal(cardAt(60, zones), null) // live stations slow the walk but carry no card
-  const mid = cardAt(22.5, zones)
-  assert.ok(mid && mid.strength > 0 && mid.strength < 1)
-})
-
-test('progress runs 0 → 0.5 → 1 through a card zone, from position alone', () => {
-  assert.ok(Math.abs(cardAt(16.1, zones)!.progress! - 0.0125) < 1e-9)
-  assert.equal(cardAt(20, zones)!.progress, 0.5)
-  assert.ok(cardAt(23.9, zones)!.progress! > 0.98)
-  const ps = [17, 18.5, 20, 21.5, 23].map(r => cardAt(r, zones)!.progress!)
-  for (let i = 1; i < ps.length; i++) assert.ok(ps[i] > ps[i - 1])
-})
-
 // The walk's seven checkpoints (with four prints in the after gallery): the Prism, today, the photo
 // station, door 2, Q-Day, break, end.
 const STOPS = [4, 50, 64, 89, 109, 153, 164]
 const route: Zone[] = [
   cardZone(50, 'today', CARD_ZONE.long), { at: 64, inner: 1.2, outer: 4 },
-  cardZone(109, 'qday', CARD_ZONE.short),
+  cardZone(109, 'qday', CARD_ZONE.short, 101.2),
   cardZone(153, 'break', CARD_ZONE.long), { at: 164 - CARD_ZONE.short.outer, inner: CARD_ZONE.short.inner, outer: CARD_ZONE.short.outer },
 ]
-/** Seconds a Space glide from stop a to stop b spends with a card past half strength. */
-function glideCardTime(a: number, b: number) {
-  const w = new Warp(route, 172.5)
-  const w0 = w.at(a), w1 = w.at(b), dur = glideSeconds(w1 - w0)
-  let above = 0
-  for (let t = 0; t <= dur; t += 0.002) {
-    const r = w.inverse(w0 + (w1 - w0) * (0.5 - 0.5 * Math.cos(Math.PI * t / dur)))
-    if ((cardAt(r, route)?.strength ?? 0) > 0.5) above += 0.002
+
+// ── the story's words ──
+/** Walk the route at a steady speed, in 1/120 s frames; where the words were fully in, and when. */
+function walkTo(stop: number, from: number, speed: number) {
+  let s: CardPresence = newCardPresence(), r = from, t = 0, fullAt: number | null = null, fullR: number | null = null
+  const dt = 1 / 120
+  while (r < stop) {
+    r = Math.min(stop, r + speed * dt)
+    t += dt
+    s = stepCardPresence(s, r, speed, dt, route)
+    if (s.level >= 0.5 && fullAt === null) { fullAt = t; fullR = r }
   }
-  return above
+  return { state: s, reached: t, fullAt, fullR }
 }
 
-test('a card zone sits before its stop: parked at a stop there is no text', () => {
-  for (const s of STOPS) assert.equal(cardAt(s, route), null)
-  // and the text is gone a little before the stop is reached
-  assert.equal(cardAt(109 - CARD_GAP, route), null)
-  assert.ok(cardAt(109 - CARD_GAP - CARD_ZONE.long.outer, route)!.strength === 1)
+test('words lead the walk: the faster you come, the earlier they start and the quicker they fade in', () => {
+  assert.ok(cardLead(9) > cardLead(1))
+  assert.ok(cardLead(30) <= 8)
+  assert.ok(cardFade(9) < cardFade(1))
+  assert.ok(cardFade(0) >= 1.2, 'a slow walk keeps a calm fade')
+  assert.ok(cardFade(40) >= 0.14)
+  assert.equal(cardPace(0), 0)
+  assert.equal(cardPace(40), 1)
+  // and so a fast walker's words are up further ahead of the stop than a slow walker's
+  const slow = walkTo(50, 30, 1), fast = walkTo(50, 30, 12)
+  assert.ok(slow.fullR !== null && fast.fullR !== null)
+  assert.ok(fast.fullR! < slow.fullR!, `fast ${fast.fullR} slow ${slow.fullR}`)
+  assert.ok(fast.fullAt! < fast.reached && slow.fullAt! < slow.reached)
 })
 
-test('a Space glide spends about 2.5 to 3 s with each card past half strength', () => {
-  for (let i = 0; i < STOPS.length - 1; i++) {
-    const t = glideCardTime(STOPS[i], STOPS[i + 1])
-    // the station, door 2 and the end carry no words
-    if ([64, 89, 164].includes(STOPS[i + 1])) { assert.equal(t, 0); continue }
-    assert.ok(t >= 2.5 && t <= 3.1, `${STOPS[i]} → ${STOPS[i + 1]}: ${t.toFixed(2)} s`)
+test('words are always up by the stop they belong to, however fast you come', () => {
+  for (const speed of [0.5, 1, 2.25, 9, 15, 30]) {
+    for (const stop of [50, 109, 153]) {
+      const { state } = walkTo(stop, stop - 30, speed)
+      assert.ok(state.level >= 0.5, `${speed} u/s to ${stop}: ${state.level}`)
+      assert.ok(state.id !== null)
+    }
   }
+})
+
+test('a door keeps its words back until the walk is through it, at any speed', () => {
+  assert.equal(cardWindow(100.9, 30, route), null)
+  assert.equal(cardWindow(101.2, 30, route)?.card, 'qday')
+})
+
+test('at rest the words stay a moment, then clear and stay clear until the walk has left', () => {
+  const stop = 50, dt = 1 / 60
+  let s: CardPresence = { ...newCardPresence(), id: 'today', level: 1 }
+  for (let t = 0; t < CARD_REST - 0.1; t += dt) s = stepCardPresence(s, stop, 0, dt, route)
+  assert.equal(s.level, 1)
+  for (let t = 0; t < 3; t += dt) s = stepCardPresence(s, stop, 0, dt, route)
+  assert.equal(s.level, 0)
+  assert.equal(s.spent, true)
+  // setting off again doesn't bring them back on the way out of the window
+  s = stepCardPresence(s, stop + 0.2, 4, dt, route)
+  assert.equal(s.level, 0)
+  // leaving resets it, so the next pass tells them again
+  s = stepCardPresence(s, stop + CARD_LEAVE + 1, 4, dt, route)
+  assert.equal(s.spent, false)
+  assert.equal(stepCardPresence(s, stop, 0, dt, route).level > 0, true)
+})
+
+test('leaving follows the same speed: a fast pass clears the words sooner than a slow one', () => {
+  const clear = (speed: number) => {
+    let s: CardPresence = { ...newCardPresence(), id: 'today', level: 1 }, t = 0
+    const dt = 1 / 120
+    while (s.level > 0 && t < 10) { s = stepCardPresence(s, 50 + CARD_LEAVE + 1, speed, dt, route); t += dt }
+    return t
+  }
+  assert.ok(clear(12) < clear(1) / 2)
+  // stations and the end carry no words
+  assert.equal(cardWindow(64, 5, route), null)
+  assert.equal(cardWindow(164, 5, route), null)
 })
 
 test('the wheel passes a card in proportion to its speed: the zone is distance, not time', () => {
@@ -172,27 +200,40 @@ test('a walker already past the station is not pulled back', () => {
 })
 
 // ── the ending ──
-test('the ending closes from the edges: clear at the start, the circle shrinking, black at the end', () => {
-  assert.equal(endingMask(0).opacity, 0)
-  assert.equal(endingBackground(1, 700, 400, 900), '#000')
-  let last = Infinity
+test('the passage takes the whole view: no radial shape, even black, the camera pushing on, true black at the end', () => {
+  assert.equal(endingPassage(0).dark, 0)
+  assert.equal(endingPassage(1).dark, 1)
+  assert.equal(endingPassage(0).push, 0)
+  let d = -1, f = -1, p = -1
   for (let k = 0; k <= 1.001; k += 0.05) {
-    const m = endingMask(k)
-    assert.ok(m.outer <= last)
-    assert.ok(m.inner <= m.outer)
-    last = m.outer
+    const m = endingPassage(k)
+    assert.ok(m.dark >= d && m.flatten >= f && m.push >= p)
+    d = m.dark; f = m.flatten; p = m.push
   }
-  // still some light at the centre well into the fade, none by the end
-  assert.ok(endingMask(0.8).outer > 0)
-  assert.equal(endingMask(0.8).core < 1, true)
-  assert.equal(endingMask(1).outer, 0)
+  assert.ok(endingPassage(0.5).flatten > 0.3, 'highlights fall with the rest of the picture')
+  assert.ok(endingPassage(1).zoom > 0.9)
 })
 
-test('the fade takes its time and lifts faster than it fell, from anywhere', () => {
+test('the passage is 4 to 5 s at rest and lifts faster than it fell, from anywhere', () => {
+  assert.ok(ENDING_FADE >= 4 && ENDING_FADE <= 5)
   assert.equal(stepEnding(0, true, 0), 0)
-  assert.ok(stepEnding(0, true, 1) < 0.2)
+  assert.ok(Math.abs(stepEnding(0, true, 1) - 1 / ENDING_FADE) < 1e-9)
   assert.equal(stepEnding(1, true, 1), 1)
   assert.equal(stepEnding(0.4, false, 10), 0)
+})
+
+test('scrolling or holding forward runs the ending\'s clock faster, the harder the sooner', () => {
+  assert.equal(endingRate(false, 0), 1)
+  assert.equal(endingRate(true, 0), ENDING_HOLD_RATE)
+  assert.ok(endingRate(false, 40) > endingRate(false, 10))
+  assert.ok(endingRate(false, 10) > endingRate(false, 2))
+  assert.equal(endingRate(false, 1000), ENDING_MAX_RATE)
+  assert.ok(stepEnding(0, true, 1, 4) > stepEnding(0, true, 1, 1))
+  // the two beats: one after the other on the same clock, the second a clear beat after the first
+  assert.deepEqual(closingOpacities(0), [0, 0])
+  const [a, b] = closingOpacities(4.2)
+  assert.ok(a > 0.99 && b === 0)
+  assert.deepEqual(closingOpacities(CLOSING_SECONDS), [1, 1])
 })
 
 test('the closing words are the two decided lines', () => {

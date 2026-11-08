@@ -319,7 +319,7 @@ export default function UniversePage() {
       <div ref={endingMask} className="uv-ending" aria-hidden />
       {CLOSING_LINES.length > 0 && (
         <div className={`uv-closing ${state.walk.ending === 'black' ? 'on' : ''}`} aria-hidden={state.walk.ending !== 'black'}>
-          {CLOSING_LINES.map(line => <p key={line}>{line}</p>)}
+          {CLOSING_LINES.map((line, i) => <p key={line} style={{ opacity: state.walk.closing?.[i] ?? 0 }}>{line}</p>)}
         </div>
       )}
     </main>

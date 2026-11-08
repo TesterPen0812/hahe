@@ -3,9 +3,9 @@ import { DEFAULT_Q_DAY_HEADLINE_YEAR } from '@provenance-demo/shared'
 import type { CardId, CardState } from './contract'
 import { cardLook, scramble } from './stageData'
 
-// The words are the screen's; where they appear is the scene's. Nothing here keeps time: `strength`
-// (how deep the camera is in the card's slow zone) sets how much of the card is there, and `progress`
-// (entering → leaving) carries the words along with the walk. Scroll fast and the words pass fast.
+// The words are the screen's; where they appear is the scene's. `strength` (from the walk: position, and
+// how fast you're coming) sets how much of the card is there, and `progress` (coming → leaving) carries
+// the words along with the walk. Scroll fast and the words come and go fast, their glitch shorter too.
 const CARDS: Record<CardId, { title: string; line?: string }> = {
   today: { title: 'Today.', line: 'Every seal checks out.' },
   qday: { title: `Post-Quantum Day · ${DEFAULT_Q_DAY_HEADLINE_YEAR}` },
@@ -64,6 +64,7 @@ export function StoryCard({ card }: { card: CardState | null }) {
     '--card-rise': `${look.rise.toFixed(2)}px`,
     '--card-scale': look.scale.toFixed(4),
     '--card-glitch': (1 - look.decode).toFixed(3),
+    '--card-glitch-time': `${(0.46 - 0.34 * (card.pace ?? 0)).toFixed(3)}s`,
   } as CSSProperties
   return (
     <div className={`uv-card uv-card-${card.id} ${look.text > 0.5 ? 'in' : ''}`} style={style}>
