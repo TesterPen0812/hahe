@@ -234,6 +234,7 @@ function sun() {
   })
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), material)
   mesh.name = 'Grove sun'
+  mesh.renderOrder = 5 // after the photo cards' depth-only faces, so a card hides it
   return mesh
 }
 
@@ -266,6 +267,7 @@ function endLight() {
   }))
   beam.position.y = 2.2
   beam.name = 'Grove end pillar'
+  beam.renderOrder = 5 // behind a card, like the stream
   const pool = new THREE.Mesh(new THREE.PlaneGeometry(7, 7), new THREE.ShaderMaterial({
     vertexShader: /* glsl */ `
       varying vec2 vUv;
@@ -284,6 +286,7 @@ function endLight() {
   pool.rotation.x = -Math.PI / 2
   pool.position.y = 0.02
   pool.name = 'Grove end pool'
+  pool.renderOrder = 5
   const group = new THREE.Group()
   group.name = 'Grove end light'
   group.add(beam, pool)
