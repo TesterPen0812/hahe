@@ -26,6 +26,8 @@ export interface GalleryOptions {
   look?: CardLook
   /** Least distance along the path between neighbouring prints; photos that don't fit aren't hung. */
   gap?: number
+  /** How far to the side of the path a print's centre hangs. */
+  offset?: number
 }
 
 /** Every photo hung here was logged before the gate is crossed; until the server answers, this is what it says. */
@@ -89,7 +91,7 @@ export function buildGallery(
     const side = new THREE.Vector3(-tan.z, 0, tan.x)
     const k = i + seed
     const sgn = k % 2 === 0 ? -1 : 1
-    const off = 3.4 + (k % 3) * 0.4
+    const off = (opts.offset ?? 3.4) + (k % 3) * (opts.offset ? 0.15 : 0.4)
     const pos = on.clone().addScaledVector(side, sgn * off)
     const g = ground(pos.x, pos.z)
     pos.y = g + lift + ((k * 37) % 5) * 0.08
@@ -128,7 +130,9 @@ export function buildGallery(
         if (camera) {
           const ahead = (fr.base.x - camera.x) * fr.tan.x + (fr.base.z - camera.z) * fr.tan.z
           fr.card.alpha = THREE.MathUtils.smoothstep(ahead, 2.5, 6)
-        } else fr.card.alpha = 1
+          // the label goes first, so a passing print never leaves its type huge at the screen's edge
+          fr.card.captionOn = THREE.MathUtils.smoothstep(ahead, 4.5, 7)
+        } else { fr.card.alpha = 1; fr.card.captionOn = 1 }
         fr.card.mesh.position.y = fr.base.y + Math.sin(t * 0.5 + fr.seed) * 0.04
         fr.card.setGround(fr.ground - fr.card.mesh.position.y)
         if (qdayAt < 0) {

@@ -44,16 +44,17 @@ test('progress runs 0 → 0.5 → 1 through a card zone, from position alone', (
   for (let i = 1; i < ps.length; i++) assert.ok(ps[i] > ps[i - 1])
 })
 
-// The walk's real stops (one live photo): tunnel, today, Q-Day, the live station, break, end.
-const STOPS = [4, 56, 115, 127.5, 138.5, 149.5]
+// The walk's real stops (one live station): the Prism, today, Q-Day (in the green tunnel), the live
+// station past the after gallery, break, end.
+const STOPS = [4, 50, 109, 147.5, 158.5, 169.5]
 const route: Zone[] = [
-  cardZone(56, 'today', CARD_ZONE.long), cardZone(115, 'qday', CARD_ZONE.long),
-  { at: 127.5, inner: 1.2, outer: 4 },
-  cardZone(138.5, 'break', CARD_ZONE.short), cardZone(149.5, 'end', CARD_ZONE.short),
+  cardZone(50, 'today', CARD_ZONE.long), cardZone(109, 'qday', CARD_ZONE.long),
+  { at: 147.5, inner: 1.2, outer: 4 },
+  cardZone(158.5, 'break', CARD_ZONE.short), cardZone(169.5, 'end', CARD_ZONE.short),
 ]
 /** Seconds a Space glide from stop a to stop b spends with a card past half strength. */
 function glideCardTime(a: number, b: number) {
-  const w = new Warp(route, 160)
+  const w = new Warp(route, 178)
   const w0 = w.at(a), w1 = w.at(b), dur = glideSeconds(w1 - w0)
   let above = 0
   for (let t = 0; t <= dur; t += 0.002) {
@@ -66,24 +67,24 @@ function glideCardTime(a: number, b: number) {
 test('a card zone sits before its stop: parked at a stop there is no text', () => {
   for (const s of STOPS) assert.equal(cardAt(s, route), null)
   // and the text is gone a little before the stop is reached
-  assert.equal(cardAt(115 - CARD_GAP, route), null)
-  assert.ok(cardAt(115 - CARD_GAP - CARD_ZONE.long.outer, route)!.strength === 1)
+  assert.equal(cardAt(109 - CARD_GAP, route), null)
+  assert.ok(cardAt(109 - CARD_GAP - CARD_ZONE.long.outer, route)!.strength === 1)
 })
 
 test('a Space glide spends about 2.5 to 3 s with each card past half strength', () => {
   for (let i = 0; i < STOPS.length - 1; i++) {
     const t = glideCardTime(STOPS[i], STOPS[i + 1])
-    if (STOPS[i + 1] === 127.5) { assert.equal(t, 0); continue }
+    if (STOPS[i + 1] === 147.5) { assert.equal(t, 0); continue }
     assert.ok(t >= 2.5 && t <= 3.1, `${STOPS[i]} → ${STOPS[i + 1]}: ${t.toFixed(2)} s`)
   }
 })
 
 test('the wheel passes a card in proportion to its speed: the zone is distance, not time', () => {
   // a wheel step is scaled by the slow factor, so the steps to cross a zone don't depend on how fast they come
-  let r = 100, steps = 0
-  while (r < 115) { r += 0.5 * slowFactor(r, route); steps++ }
-  let r2 = 100, steps2 = 0
-  while (r2 < 115) { r2 += 2 * slowFactor(r2, route); steps2++ }
+  let r = 94, steps = 0
+  while (r < 109) { r += 0.5 * slowFactor(r, route); steps++ }
+  let r2 = 94, steps2 = 0
+  while (r2 < 109) { r2 += 2 * slowFactor(r2, route); steps2++ }
   assert.ok(steps2 < steps / 3)
 })
 
