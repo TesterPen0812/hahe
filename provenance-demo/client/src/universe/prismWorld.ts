@@ -1,8 +1,7 @@
 import * as THREE from 'three'
 import { asciiRain } from './asciiRain'
 import { scenePath } from './scenePath'
-import { cloud, glyphAtlas, sky, type FieldStyle, type RGB, type SceneUniforms } from './worlds'
-import { GLYPH_COLUMNS, GLYPH_COUNT, GLYPH_ROWS } from './shaders'
+import { cloud, sky, type FieldStyle, type RGB, type SceneUniforms } from './worlds'
 import { PRISM_RING_TILT } from './prismMotion'
 
 const TAU = Math.PI * 2
@@ -163,123 +162,39 @@ function meadow(u: SceneUniforms, lowPower: boolean) {
   })
 }
 
-/**
- * The ringed planet, drawn entirely in characters. A camera-facing card at the planet's centre works
- * out, for each character cell, the sphere and its tilted ring under that cell's centre: lit by a
- * low sun, banded and slowly turning, the ring striped with gaps and darkened where the planet
- * shades it. A cell's brightness picks its character from a density ramp (: + = * % # & @), so the
- * shading is in the type itself; now and then a cell flickers to another character.
- */
-function planet(u: SceneUniforms) {
-  const center = new THREE.Vector3(-25, 24, -150), radius = 14
-  const tilt = PRISM_RING_TILT
-  const material = new THREE.ShaderMaterial({
-    uniforms: {
-      uTime: u.uTime,
-      uCenter: { value: center },
-      uRadius: { value: radius },
-      uHalf: { value: radius * 2.5 },
-      uCell: { value: 1.25 },
-      uRingN: { value: new THREE.Vector3(0, Math.cos(tilt), Math.sin(tilt)) },
-      uRingE2: { value: new THREE.Vector3(0, -Math.sin(tilt), Math.cos(tilt)) },
-      uLight: { value: new THREE.Vector3(-0.55, 0.3, 0.78).normalize() },
-      uGlyphs: { value: glyphAtlas() },
-    },
-    vertexShader: /* glsl */ `
-      uniform vec3 uCenter;
-      uniform float uHalf;
-      varying vec2 vLocal;
-      void main() {
-        vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
-        vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
-        vLocal = position.xy * uHalf;
-        gl_Position = projectionMatrix * viewMatrix * vec4(uCenter + right * vLocal.x + up * vLocal.y, 1.0);
-      }
-    `,
-    fragmentShader: /* glsl */ `
-      uniform float uTime, uRadius, uCell;
-      uniform vec3 uRingN, uRingE2, uLight;
-      uniform sampler2D uGlyphs;
-      varying vec2 vLocal;
-      float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-      // the density ramp, darkest to brightest: ~ ^ : + = * % # & @, the faintest picked at random
-      // among light marks so the shadows read as texture, not a grid
-      float ramp(float v, float r) {
-        float k = floor(clamp(v, 0.0, 0.999) * 9.0);
-        if (k < 1.5) return r < 0.33 ? 25.0 : r < 0.66 ? 24.0 : 8.0;
-        if (k < 2.5) return r < 0.5 ? 6.0 : 8.0;
-        if (k < 3.5) return 7.0;
-        if (k < 4.5) return 5.0;
-        if (k < 5.5) return 3.0;
-        if (k < 6.5) return 2.0;
-        if (k < 7.5) return 4.0;
-        return 23.0;
-      }
-      void main() {
-        // pixels per cell, for the atlas's level of detail (taken before any branch)
-        float cellPx = uCell / max(abs(dFdx(vLocal.x)), 1e-5);
-        vec3 right = vec3(viewMatrix[0][0], viewMatrix[1][0], viewMatrix[2][0]);
-        vec3 up = vec3(viewMatrix[0][1], viewMatrix[1][1], viewMatrix[2][1]);
-        vec3 fwd = vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);   // toward the camera
-        vec2 cell = floor(vLocal / uCell);
-        vec2 c = (cell + 0.5) * uCell;
-        vec2 q = fract(vLocal / uCell);
-        float R = uRadius, r2 = dot(c, c);
-        float v = 0.0, front = -1e9;
-        vec3 tint = vec3(0.78, 0.8, 1.0);
-        if (r2 < R * R) {
-          float z = sqrt(max(R * R - r2, 0.0));
-          vec3 n = (c.x * right + c.y * up + z * fwd) / R;
-          front = z;
-          float lit = max(dot(n, uLight), 0.0);
-          // bands of latitude, combed by the turning longitude
-          float lat = asin(clamp(dot(n, uRingN), -1.0, 1.0));
-          float lon = atan(dot(n, uRingE2), n.x) + uTime * 0.035;
-          float bands = 0.72 + 0.28 * sin(lat * 11.0 + 1.4 * sin(lon * 2.0 + lat * 4.0));
-          float rim = pow(1.0 - max(dot(n, fwd), 0.0), 3.0);
-          // every cell of the disc keeps a character, so the silhouette is always a whole sphere:
-          // the night side in light marks (: +), the day side in heavy ones (# & @)
-          float day = smoothstep(-0.3, 0.75, dot(n, uLight));
-          v = 0.36 + 0.58 * day * bands + rim * 0.22;
-          tint = mix(vec3(0.6, 0.6, 1.0), vec3(0.93, 0.95, 1.0), lit);
-        }
-        float facing = dot(fwd, uRingN);
-        if (abs(facing) > 0.02) {
-          float t = -(c.x * dot(right, uRingN) + c.y * dot(up, uRingN)) / facing;
-          vec3 h = c.x * right + c.y * up + t * fwd;
-          float d = length(h) / R;
-          if (d > 1.4 && d < 2.15 && t > front) {
-            float band = 0.62 + 0.38 * sin(d * 34.0) * sin(d * 9.0 + 1.0);
-            band *= smoothstep(1.4, 1.48, d) * (1.0 - smoothstep(2.0, 2.15, d));
-            // the planet's shadow across the ring
-            float along = dot(h, uLight);
-            float shade = along < 0.0 && length(h - uLight * along) < R ? 0.25 : 1.0;
-            float ring = band * 0.5 * shade;
-            if (ring > v * 0.6) { v = ring; tint = vec3(0.82, 0.78, 1.0); }
-          }
-        }
-        if (v < 0.06) discard;
-        float rnd = hash(cell * 1.31 + 0.7);
-        // the faintest cells are sparse, thinning out with the light
-        if (v < 0.22 && rnd > v * 4.0) discard;
-        float glyph = ramp(v, hash(cell + 3.1));
-        // a cell now and then flickers to another character and back
-        float tick = floor(uTime * 0.6 + hash(cell) * 9.0);
-        if (hash(cell * 0.37 + tick) > 0.985) glyph = floor(hash(cell + tick) * ${GLYPH_COUNT}.0);
-        vec2 g = vec2(mod(glyph, ${GLYPH_COLUMNS}.0), floor(glyph / ${GLYPH_COLUMNS}.0));
-        vec2 uv = (q - 0.5) * 1.1 + 0.5;
-        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) discard;
-        float ink = textureLod(uGlyphs, vec2((g.x + uv.x) / ${GLYPH_COLUMNS}.0, 1.0 - (g.y + 1.0 - uv.y) / ${GLYPH_ROWS}.0), max(log2(64.0 / cellPx), 0.0)).r;
-        if (ink < 0.02) discard;
-        vec3 col = tint * (0.25 + v * 1.7) * ink;
-        gl_FragColor = vec4(col, ink);
-      }
-    `,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  })
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), material)
-  mesh.frustumCulled = false
-  mesh.name = 'prism-ascii-planet'
+function planet(u: SceneUniforms, lowPower: boolean) {
+  const count = lowPower ? 12600 : 28000, data = arrays(count)
+  const center = [-25, 24, -150], radius = 14, light = new THREE.Vector3(-0.4, 0.7, 0.6).normalize()
+  for (let i = 0; i < count; i++) {
+    const isRing = i / count < 0.45
+    let x: number, y: number, z: number, brightness: number, tone: number
+    if (isRing) {
+      const amount = random(i, 71), distance = radius * mix(1.25, 2.4, amount)
+      const angle = random(i, 72) * TAU, thickness = (random(i, 73) - 0.5) * radius * 0.01
+      x = Math.cos(angle) * distance
+      y = thickness * Math.cos(PRISM_RING_TILT) - Math.sin(angle) * distance * Math.sin(PRISM_RING_TILT)
+      z = thickness * Math.sin(PRISM_RING_TILT) + Math.sin(angle) * distance * Math.cos(PRISM_RING_TILT)
+      brightness = 0.8 * (0.55 + 0.45 * Math.sin(amount * 38) * Math.sin(amount * 11 + 1))
+      tone = mix(0.5, 0.95, amount)
+      data.hang.set([angle, distance, thickness, 1], i * 4)
+    } else {
+      const normal = direction(i, 74); normal[2] = Math.abs(normal[2])
+      x = normal[0] * radius; y = normal[1] * radius; z = normal[2] * radius
+      const illumination = normal[0] * light.x + normal[1] * light.y + normal[2] * light.z
+      const lit = mix(1, smooth(-0.15, 0.5, illumination), 0.7)
+      const rim = (1 - normal[2]) ** 3
+      const surface = 0.6 + 0.4 * noise3(normal[0] * 4, normal[1] * 4, normal[2] * 4 + 9)
+      brightness = lit * surface + rim * 0.6 * lit
+      tone = mix(0.45, 1, lit * surface)
+    }
+    data.position.set([x + center[0], y + center[1], z + center[2]], i * 3)
+    const gain = brightness * 0.95 * 0.85
+    data.color.set([gain * mix(0.58, 0.95, tone), gain * mix(0.64, 0.97, tone), gain], i * 3)
+    data.size[i] = 0.034 * mix(3, 6, random(i, 76))
+    data.detail.set([...center, radius], i * 4)
+  }
+  const mesh = particles(u, data, 17, 1800, 71)
+  mesh.name = 'prism-ringed-planet'
   return mesh
 }
 
@@ -313,7 +228,7 @@ export function buildPrismWorld(u: SceneUniforms, lowPower: boolean) {
   scene.background = new THREE.Color(0.0004, 0.0005, 0.0015)
   scene.add(sky([0.0004, 0.0005, 0.0015], [0.003, 0.0035, 0.009], [0.0003, 0.0004, 0.001],
     new THREE.Vector3(0, 1, -1), [0, 0, 0], 0, { glow: [0.001, 0.001, 0.003] }))
-  scene.add(meadow(u, lowPower), planet(u), stars(u, lowPower))
+  scene.add(meadow(u, lowPower), planet(u, lowPower), stars(u, lowPower))
   scene.add(scenePath(u, { length: LENGTH, amplitude: 1.7, turns: 1.25, lowPower }))
   // Character rain over the meadow, pale violet, as present as in the tunnel and the blue world: it
   // falls close beside the walk too, but outside the lane where the photos and prints hang.
