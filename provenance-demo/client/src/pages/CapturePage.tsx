@@ -9,6 +9,7 @@ import { prepareCapture, sealCapture, uploadForm, type PreparedCapture } from '.
 import { startMotion } from '../lib/motion'
 import { Marker } from '../components/Marker'
 import { PasskeySetupError } from '../lib/passkeySession'
+import { captureReporter } from '../lib/captureProgress'
 
 type Phase = 'idle' | 'preparing' | 'ready' | 'sealing' | 'uploading' | 'done' | 'error'
 
@@ -32,6 +33,8 @@ export default function CapturePage() {
   const [result, setResult] = useState<ItemSummary | null>(null)
   const [error, setError] = useState('')
   const [needsSetup, setNeedsSetup] = useState(false)
+  // Each step is reported to the big screen as it happens (never blocks or fails the capture).
+  const report = useRef<ReturnType<typeof captureReporter> | null>(null)
 
   const takePhoto = async () => {
     setError(''); setResult(null); setNeedsSetup(false)
@@ -47,8 +50,13 @@ export default function CapturePage() {
     if (preview) URL.revokeObjectURL(preview)
     setPreview(URL.createObjectURL(file))
     setPhase('preparing')
+    report.current = captureReporter()
+    report.current('taken')
     try {
-      setPrepared(await prepareCapture(file, motion))
+      const p = await prepareCapture(file, motion)
+      report.current('hashed', { detail: p.claim.contentHash.slice(0, 12) })
+      report.current('signed')
+      setPrepared(p)
       setPhase('ready')
     } catch (err) { fail(err) }
   }
@@ -58,13 +66,18 @@ export default function CapturePage() {
     setPhase('sealing')
     try {
       const manifest = await sealCapture(prepared)          // Face ID, straight from the tap
+      report.current?.('faceid')
       setPhase('uploading')
-      setResult(await api.upload(uploadForm(prepared.file, manifest)))
+      report.current?.('sending')
+      const item = await api.upload(uploadForm(prepared.file, manifest))
+      report.current?.('logged', { itemId: item.id, ...(item.logEntry ? { detail: `#${item.logEntry.seq}` } : {}) })
+      setResult(item)
       setPhase('done')
     } catch (err) { fail(err) }
   }
 
   const fail = (err: unknown) => {
+    report.current?.('stopped')
     setNeedsSetup(err instanceof PasskeySetupError)
     setError(err instanceof Error ? err.message : String(err))
     setPhase('error')

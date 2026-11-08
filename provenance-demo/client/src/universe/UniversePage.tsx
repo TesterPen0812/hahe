@@ -5,6 +5,7 @@ import '@fontsource-variable/newsreader/opsz.css'
 import '@fontsource-variable/newsreader/opsz-italic.css'
 import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
+import '@fontsource-variable/sora/index.css'
 import { api } from '../lib/api'
 import { latestWins, useWorld } from '../lib/world'
 import { UniverseEngine, type EngineState, type WorldView } from './engine'
@@ -14,6 +15,7 @@ import type { DoorId, DoorTints, RGB, WalkControls } from './contract'
 import { useGesture, useHands } from '../gesture/gestures'
 import { StoryCard } from './StoryCard'
 import { CaptureLog } from './CaptureLog'
+import { useCaptureProgress } from '../lib/captureProgress'
 import { ForgeReadout } from './ForgeReadout'
 import { StageTools } from './StageTools'
 import { loadTints, useForge, useMockCard, usePanels, useVerdictGate } from './stageHooks'
@@ -117,7 +119,20 @@ export default function UniversePage() {
   const cardUp = view === 'journey' && cardShowing(card?.strength)
   // The capture log, the readout and the verdict stay up until put away: a click on one, Esc for all,
   // the next photo (log) or the next run (readout and verdict).
-  const panels = usePanels(feed.arrival, forgeRun?.id ?? null, state.walk.region, verdictOpen)
+  // The phone reports its capture step by step; the log shows it live until the photo arrives, then the
+  // verifier's checks follow on. A capture that started after the latest arrival is the one on stage.
+  const progress = useCaptureProgress()
+  const arrival = feed.arrival
+  const startedAt = progress ? Date.parse(progress.steps[0]?.at ?? '') : NaN
+  const liveCapture =
+    !progress ? null
+    : progress.itemId !== undefined && progress.itemId === arrival?.id ? progress          // landed: phone lines, then checks
+    : !arrival || startedAt > Date.parse(arrival.createdAt) ? progress                     // still on its way
+    : null                                                                                 // an older capture
+  const logItem = liveCapture && liveCapture.itemId !== arrival?.id ? null : arrival
+  // The log opens when a capture starts, and again when its photo lands (so the verdict is seen).
+  const logKey = liveCapture ? `${liveCapture.session}:${logItem ? 'landed' : 'live'}` : arrival?.id ?? null
+  const panels = usePanels(logKey, forgeRun?.id ?? null, state.walk.region, verdictOpen)
   const { close: closePanel } = panels
   const verdict = panels.up.verdict && !cardUp
   // A failed run leaves no words on stage: its readout fades and the run is put away.
@@ -289,7 +304,7 @@ export default function UniversePage() {
       </header>
 
       <div className="uv-story" hidden={!journey} onWheel={onStoryWheel}>
-        <CaptureLog item={feed.arrival} open={panels.up.log} forging={panels.up.readout} onClose={() => closePanel('log')} />
+        <CaptureLog item={logItem} live={liveCapture} open={panels.up.log} forging={panels.up.readout} onClose={() => closePanel('log')} />
         <ForgeReadout
           run={forgeRun} readout={panels.up.readout} verdict={verdict}
           onCloseReadout={() => closePanel('readout')} onCloseVerdict={() => closePanel('verdict')}

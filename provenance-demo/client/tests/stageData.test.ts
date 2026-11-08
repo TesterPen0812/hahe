@@ -6,7 +6,7 @@ import { makeWorld, sha256Hex, todayWorld, verifyItem, type ItemSummary, type Ma
 import { capture, legacyCapture, legacyTrustEntry, makeAuthority, makeLegacyCamera, makePasskey, makePersonhood, makePhone, photoFrom } from '../../scripts/lib/fake-phone.js'
 import { SCENES } from '../../scripts/lib/png.js'
 import { FakeLog } from '../../scripts/lib/fake-log.js'
-import { captureSteps, loggedAfter } from '../src/universe/stageData'
+import { captureSteps, loggedAfter, phoneSteps } from '../src/universe/stageData'
 import { partsFromVerification, toForgeryArrival, toLiveArrival } from '../src/universe/sealParts'
 
 const today = todayWorld()
@@ -106,4 +106,21 @@ test('the log line reads as a delay after receipt, or its own clock when they ar
   assert.equal(loggedAfter('2026-11-08T10:00:00.000Z', '2026-11-08T10:00:02.400Z'), '+2.4 s')
   assert.match(loggedAfter('2026-11-08T10:00:00.000Z', '2026-11-08T10:09:00.000Z'), /^\d\d:\d\d:\d\d$/)
   assert.match(loggedAfter('2026-11-08T10:00:00.000Z', '2026-11-08T09:59:00.000Z'), /^\d\d:\d\d:\d\d$/)
+})
+
+test('the phone’s live steps: one line per reported step, in the order reported', () => {
+  const at = '2026-11-08T10:00:00.000Z'
+  const steps = phoneSteps({ steps: [
+    { step: 'taken', at }, { step: 'hashed', at, detail: 'b2d15eb632bf' }, { step: 'signed', at },
+    { step: 'faceid', at }, { step: 'sending', at }, { step: 'logged', at, detail: '#48' },
+  ] })
+  assert.deepEqual(steps.map(s => s.key), ['ph-taken', 'ph-hashed', 'ph-signed', 'ph-faceid', 'ph-sending', 'ph-logged'])
+  assert.equal(steps[1].detail, 'b2d15eb632bf…')
+  assert.deepEqual(steps[2].parts?.map(p => p.alg), ['Ed25519', 'ML-DSA-65'])
+  assert.equal(steps[5].detail, '#48')
+  // a cancelled Face ID shows as stopped, never as a seal
+  const stopped = phoneSteps({ steps: [{ step: 'taken', at }, { step: 'stopped', at }] })
+  assert.deepEqual(stopped.map(s => [s.key, s.tone]), [['ph-taken', 'info'], ['ph-stopped', 'warn']])
+  // unknown steps are ignored
+  assert.equal(phoneSteps({ steps: [{ step: 'nonsense', at }] }).length, 0)
 })

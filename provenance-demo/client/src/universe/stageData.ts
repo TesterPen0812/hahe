@@ -112,6 +112,23 @@ export function captureSteps(item: ItemSummary): CaptureStep[] {
   return steps
 }
 
+/** The phone's own steps, shown live while the photo is taken and sealed, before it arrives. */
+export function phoneSteps(p: { steps: { step: string; at: string; detail?: string }[] }): CaptureStep[] {
+  const hybrid: StepPart[] = [{ alg: 'Ed25519', ok: true, broken: false }, { alg: 'ML-DSA-65', ok: true, broken: false }]
+  const out: CaptureStep[] = []
+  for (const s of p.steps) {
+    const key = `ph-${s.step}`
+    if (s.step === 'taken') out.push({ key, tone: 'info', text: 'Photo taken', detail: clock(s.at) })
+    else if (s.step === 'hashed') out.push({ key, tone: 'ok', text: 'Exact bytes hashed', detail: s.detail ? `${s.detail}…` : 'SHA-256' })
+    else if (s.step === 'signed') out.push({ key, tone: 'ok', text: 'Signed on the phone', parts: hybrid })
+    else if (s.step === 'faceid') out.push({ key, tone: 'ok', text: 'Face ID: a person approved it' })
+    else if (s.step === 'sending') out.push({ key, tone: 'info', text: 'Sending' })
+    else if (s.step === 'logged') out.push({ key, tone: 'ok', text: 'Received and logged', detail: s.detail })
+    else if (s.step === 'stopped') out.push({ key, tone: 'warn', text: 'Stopped on the phone' })
+  }
+  return out
+}
+
 // ── story cards: everything follows where the camera is, nothing follows the clock ──
 
 const clamp01 = (x: number) => Math.min(1, Math.max(0, x))

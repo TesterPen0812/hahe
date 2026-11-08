@@ -2,6 +2,8 @@
    Two families: Newsreader (display, optical sizes) for words, IBM Plex Mono for evidence. */
 .uv {
   --display: "Newsreader Variable", "Iowan Old Style", Georgia, serif;
+  /* the centred story words: soft, geometric, a little from the future */
+  --story: "Sora Variable", "Avenir Next", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --ink: #f2f0ea;
   --dim: rgba(242, 240, 234, 0.62);
@@ -69,16 +71,34 @@
 }
 .uv-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .uv-card h2 {
-  margin: 0; font: 340 clamp(52px, 7.4vw, 132px)/0.98 var(--display);
-  letter-spacing: -0.028em; text-wrap: balance; color: #f6f3ec;
+  margin: 0; font: 300 clamp(46px, 6.6vw, 118px)/1.04 var(--story);
+  letter-spacing: -0.035em; text-wrap: balance; color: #f6f3ec;
 }
 .uv-card h2 .nw { white-space: nowrap; }
 .uv-card p {
-  margin: 0.55em 0 0; font: italic 300 clamp(21px, 2.3vw, 38px)/1.2 var(--display);
-  letter-spacing: -0.005em; color: rgba(246, 243, 236, 0.78); text-wrap: balance;
+  margin: 0.7em 0 0; font: 250 clamp(19px, 2.05vw, 34px)/1.3 var(--story);
+  letter-spacing: -0.012em; color: rgba(246, 243, 236, 0.78); text-wrap: balance;
 }
 .uv-card-qday h2 { color: #fbe6dc; }
-.uv-card-end p { color: #f6f3ec; font-style: italic; }
+.uv-card-end p { color: #f6f3ec; }
+/* While the words resolve out of glyphs their colour channels sit apart, closing up as they settle
+   (--card-glitch follows the decode, so it is positional like everything else on the card)… */
+.uv-card h2, .uv-card p {
+  --g: var(--card-glitch, 0);
+  text-shadow: calc(var(--g) * 0.05em) 0 rgba(255, 70, 120, calc(var(--g) * 0.7)), calc(var(--g) * -0.05em) 0 rgba(80, 230, 255, calc(var(--g) * 0.7));
+}
+/* …and the moment they come in, a short glitch: slices jump sideways, channels split, then it settles. */
+.uv-card.in h2 { animation: uv-glitch .46s backwards; }
+.uv-card.in p { animation: uv-glitch .46s .09s backwards; }
+@keyframes uv-glitch {
+  0%   { clip-path: inset(14% 0 56% 0); transform: translateX(-0.05em); text-shadow: 0.09em 0 rgba(255, 70, 120, .85), -0.09em 0 rgba(80, 230, 255, .85); animation-timing-function: steps(1, end); }
+  12%  { clip-path: inset(60% 0 6% 0); transform: translateX(0.06em); animation-timing-function: steps(1, end); }
+  24%  { clip-path: inset(0 0 68% 0); transform: translateX(-0.03em); text-shadow: -0.07em 0 rgba(255, 70, 120, .8), 0.07em 0 rgba(80, 230, 255, .8); animation-timing-function: steps(1, end); }
+  36%  { clip-path: inset(38% 0 28% 0); transform: translateX(0.035em); animation-timing-function: steps(1, end); }
+  48%  { clip-path: inset(0); transform: translateX(-0.015em); text-shadow: 0.035em 0 rgba(255, 70, 120, .6), -0.035em 0 rgba(80, 230, 255, .6); animation-timing-function: steps(1, end); }
+  62%  { clip-path: inset(0); transform: translateX(0.008em); text-shadow: -0.015em 0 rgba(255, 70, 120, .4), 0.015em 0 rgba(80, 230, 255, .4); }
+  100% { clip-path: inset(0); transform: none; }
+}
 /* While a card is being read, the corner panels step back. (The verdict waits for the card in UniversePage.) */
 .uv:has(.uv-card.in) .uv-log, .uv:has(.uv-card.in) .uv-forge { opacity: 0.25; }
 
@@ -110,6 +130,11 @@
 .uv-log li.t-warn { --tone: var(--warn); }
 .uv-log li.t-fail { --tone: var(--fail); }
 .uv-log li.in { max-height: 52px; opacity: 1; transform: none; padding-top: 3px; padding-bottom: 3px; animation: uv-land 1.6s ease-out both; }
+/* the phone's own steps arrive one by one as it reports them: each one fades up as it mounts */
+.uv-log li.ph.in { animation: uv-ph-in .45s cubic-bezier(.2, .8, .2, 1) both, uv-land 1.6s ease-out both; }
+@keyframes uv-ph-in { from { opacity: 0; transform: translateY(5px) } to { opacity: 1; transform: none } }
+/* before the photo lands, a recording light stands where its thumbnail will be */
+.uv-log-rec { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; background: var(--ok); box-shadow: 0 0 12px rgba(166, 236, 198, 0.8); animation: uv-blink 1.4s ease-in-out infinite; }
 /* each line lands with a hairline and a wash in its own colour, which then settle back */
 .uv-log li::before {
   content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px; border-radius: 1px;
@@ -280,4 +305,5 @@
   .uv-log li.in, .uv-log li.in::before, .uv-forge .row::before, .uv-verdict { animation: none; }
   .uv-forge .row { animation: none; }
   .uv-card-text { transform: none; }
+  .uv-card.in h2, .uv-card.in p { animation: none; }
 }
