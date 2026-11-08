@@ -16,6 +16,7 @@ export interface NewItem {
   dHash?: string | null;     // used when there is no manifest
   parentId?: string | null;
   createdAt?: string;        // seed only: backdate items
+  logAt?: string;            // seed only: stamp the log entry with this time (a date after Post-Quantum Day = no proof from before it)
 }
 
 /**
@@ -37,7 +38,7 @@ export async function createItem(input: NewItem): Promise<ItemSummary> {
   if (manifest) {
     const pre = await verifyItem(bytes, manifest, trustList(), null, getWorld(), { naive: true });
     const validApartFromLog = pre.checks.every((c) => c.pass || c.name === 'Logged');
-    if (validApartFromLog) appendEntry(hashObject(manifest), id);
+    if (validApartFromLog) appendEntry(hashObject(manifest), id, input.logAt);
   }
   return toSummary(row);
 }

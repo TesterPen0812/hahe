@@ -6,8 +6,9 @@ const secs = (ms: number) => `${(ms / 1000).toFixed(1)} s`
 /**
  * The live key break, as a terminal printing onto the scene: n, the walk to its factors, p × q, the
  * rebuilt private key, the signature, the upload. Every line stays until the readout is put away (a
- * click on it, Esc, B, or the next run). Once the forged photo has landed (`verdict`), two words come up
- * either side of it (Naive · Fooled, Ours · Rejected) and stay until they are put away too.
+ * click on it, Esc, B, or the next run). Once the forged photo has landed (`verdict`), two short lines
+ * come up above it in the story's voice ("A naive verifier: fooled." / "Ours: rejected.") and stay until
+ * they are put away too.
  * A failed run just fades: no words on stage.
  */
 export function ForgeReadout({ run, readout, verdict, onCloseReadout, onCloseVerdict }: {
@@ -54,9 +55,9 @@ export function ForgeReadout({ run, readout, verdict, onCloseReadout, onCloseVer
         </dl>
       </section>
       {r && verdict && (
-        <div className="uv-verdict" aria-live="polite">
-          <p className={naiveFooled ? 'bad' : 'good'} onClick={onCloseVerdict}><span>Naive</span>{naiveFooled ? 'Fooled' : 'Not fooled'}</p>
-          <p className={oursRejected ? 'good' : 'bad'} onClick={onCloseVerdict}><span>Ours</span>{oursRejected ? 'Rejected' : 'Accepted'}</p>
+        <div className="uv-verdict" aria-live="polite" onClick={onCloseVerdict}>
+          <p>A naive verifier: <b className={naiveFooled ? 'bad' : 'good'}>{naiveFooled ? 'fooled.' : 'not fooled.'}</b></p>
+          <p>Ours: <b className={oursRejected ? 'good' : 'bad'}>{oursRejected ? 'rejected.' : 'accepted.'}</b></p>
         </div>
       )}
     </>
