@@ -11,6 +11,8 @@ import UploadPage from './pages/UploadPage'
 
 // three.js only loads on the landing page, so the phone's capture page stays light.
 const UniversePage = lazy(() => import('./universe/UniversePage'))
+// Webcam hand tracking loads only on its own page.
+const GestureTestPage = lazy(() => import('./gesture/GestureTestPage'))
 
 /** The universe landing page draws its own chrome. */
 function Nav() {
@@ -42,6 +44,7 @@ export default function App() {
         <Route path="/attack" element={<AttackerPage />} />
         <Route path="/split" element={<SplitScreenPage />} />
         <Route path="/passkey-test" element={<PasskeyTestPage />} />
+        <Route path="/gesture" element={<Suspense fallback={null}><GestureTestPage /></Suspense>} />
       </Routes>
     </BrowserRouter>
   )
