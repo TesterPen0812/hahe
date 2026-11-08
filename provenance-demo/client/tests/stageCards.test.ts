@@ -92,3 +92,50 @@ test('world writes: one at a time, newest waiting wins, a failure never blocks t
   await write('today')
   assert.deepEqual(sent, ['today-stalled', 'q-day', 'boom', 'today'])
 })
+
+// ── sticky panels: open until put away; a new arrival or run opens its panels again ──
+import { B_QUIET_MS, breakKeyAction, closePanels, noPanels, panelsUp, syncPanels, type BreakKeyInput } from '../src/universe/stageData'
+
+test('panels stay up with nothing but a dismissal to close them', () => {
+  const photo = { id: 'a' }
+  let s = syncPanels(noPanels<object, number>(), photo, 1)
+  assert.deepEqual(panelsUp(s, false), { log: true, readout: true, verdict: false })
+  assert.deepEqual(panelsUp(s, true), { log: true, readout: true, verdict: true })
+  // the same arrival and run on later renders change nothing
+  assert.equal(syncPanels(s, photo, 1), s)
+  s = closePanels(s, 'readout')
+  assert.deepEqual(panelsUp(s, true), { log: true, readout: false, verdict: true })
+  assert.equal(closePanels(s, 'readout'), s)
+  s = closePanels(s, 'verdict')
+  assert.deepEqual(panelsUp(s, true), { log: true, readout: false, verdict: false })
+  s = closePanels(s, 'log')
+  assert.deepEqual(panelsUp(s, true), { log: false, readout: false, verdict: false })
+})
+
+test('Esc closes everything; a new photo reopens the log, a new run its readout and verdict', () => {
+  const first = { id: 'a' }
+  let s = closePanels(syncPanels(noPanels<object, number>(), first, 1), 'all')
+  assert.deepEqual(panelsUp(s, true), { log: false, readout: false, verdict: false })
+  // the same photo arriving again is a new object: it replaces the log
+  s = syncPanels(s, { ...first }, 1)
+  assert.deepEqual(panelsUp(s, true), { log: true, readout: false, verdict: false })
+  s = syncPanels(s, s.log, 2)
+  assert.deepEqual(panelsUp(s, false), { log: true, readout: true, verdict: false })
+  assert.deepEqual(panelsUp(s, true), { log: true, readout: true, verdict: true })
+  // a run put away (null) shows nothing
+  assert.deepEqual(panelsUp(syncPanels(s, s.log, null), true), { log: true, readout: false, verdict: false })
+})
+
+test('B: ignored mid-run and while the forgery lands, puts the verdict away, else starts after the quiet spell', () => {
+  const base: BreakKeyInput = { running: false, hasRun: false, settling: false, verdictUp: false, qday: true, sinceDismiss: 1e9 }
+  assert.equal(breakKeyAction({ ...base, running: true, hasRun: true }), 'none')
+  assert.equal(breakKeyAction({ ...base, hasRun: true, settling: true }), 'none')
+  assert.equal(breakKeyAction({ ...base, hasRun: true, verdictUp: true }), 'dismiss')
+  assert.equal(breakKeyAction({ ...base, hasRun: true, verdictUp: true, sinceDismiss: 0 }), 'dismiss')
+  assert.equal(breakKeyAction(base), 'start')
+  // the readout left on stage is replaced by a new run
+  assert.equal(breakKeyAction({ ...base, hasRun: true }), 'start')
+  assert.equal(breakKeyAction({ ...base, sinceDismiss: B_QUIET_MS - 1 }), 'none')
+  assert.equal(breakKeyAction({ ...base, qday: false }), 'none')
+  assert.equal(breakKeyAction({ ...base, qday: false, hasRun: true }), 'dismiss')
+})
