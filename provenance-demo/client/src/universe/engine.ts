@@ -21,7 +21,7 @@ import { ParticleSimulation } from './particles'
 import { POINTER_REACH, WAKE_INTERVAL, dragDistance, dragVelocity, releasedVelocity, wheelDistance } from './input'
 import { driveVelocity, type HandControl } from '../gesture/handControl'
 import { doorCaption, type DoorCaption } from './doorCaption'
-import { CARD_ZONE, Warp, cardAt, cardZone, glideSeconds, slowFactor, type Zone } from './walk'
+import { CARD_ZONE, CROSSING_FROM, CROSSING_TO, Warp, cardAt, cardZone, crossing, glideSeconds, slowFactor, type Zone } from './walk'
 import type {
   DoorId, DoorTints, ForgeryArrival, LiveArrival, Region, WalkControls, WalkState,
 } from './contract'
@@ -84,11 +84,12 @@ const BREAK_AFTER = 11
 const END_AFTER = 11
 const PRISM_TAIL = 3       // the walk ends this far before the Prism path's end
 const DOOR_TINTS: DoorTints = { door1: [0.55, 0.75, 1.0], door2: [1.0, 0.38, 0.22] }
-// The character crossing at door 2: full within ASCII_FULL route units of the door, gone by ASCII_REACH.
-const ASCII_FULL = 0.7
-const ASCII_REACH = 5
+// The character crossing at door 2 (walk.ts `crossing`): blue characters, the door's own tint at the
+// threshold, violet after.
 const ASCII_BLUE = new THREE.Vector3(0.5, 0.68, 1.0)
 const ASCII_VIOLET = new THREE.Vector3(0.74, 0.46, 1.0)
+/** Seconds the walk may sit still inside the crossing before it eases out to the nearer side. */
+const CROSSING_IDLE = 0.6
 const DOOR_CAPTIONS: Partial<Record<DoorId, string>> = { door2: 'Post-Quantum Day · 2035' }
 
 const EYE = 1.15
@@ -186,6 +187,10 @@ export class UniverseEngine implements WalkControls {
   // autopilot: an eased walk to a story stop, through the warped route
   private glide: { index: number; key: string; from: number; to: number; t0: number; dur: number } | null = null
   private glideClock = 0
+  private crossingIdle = 0
+  /** Visual QA can raise this to stand still inside the crossing. */
+  crossingIdleLimit = CROSSING_IDLE
+  private lastDesired = 0
   private handLatch = false // a hand hold that already counted as "next" doesn't also drive
   private qdayAt = -1
   private flash = 0
@@ -645,7 +650,7 @@ export class UniverseEngine implements WalkControls {
     const hw = DOOR.width / 2
     const arch = insideTunnel(at.z, 0.35)
     const sur = doorSurround(inTunnel ? {
-      inside: arch, extent: [3.6, 4.4], count: lp ? 3200 : 8000, hug: 0.8, size: 0.017, seed: 7100, name: 'door 1 foliage',
+      inside: arch, extent: [3.6, 4.4], count: lp ? 3200 : 8000, hug: 0.8, size: 0.017, seed: 7100, name: 'door 1 foliage', overhang: 0.42,
       color: (b, tone) => [b * (0.08 + tone * 0.6), b * (0.23 + tone * 0.77), b * (0.018 + tone * 0.1)],
     } : {
       inside: (x, y) => y >= 0 && Math.hypot(Math.max(Math.abs(x) - hw, 0), Math.max(y - DOOR.height, 0)) < 1.05,
@@ -988,6 +993,15 @@ export class UniverseEngine implements WalkControls {
     const travelStep = !this.down && !this.glide && Math.abs(this.v) >= 0.01 ? this.v * dt * this.slow() : 0
     this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + travelStep, 0, this.maxRoute)
     if (this.target === null && !this.down && !fwd && !bwd && !hand?.active) this.v *= Math.exp(-dt * 3.2)
+    // Never at rest half-dissolved: left still inside the character crossing, the walk eases out to
+    // whichever side is nearer (the blue world, or just inside the Prism).
+    const x = this.desiredRoute - this.stages[2].start
+    const idle = !this.glide && this.target === null && !this.down && !fwd && !bwd && !hand?.active && Math.abs(this.v) < 0.3
+    if (idle && x > CROSSING_FROM && x < CROSSING_TO && this.desiredRoute === this.lastDesired) {
+      this.crossingIdle += realDt
+      if (this.crossingIdle > this.crossingIdleLimit) this.target = this.stages[2].start + (x < -2 ? CROSSING_FROM - 0.3 : CROSSING_TO + 0.3)
+    } else this.crossingIdle = 0
+    this.lastDesired = this.desiredRoute
     this.r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
     if (this.r < 0) { this.r = 0; this.v = Math.max(0, this.v) }
   }
@@ -1287,12 +1301,17 @@ export class UniverseEngine implements WalkControls {
 
     const f = this.finish.uniforms
     f.uTime.value = t
-    // Crossing into Post-Quantum Day the picture breaks into characters and the Prism resolves out
-    // of them: a bell on route distance around door 2 (about 1.2 s at glide pace), so walking back
-    // plays it in reverse.
-    const cross = this.showcase ? 99 : this.r - this.stages[2].start
-    f.uAscii.value = 1 - THREE.MathUtils.smoothstep(Math.abs(cross), ASCII_FULL, ASCII_REACH)
-    ;(f.uAsciiTint.value as THREE.Vector3).lerpVectors(ASCII_BLUE, ASCII_VIOLET, THREE.MathUtils.smoothstep(cross, -1.2, 1.2))
+    // Crossing into Post-Quantum Day the blue world breaks into characters, they scramble at the
+    // threshold and resolve into the Prism: all on route distance, so walking back reverses it.
+    const c = crossing(this.showcase ? 99 : this.r - this.stages[2].start)
+    f.uAscii.value = c.density
+    f.uScramble.value = c.scramble
+    const tint = f.uAsciiTint.value as THREE.Vector3
+    const d2 = this.door('door2')?.tint ?? DOOR_TINTS.door2
+    // the door's colour at the threshold, softened toward the blue it breaks from and the violet it becomes
+    this.tmpTint.set(d2[0], d2[1], d2[2]).lerp(c.shift < 0.5 ? ASCII_BLUE : ASCII_VIOLET, 0.45)
+    if (c.shift < 0.5) tint.lerpVectors(ASCII_BLUE, this.tmpTint, c.scramble)
+    else tint.lerpVectors(ASCII_VIOLET, this.tmpTint, c.scramble)
     this.flash = Math.max(0, this.flash - dt * 1.8)
     f.uFlash.value = this.flash * 0.8
     f.uZoom.value = this.zoom * this.zoom
@@ -1305,6 +1324,7 @@ export class UniverseEngine implements WalkControls {
     }
   }
 
+  private tmpTint = new THREE.Vector3()
   /** Focus the lens on what the visitor is walking toward: the path ahead, then the door. */
   private tmpV = new THREE.Vector3()
   private updateLens(dt: number) {

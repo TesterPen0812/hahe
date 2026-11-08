@@ -98,3 +98,21 @@ export const GLIDE_PACE = 6.5
 export function glideSeconds(dw: number) {
   return Math.max(1.2, Math.min(16, Math.abs(dw) / GLIDE_PACE))
 }
+
+/**
+ * The character crossing at the Post-Quantum Day door, by route distance x from the door (negative
+ * before it). Walking up, the blue world breaks into characters, sparse and then dense (`density`);
+ * at the threshold they scramble like a cipher being cracked (`scramble`); through it they turn
+ * violet (`shift` 0 → 1) and resolve back into the Prism. All position, so walking back reverses it.
+ * It is exactly 0 outside [CROSSING_FROM, CROSSING_TO], where every stop and slow-zone floor lies,
+ * and the engine never lets the walk come to rest inside it.
+ */
+export const CROSSING_FROM = -8
+export const CROSSING_TO = 4.5
+export function crossing(x: number) {
+  const ss = (a: number, b: number, v: number) => smoothstep(a, b, v)
+  const density = x < 0 ? Math.pow(ss(CROSSING_FROM, -0.4, x), 1.6) : 1 - ss(0.4, CROSSING_TO, x)
+  const scramble = 1 - ss(0, 1.6, Math.abs(x))
+  const shift = ss(-1.2, 2.2, x)
+  return { density, scramble, shift }
+}

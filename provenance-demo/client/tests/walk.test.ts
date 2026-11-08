@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { CARD_GAP, CARD_ZONE, SLOW, Warp, cardAt, cardZone, glideSeconds, slowFactor, type Zone } from '../src/universe/walk.ts'
+import { CARD_GAP, CARD_ZONE, CROSSING_FROM, CROSSING_TO, SLOW, Warp, cardAt, cardZone, crossing, glideSeconds, slowFactor, type Zone } from '../src/universe/walk.ts'
 
 const zones: Zone[] = [
   { at: 20, inner: 1.5, outer: 4, card: 'today' },
@@ -91,4 +91,22 @@ test('glides are never instant and never a crawl', () => {
   assert.equal(glideSeconds(0.1), 1.2)
   assert.equal(glideSeconds(1000), 16)
   assert.equal(glideSeconds(-65), 10)
+})
+
+test('the character crossing builds toward door 2, scrambles at it, resolves after, and is 0 where the walk rests', () => {
+  assert.equal(crossing(CROSSING_FROM).density, 0)
+  assert.equal(crossing(CROSSING_FROM - 3).density, 0)
+  assert.equal(crossing(CROSSING_TO).density, 0)
+  // sparse first, denser as the door nears
+  const d = [-7, -5, -3, -1].map(x => crossing(x).density)
+  for (let i = 1; i < d.length; i++) assert.ok(d[i] > d[i - 1])
+  assert.ok(d[0] < 0.05)
+  assert.equal(crossing(0).density, 1)
+  assert.equal(crossing(0).scramble, 1)
+  assert.equal(crossing(-2).scramble, 0)
+  assert.ok(crossing(-3).shift === 0 && crossing(3).shift === 1)
+  // nothing at the Q-Day stop (11 past the door) or anywhere on its slow zone's floor
+  const qday = cardZone(11, 'qday', CARD_ZONE.long)
+  for (let x = qday.at - qday.inner; x <= 11; x += 0.05) assert.equal(crossing(x).density, 0)
+  assert.ok(qday.at - qday.inner >= CROSSING_TO)
 })

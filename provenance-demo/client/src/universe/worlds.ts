@@ -410,8 +410,12 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = fa
       uTint: { value: new THREE.Color(...tint) },
       uSize: { value: new THREE.Vector2(DOOR.width, DOOR.height) },
     },
+    // its edges feather into the world round it, so it's drawn first among the see-through layers:
+    // the grains in front of it then lie over the view through, and the ones behind are hidden
+    transparent: true,
   })
   const content = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width, DOOR.height), contentMat)
+  content.renderOrder = -2
   content.position.y = DOOR.height / 2
   const shared = {
     uOpen: contentMat.uniforms.uOpen,
@@ -445,8 +449,27 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = fa
   const haloMat = new THREE.ShaderMaterial({
     vertexShader: portalVertex,
     fragmentShader: /* glsl */ `
-      uniform vec3 uTint; uniform vec2 uSize; uniform float uHalfWidth, uPresence, uOpen, uImpact, uFloor;
+      uniform vec3 uTint; uniform vec2 uSize; uniform float uHalfWidth, uPresence, uOpen, uImpact, uFloor, uTime;
+      uniform sampler2D uGlyphs;
       varying vec2 vUv;
+      float hash2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+      // Characters shimmering along the opening's edge, in the door's tint: a narrow band of cells
+      // just outside it, a few lit at a time, each flickering to another character now and then.
+      float edgeGlyphs(vec2 local, float d) {
+        if (d < -0.02 || d > 0.26) return 0.0;
+        vec2 grid = local / 0.11;
+        vec2 cell = floor(grid);
+        float seed = hash2(cell + 7.3);
+        float tick = floor(uTime * (0.7 + seed * 2.2) + seed * 13.0);
+        float lit = step(0.78, hash2(cell * 1.7 + tick * 0.37));
+        if (lit < 0.5) return 0.0;
+        float glyph = floor(hash2(cell + tick * 1.618) * ${GLYPH_COLUMNS * GLYPH_ROWS}.0);
+        vec2 g = vec2(mod(glyph, ${GLYPH_COLUMNS}.0), floor(glyph / ${GLYPH_COLUMNS}.0));
+        vec2 q = fract(grid);
+        float ink = textureLod(uGlyphs, vec2((g.x + q.x) / ${GLYPH_COLUMNS}.0, 1.0 - (g.y + 1.0 - q.y) / ${GLYPH_ROWS}.0), 1.5).r;
+        float flicker = 0.5 + 0.5 * sin(uTime * (3.0 + seed * 5.0) + seed * 40.0);
+        return ink * (0.35 + 0.65 * flicker) * (1.0 - smoothstep(0.08, 0.26, d));
+      }
       void main() {
         vec2 plane = uSize + vec2(${(margin * 2).toFixed(1)});
         vec2 local = (vUv - 0.5) * plane;
@@ -460,15 +483,22 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = fa
           if (local.y < 0.0) discard;
           vec2 d2 = abs(local - vec2(0.0, uSize.y * 0.5)) - vec2(uHalfWidth, uSize.y * 0.5);
           float d = length(max(d2, 0.0)) + min(max(d2.x, d2.y), 0.0);
-          // wide and faint, with a tighter warmth hugging the edge; nothing inside the opening
-          a = (exp(-max(d, 0.0) * 2.0) * 0.1 + exp(-max(d, 0.0) * 7.0) * 0.16) * smoothstep(-0.06, 0.02, d);
+          // wide and faint, no line along the edge; nothing inside the opening
+          a = exp(-max(d, 0.0) * 1.2) * 0.065 * smoothstep(0.0, 0.7, d);
         }
         a *= uPresence * (0.35 + 0.65 * smoothstep(0.0, 0.4, uOpen)) * (1.0 + uImpact * 0.8);
-        if (a < 0.002) discard;
-        gl_FragColor = vec4(uTint * a, a);
+        float chars = 0.0;
+        if (uFloor < 0.5) {
+          vec2 e = local - vec2(0.0, uSize.y * 0.5);
+          vec2 d2 = abs(e) - vec2(uHalfWidth, uSize.y * 0.5);
+          float d = length(max(d2, 0.0)) + min(max(d2.x, d2.y), 0.0);
+          chars = edgeGlyphs(local, d) * 0.55 * uPresence * smoothstep(0.05, 0.5, uOpen);
+        }
+        if (a + chars < 0.002) discard;
+        gl_FragColor = vec4(uTint * a + mix(uTint, vec3(1.0), 0.25) * chars, a);
       }
     `,
-    uniforms: { ...shared, uSize: { value: new THREE.Vector2(DOOR.width, DOOR.height) }, uFloor: { value: 0 } },
+    uniforms: { ...shared, uSize: { value: new THREE.Vector2(DOOR.width, DOOR.height) }, uFloor: { value: 0 }, uGlyphs: { value: glyphAtlas() } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   })
   const halo = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width + margin * 2, DOOR.height + margin * 2), haloMat)
@@ -502,6 +532,8 @@ export interface SurroundOptions {
   size: number
   seed: number
   name: string
+  /** How far grains reach in over the opening (world units at most), standing in front of it. */
+  overhang?: number
 }
 
 /** A grain of the surround: where the next world's colour has crept into it (0..1) and how bright. */
@@ -531,7 +563,7 @@ export function doorSurround(o: SurroundOptions): Surround {
     if (!o.inside(x, y)) continue
     const d = outside(x, y)
     // a ragged edge: grains reach a little way into the opening
-    const reach = 0.1 + 0.16 * fixed01(k, o.seed + 3) ** 2
+    const reach = 0.1 + (o.overhang ?? 0.16) * fixed01(k, o.seed + 3) ** 2
     if (d < -reach) continue
     // crowd the edges
     if (fixed01(k, o.seed + 4) > 0.22 + 0.78 * Math.exp(-Math.max(d, 0) / o.hug)) continue

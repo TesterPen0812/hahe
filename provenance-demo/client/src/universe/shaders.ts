@@ -165,7 +165,7 @@ const fieldPlacement = /* glsl */ `
         float across = mix(abs(dot(local, uAxis)), dot(local, uAxis), aPortal.z);
         float grain = 0.5 + 0.5 * portalNoise(vec3(across * 3.0, local.y * 3.0, 5.0));
         // the slab is grains, not a frame: its edge only glows bright as the closed slit, before it opens
-        vTwinkle = 0.04 + grain * 0.05 + edge * (0.16 + slit * 1.6) * (0.8 + uImpact * 0.6);
+        vTwinkle = 0.04 + grain * 0.05 + edge * (0.05 + slit * 1.7) * (0.8 + uImpact * 0.6);
       } else {
         float distance = aPortal.w;
         float width = uHalfWidth * (1.0 + distance * 0.35) + 0.02;
@@ -906,11 +906,11 @@ export const portalFragment = /* glsl */ `
     float shown = smoothstep(0.0, 0.25, uOpen);
     vec3 next = texture2D(uTex, clamp(pixel / uRes + wobble, 0.0, 1.0)).rgb;
     float slit = 1.0 - smoothstep(0.0, 0.35, uOpen);
-    // No glass rim: the view through darkens softly into the edge (the grains crowding round it
-    // and the glow outside hide where it stops), with only a breath of the door's colour inside it.
-    float feather = smoothstep(0.0, 0.16, edge);
-    vec3 inner = uTint * exp(-edge * 9.0) * (0.12 + uImpact * 0.4);
-    gl_FragColor = vec4(next * shown * feather * 0.85 + inner * shown + uTint * slit * 2.5, 1.0);
+    // The edge feathers into the world round it (alpha), with no tinted rim, so the opening has no
+    // hard frame: the grains crowding round it carry the eye across.
+    float feather = smoothstep(0.0, 0.3, edge);
+    float a = mix(feather, 1.0, slit);
+    gl_FragColor = vec4(next * shown * 0.85 + uTint * slit * 2.5 * (1.0 + uImpact * 0.4), a);
   }
 `
 
@@ -973,6 +973,7 @@ export const finishShader = {
     uFluid: { value: null },
     uFluidAmt: { value: 0 },
     uAscii: { value: 0 },
+    uScramble: { value: 0 },
     uAsciiTint: { value: new Vector3(0.55, 0.72, 1.0) },
     uCell: { value: 11 },
     uGlyphs: { value: null },
@@ -997,47 +998,61 @@ export const finishShader = {
     uniform vec2 uResolution;
     uniform float uFluidAmt;
     uniform float uAscii;        // 0..1: how far the picture has broken into characters
-    uniform vec3 uAsciiTint;     // the world the characters belong to (blue before, violet after)
+    uniform float uScramble;     // 0..1: at the threshold, the characters cycle like a cipher cracking
+    uniform vec3 uAsciiTint;     // the world the characters belong to (blue, the door's own tint, violet)
     uniform float uCell;         // character cell, in output pixels
     uniform sampler2D uGlyphs;
     varying vec2 vUv;
     float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
     float h1(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
 
-    // The picture as a dense grid of characters. Columns fall at their own pace, each character
-    // flickers to another now and then, and a bright head runs down every column with its trail
-    // above it, like the scene's own character rain. Each cell takes the colour and light of the
-    // picture beneath it, so the world breaks up into characters rather than under a filter.
-    vec3 asciiPicture(vec2 px, out float reveal) {
-      float column = floor(px.x / uCell);
-      float rate = 2.5 + 7.0 * h1(column + 3.0);                   // cells per second
-      float fall = uTime * rate + h1(column) * 40.0;
-      float rowF = px.y / uCell + fall;
+    // The world breaking into characters at the Post-Quantum Day door. The picture is a grid of
+    // cells; a cell gives way to a character once uAscii passes its own threshold, and bright cells
+    // (the particles, the door's light) give way first and come back last, so the world goes to
+    // characters from its lights inward and resolves back into its lights. Each character takes the
+    // colour and light of the picture under it, so the world shows through. uScramble cycles them
+    // fast, a cipher being cracked, and sets them falling.
+    vec3 asciiPicture(vec2 px, out float on, out float hole) {
+      // a larger cell than the screen's grain, so each one reads as a character
+      float size = uCell * 1.45;
+      float column = floor(px.x / size);
+      // falling only while they scramble: before and after, the characters hold their cells
+      float fall = uScramble * uScramble * (uTime * (3.0 + 6.0 * h1(column + 3.0)) + h1(column) * 40.0);
+      float rowF = px.y / size + fall;
       float row = floor(rowF);
       vec2 cell = vec2(column, row);
-      vec2 local = vec2(fract(px.x / uCell), fract(rowF));
-      // the picture under this character, at its centre as it falls past
-      vec2 centre = vec2(column + 0.5, row + 0.5 - fall) * uCell / uResolution;
-      vec3 under = texture2D(tDiffuse, clamp(centre, 0.0, 1.0)).rgb;
-      float lum = dot(under, vec3(0.299, 0.587, 0.114));
+      vec2 local = vec2(fract(px.x / size), fract(rowF));
+      // the picture under this character: its centre and a corner, so a single bright grain counts
+      vec2 centre = vec2(column + 0.5, row + 0.5 - fall) * size / uResolution;
+      vec2 corner = centre + vec2(0.3, 0.3) * size / uResolution;
+      vec3 a = textureLod(tDiffuse, clamp(centre, 0.0, 1.0), 0.0).rgb;
+      vec3 b = textureLod(tDiffuse, clamp(corner, 0.0, 1.0), 0.0).rgb;
+      vec3 under = max(a, b);
+      float lum = max(dot(under, vec3(0.299, 0.587, 0.114)), 0.0);
       float seed = rand(cell * 0.173 + 0.31);
-      float tick = floor(uTime * (1.5 + 6.0 * seed) + seed * 17.0);
+      // a cell's threshold: random, lowered for bright cells so the lights go first
+      float key = rand(vec2(column, row) * 0.71 + 0.13) * (1.0 - 0.6 * clamp(lum * 3.0, 0.0, 1.0)) * 0.92;
+      on = smoothstep(key, key + 0.08, uAscii * 1.02);
+      hole = 0.0;
+      if (on < 0.001) return vec3(0.0);
+      // the light in a cell that has given way gathers into its character: a soft, round hollow
+      vec2 l2 = local - 0.5;
+      hole = on * (1.0 - smoothstep(0.18, 0.62, length(l2))) * 0.8;
+      float rate = mix(0.6 + 1.6 * seed, 18.0 + 14.0 * seed, uScramble);
+      float tick = floor(uTime * rate + seed * 17.0);
       float glyph = floor(rand(cell + tick * 0.618) * ${GLYPH_COUNT}.0);
       vec2 g = vec2(mod(glyph, ${GLYPH_COLUMNS}.0), floor(glyph / ${GLYPH_COLUMNS}.0));
       vec2 q = (local - 0.5) * 1.12 + 0.5;
       float ink = 0.0;
       if (q.x > 0.0 && q.x < 1.0 && q.y > 0.0 && q.y < 1.0)
         // one fixed level of detail: the cell edges' jump in uv would otherwise pick a blurry one
-        ink = textureLod(uGlyphs, vec2((g.x + q.x) / ${GLYPH_COLUMNS}.0, 1.0 - (g.y + 1.0 - q.y) / ${GLYPH_ROWS}.0), log2(64.0 / uCell)).r;
-      // a head falling down each column, its trail fading out above it
-      float u = fract(vUv.y * (0.9 + h1(column + 9.0) * 0.8) + uTime * (0.35 + 0.5 * h1(column + 5.0)) + h1(column + 1.0));
-      float trail = pow(1.0 - u, 3.0);
-      float head = smoothstep(0.035, 0.0, u);
+        ink = textureLod(uGlyphs, vec2((g.x + q.x) / ${GLYPH_COLUMNS}.0, 1.0 - (g.y + 1.0 - q.y) / ${GLYPH_ROWS}.0), log2(64.0 / size)).r;
       vec3 hue = under / max(max(under.r, max(under.g, under.b)), 0.05);
-      vec3 colour = mix(hue, uAsciiTint, 0.7);
-      float light = (0.42 + 0.58 * trail) * (0.3 + sqrt(lum) * 3.2);
-      // cells give way one by one, scattered, the upper rows a moment before the lower
-      reveal = smoothstep(0.0, 0.22, uAscii * 1.3 - rand(vec2(column, floor(px.y / uCell)) * 0.71) * 0.7 - (1.0 - vUv.y) * 0.3 + 0.15);
+      vec3 colour = mix(hue, uAsciiTint, 0.55 + 0.35 * uScramble);
+      float light = (0.1 + 0.75 * uScramble) + sqrt(lum) * 2.4;
+      // as they scramble a bright head runs down each column
+      float u = fract(vUv.y * (0.9 + h1(column + 9.0) * 0.8) + uTime * (0.35 + 0.5 * h1(column + 5.0)) + h1(column + 1.0));
+      float head = smoothstep(0.035, 0.0, u) * uScramble;
       return (colour * light + vec3(0.85, 0.9, 1.0) * head * (0.4 + lum)) * ink;
     }
     float surfaceHeight(vec2 uv) {
@@ -1073,11 +1088,12 @@ export const finishShader = {
         col = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
       }
       if (uAscii > 0.001) {
-        // the picture sinks away evenly while its characters light up one by one over it
-        float reveal;
-        vec3 chars = asciiPicture(vUv * uResolution, reveal);
-        float k = smoothstep(0.0, 1.0, uAscii);
-        col = col * (1.0 - 0.94 * k) + chars * reveal;
+        // the world dims evenly as its characters light up over it (no per-cell blocks); at the
+        // threshold it sinks under the scramble
+        float on, hole;
+        vec3 chars = asciiPicture(vUv * uResolution, on, hole);
+        col *= (1.0 - hole) * (1.0 - 0.3 * uAscii - 0.3 * uScramble);
+        col += chars * on;
       }
       col *= max(0.0, 1.0 - dot(c, c) * uVignette * 2.0);
       col = mix(col, uFlashColor, uFlash);

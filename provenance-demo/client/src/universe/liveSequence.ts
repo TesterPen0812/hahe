@@ -69,7 +69,8 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
   const place = (i: number, height: number, at = o.path.at(distanceOf(i))) => {
     const facing = spot.facing.copy(at.tangent).setY(0).normalize().negate()
     const pos = spot.pos.copy(at.position)
-    pos.y = o.path.ground(pos.x, pos.z) + height / 2 + 0.3
+    // high enough that the path's glow runs under the frame, not into its lower edge
+    pos.y = o.path.ground(pos.x, pos.z) + height / 2 + 0.62
     spot.side.set(facing.z, 0, -facing.x).multiplyScalar(i % 2 === 0 ? 1 : -1)
     return spot
   }
