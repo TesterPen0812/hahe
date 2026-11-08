@@ -18,7 +18,7 @@ import { createLiveSequence, LIVE_VIEW, type LiveFrames } from './liveSequence'
 import { endingBackground, stepEnding } from './ending'
 import { Fluid } from './fluid'
 import { TUNNEL_GLYPH_GREEN, buildGreenWorld } from './greenWorld'
-import { PQ_GROVE, buildGroveWorld } from './groveWorld'
+import { END_LIGHT_PAST, PQ_GROVE, buildGroveWorld } from './groveWorld'
 import { buildPrismWorld } from './prismWorld'
 import { curveStream } from './scenePath'
 import { ParticleSimulation } from './particles'
@@ -102,18 +102,16 @@ const END_AFTER = 11        // the end card's zone must clear the break stop (wa
 const WALK_PAST_END = 7.5    // the walk goes on this far past the end stop, short of the end light
 const PQ_TAIL = 3          // the walk ends this far before the grove path's end
 // The character crossing at door 2 (walk.ts `crossing`): the blue world's characters turn the green of
-// the tunnel's character strands as they close into the wall, and stay green as it clears.
+// the grove's character strands as they close into the wall, and stay green as it clears.
 const ASCII_BLUE = new THREE.Vector3(0.5, 0.68, 1.0)
 const ASCII_GREEN = new THREE.Vector3(...TUNNEL_GLYPH_GREEN)
-// Each door wears the colour of what it leads to: the cool blue of Today, the green of the tunnel's characters.
+// Each door wears the colour of what it leads to: the cool blue of Today, the green of the grove's characters.
 const DOOR_TINTS: DoorTints = { door1: [ASCII_BLUE.x, ASCII_BLUE.y, ASCII_BLUE.z], door2: [...TUNNEL_GLYPH_GREEN] }
 /** How fast the walk answers its input and settles when the input stops (a time constant, seconds). */
 const WALK_RESPONSE = 0.035
 const CAMERA_FOLLOW = 0.05
 /** Wheel or drag input this recent still counts as pushing forward against the hold (ms). */
 const PUSH_WINDOW = 150
-/** How far along the path ahead the ending's last light is. */
-const ENDING_LOOK = 22
 /** Seconds the walk may sit still inside the crossing before it eases out to the nearer side. */
 const CROSSING_IDLE = 0.6
 const DOOR_CAPTIONS: Partial<Record<DoorId, string>> = { door2: 'Post-Quantum Day · 2035' }
@@ -433,7 +431,7 @@ export class UniverseEngine implements WalkControls {
 
   /**
    * A phone photo, as the server judged it: it lands at the station in the blue world (the same id again,
-   * re-judged, changes its seal in place) and joins the after gallery in the tunnel.
+   * re-judged, changes its seal in place) and joins the after gallery in the grove.
    */
   showLive(a: LiveArrival) {
     this.live.arrive(a)
@@ -603,10 +601,11 @@ export class UniverseEngine implements WalkControls {
     this.refreshWalk()
     if (!photos.length) return
     // the first prints hang well ahead of the Q-Day stop, so none is cut off at the screen's edge there;
-    // its prints are small and hang just aside of the path, at the edge of the trees
+    // they hang just aside of the path, at the edge of the trees
     const to = GALLERY_FROM + Math.max(1, photos.length - 1) * GALLERY_GAP
     const gallery = buildGallery(photos, pq.path, GALLERY_FROM / pq.len, to / pq.len, 1, {
-      ground: pq.ground, look: CARD_LOOKS.green, width: 1.4, offset: 1.2, lift: 1.42, gap: GALLERY_GAP - 0.5,
+      // the grove is open, with no wall behind them: larger than the tunnel's, and a step further off the path
+      ground: pq.ground, look: CARD_LOOKS.green, width: 2.0, offset: 1.75, lift: 1.55, gap: GALLERY_GAP - 0.5,
     })
     this.galleries.push({ stage: 2, gallery })
     pq.scene.add(gallery.group)
@@ -1179,8 +1178,9 @@ export class UniverseEngine implements WalkControls {
     }
     const w = this.host.clientWidth, h = this.host.clientHeight
     if (e.k < 1) {
-      const j = this.active, s = this.r - this.stages[j].start
-      this.endingV.copy(this.aheadPoint(j, s + ENDING_LOOK))
+      const j = this.active
+      // the last light is the grove's: the pillar the path runs into
+      this.endingV.copy(this.aheadPoint(j, this.stopList[STOP.end] - this.stages[j].start + END_LIGHT_PAST))
       this.endingV.y += EYE
       this.endingV.project(this.camera)
       const x = (this.endingV.x + 1) / 2 * w, y = (1 - this.endingV.y) / 2 * h
@@ -1224,6 +1224,7 @@ export class UniverseEngine implements WalkControls {
   private tmpM = new THREE.Matrix4()
   private tmpQ = new THREE.Quaternion()
   private gaze = new THREE.Vector3(0, 0, -1)
+  private framePoint = new THREE.Vector3()
 
   /** A point on the walk ahead, seen from world j: past a door it is the next world's path, mapped back. */
   private aheadPoint(j: number, s: number) {
@@ -1259,6 +1260,16 @@ export class UniverseEngine implements WalkControls {
     target.y += EYE + THREE.MathUtils.lerp(0.2, st.lift, THREE.MathUtils.smoothstep(toDoor, 2, 12))
 
     target.sub(pos)
+    // At the photo station the eye lifts to the frame, so all of it (and a landed photo, label and seal
+    // included) sits centred: it stands LIVE_VIEW ahead, taller than the eye, and the path ahead is low.
+    if (j === 1) {
+      const d = this.r - this.stopList[STOP.station]
+      const aim = d < 0 ? THREE.MathUtils.smoothstep(d, -9, -1.5) : 1 - THREE.MathUtils.smoothstep(d, 0.5, 3.5)
+      if (aim > 0) {
+        this.live.framePoint(this.framePoint).sub(pos).setLength(target.length())
+        target.lerp(this.framePoint, aim)
+      }
+    }
     target.x += this.look.x * 0.36
     target.y += this.look.y * 0.216
     this.gaze.lerp(target, blend)
@@ -1431,7 +1442,7 @@ export class UniverseEngine implements WalkControls {
       const q = this.stages[g.stage].region === 'qday'
       g.gallery.update(t, q ? this.qdayAt : -1, q ? this.qdayOrigin : this.camera.position, g.stage === this.active ? this.camera.position : null)
     }
-    // the station is judged from the blue world (or through its door, from the Prism); in the tunnel it waits
+    // the station is judged from the blue world (or through its door, from the Prism); in the grove it waits
     if (this.active <= 1) this.live.update(t, this.active === 1 ? this.camera : this.stages[1].cam)
     this.forged.update(t, this.active === 2 ? this.camera : this.stages[2].cam)
   }

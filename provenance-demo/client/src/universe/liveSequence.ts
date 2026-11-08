@@ -39,6 +39,8 @@ interface Slot {
 export interface LiveFrames extends LiveSequence {
   /** Path distance where the forgery's frame hangs. */
   setForgeryAt(distance: number): void
+  /** The middle of the frame at the station (the centred photo's, or the empty frame's), for the camera. */
+  framePoint(out: THREE.Vector3): THREE.Vector3
   /** The latest forgery's frame has flown in and landed (false again while a new one flies). */
   forgeryLanded(): boolean
 }
@@ -196,6 +198,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
 
   return {
     group,
+    framePoint: out => out.copy(place(0, (centre?.card ?? waiting)?.height ?? 0).pos),
     arrive: a => add(a, false),
     showForgery: (f: ForgeryArrival) => add(f, true),
     stations: () => [o.start - LIVE_VIEW],

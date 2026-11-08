@@ -30,6 +30,13 @@ const SLICE = 16
 export const END_LIGHT_PAST = 17
 const CLEARING_PAST = 14
 const CLEARING_RADIUS = 8
+/** How far along and how high the path's last curve runs as it lifts into the pillar. */
+const RISE_RUN = 1.5
+const RISE_HEIGHT = 1.5
+/** The pillar's height, and where along it the light starts: inside the path's last curve, so the two overlap. */
+const PILLAR_HEIGHT = 4.4
+const PILLAR_FROM = 0.8
+const PILLAR_SOLID = 1.5
 /** The sun, placed from the end stop: how far, how far left of the path's end, how high (the amber grove's). */
 const SUN_DISTANCE = 140
 const SUN_LEFT = 0.17
@@ -63,15 +70,22 @@ class GrovePath extends THREE.Curve<THREE.Vector3> {
   }
 }
 
-/** The path between two depths (straight on behind the start), for the white stream. */
+/** The path between two depths (straight on behind the start), for the white stream. Over its last
+ *  stretch it lifts off the ground in a quarter curve, arriving upright, so it runs up into the pillar. */
 class Trail extends THREE.Curve<THREE.Vector3> {
   private x: (z: number) => number
   from: number
   to: number
-  constructor(x: (z: number) => number, from: number, to: number) { super(); this.x = x; this.from = from; this.to = to; this.arcLengthDivisions = 1200 }
+  constructor(x: (z: number) => number, from: number, to: number) { super(); this.x = x; this.from = from; this.to = to; this.arcLengthDivisions = 2400 }
   getPoint(t: number, target = new THREE.Vector3()) {
-    const z = mix(this.from, this.to, t)
-    return target.set(this.x(z), 0, z)
+    const span = this.from - this.to, flat = 1 - RISE_RUN / span
+    if (t <= flat) {
+      const z = mix(this.from, this.to, t)
+      return target.set(this.x(z), 0, z)
+    }
+    const a = ((t - flat) / (1 - flat)) * Math.PI / 2
+    const z = this.to + RISE_RUN * (1 - Math.sin(a))
+    return target.set(this.x(z), RISE_HEIGHT * (1 - Math.cos(a)), z)
   }
 }
 
@@ -241,7 +255,7 @@ function sun() {
 
 /** Where the path stops: it runs into a thin pillar of light standing on a pool of it. */
 function endLight() {
-  const beam = new THREE.Mesh(new THREE.PlaneGeometry(3, 4.4), new THREE.ShaderMaterial({
+  const beam = new THREE.Mesh(new THREE.PlaneGeometry(3, PILLAR_HEIGHT), new THREE.ShaderMaterial({
     vertexShader: /* glsl */ `
       varying vec2 vUv;
       varying float vNear;
@@ -259,14 +273,14 @@ function endLight() {
       varying float vNear;
       void main() {
         float x = abs(vUv.x - 0.5) * 2.0;
-        float ends = smoothstep(0.0, 0.045, vUv.y) * (1.0 - smoothstep(0.955, 1.0, vUv.y));
+        float ends = smoothstep(${(PILLAR_FROM / PILLAR_HEIGHT).toFixed(3)}, ${(PILLAR_SOLID / PILLAR_HEIGHT).toFixed(3)}, vUv.y) * (1.0 - smoothstep(0.955, 1.0, vUv.y));
         float beam = exp(-x * x * 1800.0) * 5.0 + exp(-x * x * 35.0) * 0.14;
         gl_FragColor = vec4(vec3(0.84, 1.0, 0.86) * beam * vNear, ends);
       }
     `,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   }))
-  beam.position.y = 2.2
+  beam.position.y = PILLAR_HEIGHT / 2
   beam.name = 'Grove end pillar'
   beam.renderOrder = 5 // behind a card, like the stream
   const pool = new THREE.Mesh(new THREE.PlaneGeometry(7, 7), new THREE.ShaderMaterial({
@@ -311,7 +325,7 @@ export function buildGroveWorld(u: SceneUniforms, lowPower: boolean, sh: GroveSh
 
   // The white stream, from just behind the start to the end light; setEnd re-lays it.
   const trail = new Trail(pathX, 6, -length * 0.8)
-  const stream = curveStream(u, trail, { lowPower, brightness: 1.6, fog: 260 })
+  const stream = curveStream(u, trail, { lowPower, brightness: 1.6, fog: 260, samples: 1024 })
   const streamUniforms = (stream.material as THREE.ShaderMaterial).uniforms
   const light = endLight()
   scene.add(stream, light)
@@ -348,7 +362,7 @@ export function buildGroveWorld(u: SceneUniforms, lowPower: boolean, sh: GroveSh
     const data = tex.image.data as Float32Array, samples = data.length / 4
     for (let i = 0; i < samples; i++) {
       trail.getPointAt(i / (samples - 1), ahead)
-      data.set([ahead.x, 0, ahead.z, 1], i * 4)
+      data.set([ahead.x, ahead.y, ahead.z, 1], i * 4)
     }
     tex.needsUpdate = true
     ;(streamUniforms.uCurveInfo.value as THREE.Vector2).y = trail.getLength()
