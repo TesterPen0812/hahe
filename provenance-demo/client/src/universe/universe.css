@@ -42,23 +42,30 @@
 @keyframes uv-blink { 50% { opacity: .25 } }
 
 /* ── story cards: the walk slows, the world blurs, a line arrives ─────── */
-.uv-card { position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center; transition: opacity 1.1s ease; }
-.uv-card.read { opacity: 0; }
+.uv-card { position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center; }
+/* In fast (0.4 s), a fixed hold (timed in StoryCard.tsx), out in 0.6 s. Veil and words share the beat;
+   each fades itself, so the veil's backdrop blur never sits under a fading parent. */
 .uv-card-veil {
-  position: absolute; inset: 0; opacity: var(--s);
+  position: absolute; inset: 0;
   background: radial-gradient(ellipse 80% 70% at 50% 50%, rgba(2, 3, 7, 0.5), rgba(2, 3, 7, 0.22));
   backdrop-filter: blur(12px) saturate(0.8); -webkit-backdrop-filter: blur(12px) saturate(0.8);
+  animation: uv-fade-in .4s ease-out both;
 }
 .uv-card-text {
   position: relative; text-align: center; padding: 0 6vw; max-width: 1400px;
-  opacity: clamp(0, calc(var(--s) * 1.5 - 0.35), 1);
-  transform: translateY(calc((1 - var(--s)) * 22px));
-  filter: blur(calc((1 - var(--s)) * 10px));
+  animation: uv-card-in .4s cubic-bezier(.2, .8, .2, 1) both;
 }
+.uv-card.out .uv-card-veil { animation: uv-fade-out .6s ease-in both; }
+.uv-card.out .uv-card-text { animation: uv-card-out .6s ease-in both; }
+@keyframes uv-fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes uv-fade-out { from { opacity: 1 } to { opacity: 0 } }
+@keyframes uv-card-in { from { opacity: 0; transform: translateY(14px); filter: blur(8px) } to { opacity: 1; transform: none; filter: blur(0) } }
+@keyframes uv-card-out { from { opacity: 1; filter: blur(0) } to { opacity: 0; filter: blur(6px) } }
 .uv-card h2 {
   margin: 0; font: 340 clamp(52px, 7.4vw, 132px)/0.98 var(--display);
   letter-spacing: -0.028em; text-wrap: balance; color: #f6f3ec;
 }
+.uv-card h2 .nw { white-space: nowrap; }
 .uv-card p {
   margin: 0.55em 0 0; font: italic 300 clamp(21px, 2.3vw, 38px)/1.2 var(--display);
   letter-spacing: -0.005em; color: rgba(246, 243, 236, 0.78); text-wrap: balance;
@@ -66,8 +73,8 @@
 .uv-card-qday h2 { color: #fbe6dc; }
 .uv-card-end p { color: #f6f3ec; font-style: italic; }
 /* While a card is being read, the corner panels step back. */
-.uv:has(.uv-card:not(.read)) .uv-log, .uv:has(.uv-card:not(.read)) .uv-forge { opacity: 0.25; }
-.uv:has(.uv-card:not(.read)) .uv-verdict { display: none; }
+.uv:has(.uv-card.in) .uv-log, .uv:has(.uv-card.in) .uv-forge { opacity: 0.25; }
+.uv:has(.uv-card.in) .uv-verdict { display: none; }
 
 /* ── capture log: what happened to the photo that just arrived ─────────── */
 .uv-log {
@@ -224,9 +231,13 @@
   .uv-tools { top: 18px; bottom: auto; right: 16px; }
   .uv-tools-panel { top: 22px; bottom: auto; width: min(292px, calc(100vw - 32px)); }
   .uv-verdict { flex-direction: column; gap: 36px; }
+  /* "Post-Quantum Day · 2035" → two whole lines: the dot becomes the break. */
+  .uv-card h2 { font-size: clamp(38px, 11vw, 64px); }
+  .uv-card h2 .sep { display: block; height: 0; overflow: hidden; }
 }
 @media (prefers-reduced-motion: reduce) {
   .uv-log, .uv-forge .row, .uv-tools-panel { animation: none; }
   .uv-log li, .uv-log footer { transition: none; }
-  .uv-card-text { filter: none; transform: none; }
+  .uv-card-text { animation-name: uv-fade-in; }
+  .uv-card.out .uv-card-text { animation-name: uv-fade-out; }
 }
