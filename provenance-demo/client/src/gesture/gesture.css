@@ -1,0 +1,30 @@
+.hp { position: relative; overflow: hidden; border-radius: 14px; background: #05060c; aspect-ratio: 4 / 3; }
+/* mirrored, so moving your right hand moves the right-hand skeleton */
+.hp-video, .hp-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
+.hp-video { opacity: 0.6; filter: saturate(0.6); }
+
+.gt-head p { margin: 0 0 20px; color: var(--muted); max-width: 62ch; }
+.gt-start { display: grid; gap: 10px; justify-items: start; }
+.gt-error { color: var(--red); margin: 0; }
+
+.gt-stage { display: grid; grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr); gap: 16px; align-items: start; }
+.gt-read { margin: 0; display: grid; gap: 10px; }
+.gt-read div { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.gt-read dt { font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.gt-read dd { margin: 4px 0 0; font-variant-numeric: tabular-nums; }
+.gt-read dd.on { color: var(--green); }
+.gt-read dd.brake { color: var(--red); }
+
+.gt-track { position: relative; height: 44px; margin: 34px 0 20px; border-radius: 22px; background: var(--panel); border: 1px solid var(--line); }
+.gt-mark { position: absolute; top: -24px; transform: translateX(-50%); font-size: 12px; color: var(--muted); white-space: nowrap; }
+.gt-mark:first-child { transform: none; }
+.gt-mark:nth-last-child(2) { transform: translateX(-100%); }
+.gt-dot { position: absolute; top: 50%; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; background: var(--green); box-shadow: 0 0 16px var(--green); }
+
+.gt-controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.gt-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.gt-seg button.on { border-color: var(--accent); color: var(--accent); }
+.gt-slider { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+
+@media (max-width: 720px) { .gt-stage { grid-template-columns: 1fr; } }
+.gt-read dd.amber { color: var(--amber); }

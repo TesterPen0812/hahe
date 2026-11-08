@@ -197,3 +197,19 @@
 .uv-verdicts p { margin: 6px 0 0; font-size: 12px; }
 .uv-verdict-k { font-size: 10px !important; letter-spacing: .14em; text-transform: uppercase; margin: 0 0 6px !important; }
 .uv-verdicts .uv-forge-again { grid-column: 1 / -1; justify-self: start; }
+
+/* hand control */
+.uv-handbtn {
+  min-height: 0; font: inherit; font-size: 13px; font-weight: 500; color: var(--muted);
+  padding: 6px 12px; border-radius: 999px; background: transparent; border: 1px solid rgba(255, 255, 255, 0.16);
+  margin-left: 6px; cursor: pointer; transition: color .2s, background .2s, border-color .2s;
+}
+.uv-handbtn:hover { color: var(--ink); background: rgba(255, 255, 255, 0.08); }
+.uv-handbtn.on { color: #7dffb3; border-color: rgba(125, 255, 179, 0.5); }
+.uv-handbtn.error { color: #ff9d8f; }
+.uv-hands {
+  position: absolute; left: 20px; bottom: 20px; z-index: 6; width: 240px; pointer-events: none;
+}
+.uv-hands .hp { border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45); }
+.uv-hands p { margin: 6px 2px 0; font-size: 11px; line-height: 1.4; color: rgba(233, 236, 241, 0.7); }
+@media (max-width: 720px) { .uv-hands { width: 150px; left: 12px; bottom: 12px; } }

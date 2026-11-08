@@ -1,10 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { TrustList } from '@provenance-demo/shared'
 import { api } from '../lib/api'
 import { useWorld } from '../lib/world'
 import { LivePanel } from './LivePanel'
 import { ACTIVE_UNIVERSES as UNIVERSES, UniverseEngine, type EngineState, type LabelId } from './engine'
+import { HandControl } from '../gesture/handControl'
+import HandPreview from '../gesture/HandPreview'
+import '../gesture/gesture.css'
 import './universe.css'
 
 const SINGLE = UNIVERSES.length === 1
@@ -31,6 +34,37 @@ export default function UniversePage() {
 
   useEffect(() => { api.trust().then(setTrust).catch(() => {}) }, [])
 
+  // Hand control: the presenter walks the timeline by stretching their hands at the webcam.
+  const [hands, setHands] = useState<HandControl | null>(null)
+  const [handStatus, setHandStatus] = useState<'off' | 'starting' | 'on' | 'error'>('off')
+  const handsRef = useRef<HandControl | null>(null)
+  const toggleHands = useCallback(async () => {
+    if (handsRef.current) {
+      handsRef.current.stop(); handsRef.current = null
+      engine.current?.setHands(null); setHands(null); setHandStatus('off')
+      return
+    }
+    if (handStatus === 'starting') return
+    setHandStatus('starting')
+    try {
+      const c = await HandControl.start()
+      handsRef.current = c
+      engine.current?.setHands(c); setHands(c); setHandStatus('on')
+    } catch (err) {
+      console.error(err)
+      setHandStatus('error')
+    }
+  }, [handStatus])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement | null)?.closest?.('input, textarea')) return
+      if (e.key.toLowerCase() === 'h' && !e.metaKey && !e.ctrlKey) void toggleHands()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toggleHands])
+  useEffect(() => () => { handsRef.current?.stop(); handsRef.current = null }, [])
+
   useEffect(() => {
     if (failed || !host.current) return
     let e: UniverseEngine
@@ -46,6 +80,7 @@ export default function UniversePage() {
       return
     }
     engine.current = e
+    if (handsRef.current) e.setHands(handsRef.current)
     // Real photos from the feed line the path to our door: old-camera (RSA) beside our app's (hybrid).
     api.items().then(items => {
       const pick = (kind: 'legacy' | 'hybrid') => items
@@ -93,8 +128,18 @@ export default function UniversePage() {
           <Link to="/capture">Capture</Link>
           <Link to="/attack">Attacker</Link>
           <Link to="/split">Split</Link>
+          <button type="button" className={`uv-handbtn ${handStatus}`} onClick={() => void toggleHands()} aria-pressed={handStatus === 'on'}>
+            {handStatus === 'starting' ? 'Starting camera…' : handStatus === 'on' ? 'Hands on' : handStatus === 'error' ? 'Camera blocked' : 'Hand control'}
+          </button>
         </nav>
       </header>
+
+      {hands && (
+        <div className="uv-hands">
+          <HandPreview control={hands} />
+          <p>Spread two fingers to zoom in · three to zoom out · fist to stop</p>
+        </div>
+      )}
 
       <div className={`uv-qday ${qday ? 'on' : ''}`} role="status">
         <strong>Q-Day · {world.headlineYear}</strong>
@@ -104,7 +149,7 @@ export default function UniversePage() {
       <section className={`uv-intro ${state.started ? 'gone' : ''}`}>
         <p className="uv-kicker">Today</p>
         <h1>The future of truth<br />forks at Q-Day.</h1>
-        <p className="uv-hint"><span className="uv-mouse" aria-hidden /> Scroll to walk the timeline</p>
+        <p className="uv-hint"><span className="uv-mouse" aria-hidden /> Scroll to walk the timeline, or press H and use your hands</p>
       </section>
 
       <div className={`uv-prompt ${state.phase === 'fork' ? 'on' : ''}`}>

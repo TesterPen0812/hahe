@@ -14,6 +14,7 @@ import { buildGallery, type Gallery, type GalleryPhoto } from './gallery'
 import { Fluid } from './fluid'
 import { ParticleSimulation } from './particles'
 import { POINTER_REACH, WAKE_INTERVAL, dragDistance, dragVelocity, releasedVelocity, wheelDistance } from './input'
+import { driveVelocity, type HandControl } from '../gesture/handControl'
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
@@ -80,6 +81,7 @@ export class UniverseEngine {
   private desiredRoute = 0
   private v = 0
   private keys = new Set<string>()
+  private hands: HandControl | null = null
   private target: { seg: number; d: number } | null = { seg: -1, d: 6 }
   private selected: number | null = null
   private hovered: number | null = null
@@ -194,6 +196,9 @@ export class UniverseEngine {
     this.flashColor.setRGB(c[0], c[1], c[2])
     this.flash = Math.max(this.flash, 0.22)
   }
+
+  /** Let the presenter's hands (webcam) walk the timeline; null hands control back to scroll. */
+  setHands(c: HandControl | null) { this.hands = c }
 
   /** Hang real photos from the feed along the path to our door; Q-Day's wave tests their seals. */
   setGallery(photos: GalleryPhoto[]) {
@@ -444,6 +449,10 @@ export class UniverseEngine {
     const fwd = this.keys.has('w') || this.keys.has('arrowup')
     const bwd = this.keys.has('s') || this.keys.has('arrowdown')
 
+    // A pinch-zoom in the air (webcam): two fingers spread to go forward, three to go back, fist stops.
+    const hand = this.hands ? driveVelocity(this.hands, this.v, dt) : null
+    if (hand?.active) this.target = null
+
     if (this.target) {
       const tg = this.target
       if (this.seg < 0 && tg.seg >= 0) this.selected = tg.seg
@@ -452,6 +461,8 @@ export class UniverseEngine {
       const want = THREE.MathUtils.clamp(err * 1.3, -15, 15)
       this.v += (want - this.v) * Math.min(1, dt * 3)
       if (Math.abs(goal - before) < 0.04 && (tg.seg === this.seg || (tg.seg < 0 && this.seg < 0))) { this.target = null; this.v = 0 }
+    } else if (hand?.active) {
+      this.v = hand.v
     } else if (fwd || bwd) {
       this.v = THREE.MathUtils.clamp(this.v + (fwd ? 16 : -16) * dt, -9, 9)
     }
@@ -459,7 +470,7 @@ export class UniverseEngine {
     const destination = this.universes[this.seg >= 0 ? this.seg : this.selected ?? 0]
     const travelStep = !this.down && Math.abs(this.v) >= 0.01 ? this.v * dt : 0
     this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + travelStep, 0, this.L0 + destination.len + 22)
-    if (!this.target && !this.down && !fwd && !bwd) this.v *= Math.exp(-dt * 3.2)
+    if (!this.target && !this.down && !fwd && !bwd && !hand?.active) this.v *= Math.exp(-dt * 3.2)
     let r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
     if (this.seg < 0) {
       if (r < 0) { r = 0; this.v = Math.max(0, this.v) }
