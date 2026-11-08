@@ -1,11 +1,38 @@
 // The world's feed, polled every two seconds for the whole visit (not only once inside a world),
 // so a photo taken while the walk holds at the Q-Day gate is already waiting in the live frame.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ItemSummary } from '@provenance-demo/shared'
+import type { ItemSummary, WorldMode } from '@provenance-demo/shared'
 import { api } from '../lib/api'
+import type { FeedPhoto } from './galleryPick'
 
 /** The attack console's own uploads (forgeries and its seeded target) aren't phone arrivals. */
 export const isAttack = (i: ItemSummary) => !!(i.manifest as { demoAttack?: string } | null)?.demoAttack
+
+/** A phone running the app names itself `device-…` when it registers (lib/deviceKeys). */
+const PHONE_ID = /^device-/
+
+/** Is the image a photograph? Drawn seed scenes are PNGs; phone captures and seed-real's are JPEGs. */
+async function isPhotograph(url: string) {
+  try {
+    const res = await fetch(url, { method: 'HEAD' })
+    return (res.headers.get('content-type') ?? '').startsWith('image/jpeg')
+  } catch { return false }
+}
+
+/** How the walk's galleries see one feed item. Until Post-Quantum Day the server judges with today's
+ *  rules, so what it will say then is worked out here: an old-camera photo whose log entry doesn't
+ *  predate the crossing (or that has none) loses its seal. */
+export async function feedPhoto(i: ItemSummary, world: WorldMode): Promise<FeedPhoto> {
+  const { kind, status } = i.verification
+  const deviceId = (i.manifest as { claim?: { deviceId?: string } } | null)?.claim?.deviceId ?? ''
+  const phone = PHONE_ID.test(deviceId)
+  const unanchored = kind === 'legacy' && (!i.logEntry || Date.parse(i.logEntry.timestamp) > Date.now())
+  return {
+    id: i.id, url: i.imageUrl, kind: kind === 'hybrid' ? 'hybrid' : 'legacy', status, phone,
+    after: world === 'today' && status === 'green' && unanchored ? 'grey' : status,
+    real: phone || await isPhotograph(i.imageUrl),
+  }
+}
 
 export interface LiveFeed {
   items: ItemSummary[] | null
