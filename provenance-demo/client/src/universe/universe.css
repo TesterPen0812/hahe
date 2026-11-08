@@ -43,24 +43,29 @@
 
 /* ── story cards: the walk slows, the world blurs, a line arrives ─────── */
 .uv-card { position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center; }
-/* In fast (0.4 s), a fixed hold (timed in StoryCard.tsx), out in 0.6 s. Veil and words share the beat;
-   each fades itself, so the veil's backdrop blur never sits under a fading parent. */
+/* No timers: StoryCard sets --card-text / --card-veil from how deep the camera is in the card's zone, and
+   --card-rise / --card-scale from how far through it, so the words travel with the walk. Veil and words
+   each fade themselves, so the veil's backdrop blur never sits under a fading parent. */
 .uv-card-veil {
-  position: absolute; inset: 0;
+  position: absolute; inset: 0; opacity: var(--card-veil, 1);
   background: radial-gradient(ellipse 80% 70% at 50% 50%, rgba(2, 3, 7, 0.5), rgba(2, 3, 7, 0.22));
   backdrop-filter: blur(12px) saturate(0.8); -webkit-backdrop-filter: blur(12px) saturate(0.8);
-  animation: uv-fade-in .4s ease-out both;
 }
 .uv-card-text {
   position: relative; text-align: center; padding: 0 6vw; max-width: 1400px;
-  animation: uv-card-in .4s cubic-bezier(.2, .8, .2, 1) both;
+  opacity: var(--card-text, 1);
+  transform: translate3d(0, var(--card-rise, 0px), 0) scale(var(--card-scale, 1));
+  will-change: opacity, transform;
 }
-.uv-card.out .uv-card-veil { animation: uv-fade-out .6s ease-in both; }
-.uv-card.out .uv-card-text { animation: uv-card-out .6s ease-in both; }
-@keyframes uv-fade-in { from { opacity: 0 } to { opacity: 1 } }
-@keyframes uv-fade-out { from { opacity: 1 } to { opacity: 0 } }
-@keyframes uv-card-in { from { opacity: 0; transform: translateY(14px); filter: blur(8px) } to { opacity: 1; transform: none; filter: blur(0) } }
-@keyframes uv-card-out { from { opacity: 1; filter: blur(0) } to { opacity: 0; filter: blur(6px) } }
+/* A letter still decoding: the real letter keeps its place (and width), a mono glyph stands over it. */
+.uv-card .ch { position: relative; }
+.uv-card .ch-l { opacity: 0; }
+.uv-card .ch-g {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font: 400 0.58em/1 var(--mono); font-style: normal; letter-spacing: 0; color: #cfe3d8;
+  text-shadow: 0 0 0.6em rgba(166, 236, 198, 0.35);
+}
+.uv-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .uv-card h2 {
   margin: 0; font: 340 clamp(52px, 7.4vw, 132px)/0.98 var(--display);
   letter-spacing: -0.028em; text-wrap: balance; color: #f6f3ec;
@@ -72,9 +77,8 @@
 }
 .uv-card-qday h2 { color: #fbe6dc; }
 .uv-card-end p { color: #f6f3ec; font-style: italic; }
-/* While a card is being read, the corner panels step back. */
+/* While a card is being read, the corner panels step back. (The verdict waits for the card in UniversePage.) */
 .uv:has(.uv-card.in) .uv-log, .uv:has(.uv-card.in) .uv-forge { opacity: 0.25; }
-.uv:has(.uv-card.in) .uv-verdict { display: none; }
 
 /* ── capture log: what happened to the photo that just arrived ─────────── */
 .uv-log {
@@ -239,6 +243,5 @@
 @media (prefers-reduced-motion: reduce) {
   .uv-log, .uv-forge .row, .uv-tools-panel { animation: none; }
   .uv-log li, .uv-log footer { transition: none; }
-  .uv-card-text { animation-name: uv-fade-in; }
-  .uv-card.out .uv-card-text { animation-name: uv-fade-out; }
+  .uv-card-text { transform: none; }
 }
