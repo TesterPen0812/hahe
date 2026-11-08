@@ -13,10 +13,11 @@
 // lifting them off a phone screen, so zooms repeat. Any other hand shape is ignored, so talking
 // with your hands doesn't move anything.
 //
-// The model and the WASM runtime are served from this app, not a CDN, so it works on venue wifi.
-import type { HandLandmarker, NormalizedLandmark } from '@mediapipe/tasks-vision'
-import wasmLoaderPath from '@mediapipe/tasks-vision/vision_wasm_internal.js?url'
-import wasmBinaryPath from '@mediapipe/tasks-vision/vision_wasm_internal.wasm?url'
+// Detection runs in a Web Worker (handWorker.ts) so the 3D scene keeps its frame rate. The model
+// and the WASM runtime are served from this app, not a CDN, so it works on venue wifi.
+import type { Detection, FromWorker, ToWorker } from './handWorker'
+
+type NormalizedLandmark = { x: number; y: number; z: number }
 
 export type Pose = 'none' | 'two' | 'three' | 'fist'
 export type Stroke = 'none' | 'in' | 'out' | 'reset'
@@ -98,30 +99,23 @@ function pinchGap(p: NormalizedLandmark[], pose: Pose, aspect: number) {
   return dist(t, target, aspect) / size
 }
 
-let loading: Promise<HandLandmarker> | null = null
+let loading: Promise<Worker> | null = null
 
-/** Load the hand model once (GPU, falling back to CPU). Call early to have it ready. */
-export function loadHandLandmarker(): Promise<HandLandmarker> {
-  loading ??= (async () => {
-    const { HandLandmarker } = await import('@mediapipe/tasks-vision')
-    const fileset = { wasmLoaderPath, wasmBinaryPath }
-    const make = (delegate: 'GPU' | 'CPU') => HandLandmarker.createFromOptions(fileset, {
-      baseOptions: { modelAssetPath: '/models/hand_landmarker.task', delegate },
-      runningMode: 'VIDEO',
-      numHands: 2,
-      minHandDetectionConfidence: 0.6,
-      minHandPresenceConfidence: 0.6,
-      minTrackingConfidence: 0.5,
-    })
-    const lm = await make('GPU').catch(() => make('CPU'))
-    // The first detection compiles the GPU programs and stalls for seconds. Do it now, on a
-    // blank frame, so it never lands in the middle of the demo.
-    const blank = document.createElement('canvas')
-    blank.width = 64; blank.height = 48
-    blank.getContext('2d')!.fillRect(0, 0, 64, 48)
-    lm.detectForVideo(blank, performance.now())
-    return lm
-  })()
+/**
+ * Start the hand-tracking worker and load the model once. Call early (it takes a moment) to have
+ * it ready; every HandControl shares it.
+ */
+export function loadHandWorker(): Promise<Worker> {
+  loading ??= new Promise<Worker>((resolve, reject) => {
+    const w = new Worker(new URL('./handWorker.ts', import.meta.url), { type: 'module' })
+    const onMsg = (e: MessageEvent<FromWorker>) => {
+      if (e.data.type === 'ready') { w.removeEventListener('message', onMsg); resolve(w) }
+      if (e.data.type === 'error') { w.removeEventListener('message', onMsg); w.terminate(); reject(new Error(e.data.message)) }
+    }
+    w.addEventListener('message', onMsg)
+    w.addEventListener('error', e => reject(new Error(e.message || 'hand worker failed to load')), { once: true })
+    w.postMessage({ type: 'init', modelUrl: new URL('/models/hand_landmarker.task', location.href).href } satisfies ToWorker)
+  })
   loading.catch(() => { loading = null })
   return loading
 }
@@ -133,8 +127,11 @@ export class HandControl {
   glide = 0
   /** The latest frame, for code that polls (the render loop) rather than listens. */
   latest: GestureFrame | null = null
+  /** The model's raw output for the latest detection (for tuning and recording). */
+  raw: Detection | null = null
   private rate: number
-  private landmarker: HandLandmarker | null = null
+  private worker: Worker | null = null
+  private busy = false
   private stream: MediaStream | null = null
   private raf = 0
   private lastDetect = 0
@@ -170,7 +167,8 @@ export class HandControl {
       })
       video.srcObject = c.stream
       await video.play()
-      c.landmarker = await loadHandLandmarker()
+      c.worker = await loadHandWorker()
+      c.worker.addEventListener('message', c.onResult)
     } catch (e) {
       c.stop()
       throw e
@@ -199,24 +197,38 @@ export class HandControl {
     cancelAnimationFrame(this.raf)
     this.stream?.getTracks().forEach(t => t.stop())
     this.stream = null
-    this.landmarker = null // shared and cached; kept loaded for the next start
+    this.worker?.removeEventListener('message', this.onResult) // the worker is shared; it stays loaded
+    this.worker = null
     this.listeners.clear()
   }
 
+  // Send the newest camera frame to the worker whenever it's free (at most `rate` times a second).
   private loop = () => {
     if (this.stopped) return
     this.raf = requestAnimationFrame(this.loop)
     const now = performance.now()
     const v = this.video
-    if (!this.landmarker || v.readyState < 2 || now - this.lastDetect < 1000 / this.rate) return
+    if (!this.worker || this.busy || v.readyState < 2 || now - this.lastDetect < 1000 / this.rate) return
     if (v.currentTime === this.lastVideoTime) return
+    this.lastVideoTime = v.currentTime
+    this.busy = true
+    const worker = this.worker
+    createImageBitmap(v).then(bitmap => {
+      if (this.stopped || this.worker !== worker) { bitmap.close(); this.busy = false; return }
+      worker.postMessage({ type: 'frame', bitmap, t: performance.now() } satisfies ToWorker, [bitmap])
+    }, () => { this.busy = false })
+  }
+
+  private onResult = (e: MessageEvent<FromWorker>) => {
+    if (e.data.type !== 'result' || this.stopped) return
+    this.busy = false
+    const now = performance.now()
     const dt = this.lastDetect ? Math.min((now - this.lastDetect) / 1000, 0.25) : 1 / this.rate
     this.lastDetect = now
-    this.lastVideoTime = v.currentTime
-    const result = this.landmarker.detectForVideo(v, now)
+    this.raw = e.data
     this.fpsN++
     if (now - this.fpsT > 1000) { this.fps = this.fpsN * 1000 / (now - this.fpsT); this.fpsN = 0; this.fpsT = now }
-    this.update(result.landmarks, dt)
+    this.update(e.data.landmarks, dt)
   }
 
   private update(landmarks: NormalizedLandmark[][], dt: number) {

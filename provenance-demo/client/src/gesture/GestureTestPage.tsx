@@ -30,6 +30,13 @@ export default function GestureTestPage() {
   }
 
   useEffect(() => () => control?.stop(), [control])
+  // dev only: lets a recording script read the raw tracking
+  useEffect(() => {
+    if (!import.meta.env.DEV || !control) return
+    const w = window as unknown as { __hands?: HandControl }
+    w.__hands = control
+    return () => { delete w.__hands }
+  }, [control])
   useEffect(() => { control?.setSensitivity(sensitivity) }, [control, sensitivity])
 
   // readouts at the detection rate
