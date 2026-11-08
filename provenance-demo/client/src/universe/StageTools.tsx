@@ -4,7 +4,7 @@ import type { WorldView } from './engine'
 import { loadTints, saveTints } from './stageHooks'
 
 // Demo-only tuning, folded into one quiet mark in the corner: pick each door's colour (kept in this
-// browser until Taha chooses the default), switch landscape, and fire the key break by hand.
+// browser until Taha chooses the default) and switch landscape. The key break is B (or the clicker).
 const SWATCHES: { name: string; rgb: RGB }[] = [
   { name: 'Pearl', rgb: [0.95, 0.93, 0.88] },
   { name: 'Ice', rgb: [0.72, 0.86, 1.0] },
@@ -24,12 +24,11 @@ const toHex = (c: RGB) => '#' + c.map(x => Math.round(Math.max(0, Math.min(1, x)
 const fromHex = (h: string): RGB => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255) as RGB
 const same = (a?: RGB, b?: RGB) => !!a && !!b && a.every((x, i) => Math.abs(x - b[i]) < 0.01)
 
-export function StageTools({ view, onView, tints, onTint, onBreak }: {
+export function StageTools({ view, onView, tints, onTint }: {
   view: WorldView
   onView: (v: WorldView) => void
   tints: Partial<DoorTints>
   onTint: (door: DoorId, rgb: RGB) => void
-  onBreak: () => void
 }) {
   const [open, setOpen] = useState(false)
   const tint = (door: DoorId, rgb: RGB) => { onTint(door, rgb); saveTints({ ...loadTints(), [door]: rgb }) }
@@ -62,10 +61,6 @@ export function StageTools({ view, onView, tints, onTint, onBreak }: {
                 <button type="button" key={v.id} className={view === v.id ? 'on' : ''} onClick={() => onView(v.id)}>{v.name}</button>
               ))}
             </div>
-          </div>
-          <div className="uv-tools-row">
-            <span className="k">Attack</span>
-            <div className="seg"><button type="button" onClick={() => { setOpen(false); onBreak() }}>Break the key <kbd>B</kbd></button></div>
           </div>
         </div>
       )}

@@ -4,13 +4,13 @@ import { captureSteps, type CaptureStep } from './stageData'
 
 const FIRST = 500     // ms before the first line, while the photo flies into its frame
 const EVERY = 340     // ms between lines
-const SETTLE = 9000   // ms the full log stays open before it folds to one line
+const SETTLE = 3500   // ms the full log stays open after the verdict before it folds to a thumbnail
 
 const MARK: Record<CaptureStep['tone'], string> = { ok: '✓', fail: '✕', warn: '!', info: '·' }
 
 /**
  * A corner log of what happened to the photo that just arrived: one line per check the verifier ran,
- * revealed in order, then folded down to the verdict. Click to open it again.
+ * revealed in order, then folded away to the photo's thumbnail. Click it to open the log again.
  */
 export function CaptureLog({ item, hidden }: { item: ItemSummary | null; hidden?: boolean }) {
   const steps = useMemo(() => (item ? captureSteps(item) : []), [item])

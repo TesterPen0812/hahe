@@ -6,7 +6,8 @@ import { makeWorld, sha256Hex, todayWorld, verifyItem, type ItemSummary, type Ma
 import { capture, legacyCapture, legacyTrustEntry, makeAuthority, makeLegacyCamera, makePasskey, makePersonhood, makePhone, photoFrom } from '../../scripts/lib/fake-phone.js'
 import { SCENES } from '../../scripts/lib/png.js'
 import { FakeLog } from '../../scripts/lib/fake-log.js'
-import { captureSteps, forgeryArrival, sealParts } from '../src/universe/stageData'
+import { captureSteps, loggedAfter } from '../src/universe/stageData'
+import { partsFromVerification, toForgeryArrival, toLiveArrival } from '../src/universe/sealParts'
 
 const today = todayWorld()
 const qDay = makeWorld('q-day', '2026-11-07T18:42:00.000Z', 2035)
@@ -46,7 +47,7 @@ test('capture log has one line per verifier check, between received and the verd
   assert.equal(steps.at(-1)!.text, 'Verified human')
   const sig = steps.find(s => s.text === 'Capture signature')!
   assert.deepEqual(sig.parts, [{ alg: 'Ed25519', ok: true, broken: false }, { alg: 'ML-DSA-65', ok: true, broken: false }])
-  assert.deepEqual(sealParts(it.verification), [
+  assert.deepEqual(partsFromVerification(it.verification), [
     { alg: 'ed25519', state: 'holds' }, { alg: 'ml-dsa-65', state: 'holds' }, { alg: 'es256', state: 'holds' },
   ])
 })
@@ -60,17 +61,17 @@ test('after Q-Day an unanchored photo stays green on ML-DSA, and Face ID reads a
   assert.equal(face.text, 'Face ID · broken since Q-Day')
   assert.equal(face.tone, 'warn')
   assert.equal(steps.at(-1)!.text, 'Device verified')
-  assert.deepEqual(sealParts(it.verification), [
+  assert.deepEqual(partsFromVerification(it.verification), [
     { alg: 'ed25519', state: 'broken' }, { alg: 'ml-dsa-65', state: 'holds' }, { alg: 'es256', state: 'broken' },
   ])
   // Logged before Q-Day: the classical seals are anchored and still count.
   const anchored = await item(manifest, photo.bytes, trust, qDay, before)
-  assert.deepEqual(sealParts(anchored.verification), [
+  assert.deepEqual(partsFromVerification(anchored.verification), [
     { alg: 'ed25519', state: 'anchored' }, { alg: 'ml-dsa-65', state: 'holds' }, { alg: 'es256', state: 'anchored' },
   ])
 })
 
-test('a forgery keeps its classical seal (broken), gains an empty ML-DSA slot, and carries both verdicts', async () => {
+test('a forgery keeps its classical ring whole, gains an empty ML-DSA slot, and carries both verdicts', async () => {
   const camera = await makeLegacyCamera()
   const photo = photoFrom(SCENES.park())
   const manifest = await legacyCapture(camera, photo)
@@ -79,11 +80,30 @@ test('a forgery keeps its classical seal (broken), gains an empty ML-DSA slot, a
   const naive = await item(manifest, photo.bytes, trust, qDay, after, true)
   assert.equal(ours.verification.status, 'grey')
   assert.equal(naive.verification.status, 'green')
-  const f = forgeryArrival({ itemId: ours.id, imageUrl: ours.imageUrl, ours: ours.verification, naive: naive.verification })
-  assert.deepEqual(f.parts, [{ alg: 'rsa-pss-2048', state: 'broken' }, { alg: 'ml-dsa-65', state: 'missing' }])
+  const f = toForgeryArrival({ itemId: ours.id, imageUrl: ours.imageUrl, ours: ours.verification, naive: naive.verification })
+  assert.deepEqual(f.parts, [{ alg: 'rsa-pss-2048', state: 'holds' }, { alg: 'ml-dsa-65', state: 'missing' }])
   assert.equal(f.status, 'grey')
   assert.equal(f.naiveStatus, 'green')
   const steps = captureSteps(ours)
   assert.equal(steps.find(s => s.text.startsWith('Camera signature'))!.tone, 'fail')
   assert.equal(steps.at(-1)!.text, 'Unknown origin')
+})
+
+test('a photo seen before Q-Day is re-judged in place: same id, classical seals anchored, still green', async () => {
+  const { manifest, photo, trust } = await phonePhoto()
+  const before0 = toLiveArrival(await item(manifest, photo.bytes, trust, today, before))
+  const after0 = toLiveArrival(await item(manifest, photo.bytes, trust, qDay, before))
+  assert.equal(after0.id, before0.id)
+  assert.equal(after0.status, 'green')
+  assert.deepEqual(before0.parts.map(p => p.state), ['holds', 'holds', 'holds'])
+  assert.deepEqual(after0.parts, [
+    { alg: 'ed25519', state: 'anchored' }, { alg: 'ml-dsa-65', state: 'holds' }, { alg: 'es256', state: 'anchored' },
+  ])
+})
+
+test('the log line reads as a delay after receipt, or its own clock when they are far apart', () => {
+  assert.equal(loggedAfter('2026-11-08T10:00:00.000Z', '2026-11-08T10:00:00.040Z'), '+40 ms')
+  assert.equal(loggedAfter('2026-11-08T10:00:00.000Z', '2026-11-08T10:00:02.400Z'), '+2.4 s')
+  assert.match(loggedAfter('2026-11-08T10:00:00.000Z', '2026-11-08T10:09:00.000Z'), /^\d\d:\d\d:\d\d$/)
+  assert.match(loggedAfter('2026-11-08T10:00:00.000Z', '2026-11-08T09:59:00.000Z'), /^\d\d:\d\d:\d\d$/)
 })

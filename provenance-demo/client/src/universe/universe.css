@@ -26,10 +26,7 @@
 /* ── the one line of chrome ──────────────────────────────────────────── */
 .uv-top {
   position: absolute; top: 0; left: 0; right: 0; z-index: 5; pointer-events: none;
-  display: flex; align-items: center; justify-content: space-between; padding: 22px 26px;
-}
-.uv-brand {
-  font: 420 17px/1 var(--display); letter-spacing: 0.01em; color: var(--ink); opacity: 0.72;
+  display: flex; align-items: center; justify-content: flex-end; padding: 22px 26px;
 }
 .uv-hand {
   display: inline-flex; align-items: center; gap: 7px;
@@ -44,18 +41,9 @@
 .uv-hand.error { color: var(--fail); }
 @keyframes uv-blink { 50% { opacity: .25 } }
 
-/* ── labels pinned into the scene (the engine positions them) ─────────── */
-.uv-pin {
-  position: absolute; left: 0; top: 0; z-index: 3; opacity: 0; will-change: transform;
-  transition: opacity .6s; white-space: nowrap; pointer-events: none;
-}
-.uv-pin-qday { display: grid; justify-items: center; gap: 5px; padding-bottom: 16px; }
-.uv-pin-qday .t { font: italic 380 28px/1 var(--display); letter-spacing: -0.01em; color: #fbe3d9; text-shadow: 0 0 24px rgba(255, 140, 110, 0.35); }
-.uv-pin-qday .y { font-size: 10px; letter-spacing: 0.42em; margin-right: -0.42em; color: rgba(251, 227, 217, 0.62); }
-.uv-pin-qday::after { content: ""; position: absolute; left: 50%; bottom: 0; width: 1px; height: 10px; background: rgba(251, 227, 217, 0.5); }
-
 /* ── story cards: the walk slows, the world blurs, a line arrives ─────── */
-.uv-card { position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center; }
+.uv-card { position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center; transition: opacity 1.1s ease; }
+.uv-card.read { opacity: 0; }
 .uv-card-veil {
   position: absolute; inset: 0; opacity: var(--s);
   background: radial-gradient(ellipse 80% 70% at 50% 50%, rgba(2, 3, 7, 0.5), rgba(2, 3, 7, 0.22));
@@ -77,8 +65,9 @@
 }
 .uv-card-qday h2 { color: #fbe6dc; }
 .uv-card-end p { color: #f6f3ec; font-style: italic; }
-/* While a card is up, the corner panels step back. */
-.uv-carded .uv-log, .uv-carded .uv-forge { opacity: 0.25; }
+/* While a card is being read, the corner panels step back. */
+.uv:has(.uv-card:not(.read)) .uv-log, .uv:has(.uv-card:not(.read)) .uv-forge { opacity: 0.25; }
+.uv:has(.uv-card:not(.read)) .uv-verdict { display: none; }
 
 /* ── capture log: what happened to the photo that just arrived ─────────── */
 .uv-log {
@@ -89,8 +78,19 @@
   animation: uv-rise .7s cubic-bezier(.2, .8, .2, 1) both;
   transition: opacity .45s, transform .45s;
 }
-.uv-log.away { opacity: 0; transform: translateY(10px); pointer-events: none; }
-.uv-log.folded { cursor: pointer; }
+/* (animation: none, or the rise animation's end state would keep it visible) */
+.uv-log.away { opacity: 0; transform: translateY(10px); pointer-events: none; animation: none; }
+.uv-log.folded {
+  cursor: pointer; width: auto; padding: 0; background: transparent; border-color: transparent;
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.uv-log.folded .uv-log-title, .uv-log.folded .uv-log-id, .uv-log.folded ol, .uv-log.folded footer { display: none; }
+.uv-log.folded header { grid-template-columns: 22px; }
+.uv-log.folded header img { opacity: 0.7; box-shadow: 0 0 0 1px var(--faint); transition: opacity .3s; }
+.uv-log.folded:hover header img { opacity: 1; }
+.uv-log-green.folded header img { box-shadow: 0 0 0 1px var(--ok), 0 0 10px rgba(166, 236, 198, 0.45); }
+.uv-log-amber.folded header img { box-shadow: 0 0 0 1px var(--warn); }
+.uv-log-grey.folded header img { box-shadow: 0 0 0 1px var(--fail); }
 .uv-log header { display: grid; grid-template-columns: 22px auto 1fr; align-items: center; gap: 10px; }
 .uv-log header img { width: 22px; height: 22px; border-radius: 4px; object-fit: cover; display: block; }
 .uv-log-title { font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--dim); }
@@ -128,32 +128,42 @@
 .uv-log-grey .dot { background: var(--fail); }
 @keyframes uv-rise { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: none } }
 
-/* ── the live key break: evidence, in mono ───────────────────────────── */
+/* ── the live key break: a terminal printing onto the scene, no card ─── */
 .uv-forge {
-  position: absolute; left: 24px; bottom: 24px; z-index: 7; box-sizing: border-box;
-  width: max-content; max-width: min(760px, calc(100vw - 48px));
-  padding: 16px 20px 16px 18px; border-radius: 12px; background: var(--glass); border: 1px solid var(--hair);
-  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-  font-size: clamp(12px, 0.92vw, 15px); line-height: 1.65; color: var(--ink);
-  animation: uv-rise .6s cubic-bezier(.2, .8, .2, 1) both; transition: opacity .45s;
+  position: absolute; left: 28px; bottom: 26px; z-index: 7; box-sizing: border-box;
+  width: max-content; max-width: min(720px, calc(100vw - 56px));
+  font-size: clamp(12px, 0.9vw, 14px); line-height: 1.7; color: rgba(214, 236, 224, 0.86);
+  text-shadow: 0 0 14px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
+  transition: opacity .8s, filter .8s;
 }
-.uv-forge dl { margin: 0; display: grid; gap: 1px; }
-.uv-forge .row { display: grid; grid-template-columns: 3.4em 1fr; gap: 14px; animation: uv-row .5s cubic-bezier(.2, .8, .2, 1) both; }
-.uv-forge dt { color: var(--faint); }
+.uv-forge.done { opacity: 0; filter: blur(6px); transition-delay: .9s; }
+.uv-forge dl { margin: 0; display: grid; gap: 0; }
+.uv-forge .row { display: grid; grid-template-columns: 3em 1fr; gap: 12px; animation: uv-type .5s steps(8, end) both; }
+.uv-forge dt { color: rgba(214, 236, 224, 0.42); }
+.uv-forge dt::before { content: "› "; }
 .uv-forge dd { margin: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
-.uv-forge dd em { font-style: normal; color: var(--faint); margin-left: 1.2em; word-break: normal; white-space: nowrap; }
-.uv-forge dd i { font-style: normal; color: var(--faint); padding: 0 0.3em; }
-.uv-forge dd.live::after { content: ""; display: inline-block; width: 0.55em; height: 1.05em; margin-left: 0.5em; vertical-align: -0.18em; background: var(--ink); animation: uv-blink .9s steps(1) infinite; }
+.uv-forge dd em { font-style: normal; color: rgba(214, 236, 224, 0.42); margin-left: 1.2em; word-break: normal; white-space: nowrap; }
+.uv-forge dd i { font-style: normal; color: rgba(214, 236, 224, 0.42); padding: 0 0.3em; }
+.uv-forge dd.live::after { content: ""; display: inline-block; width: 0.55em; height: 1.05em; margin-left: 0.5em; vertical-align: -0.18em; background: currentColor; animation: uv-blink .9s steps(1) infinite; }
 .uv-forge-error { margin: 0; color: var(--dim); }
-.uv-forge-verdict {
-  display: grid; grid-template-columns: auto auto; justify-content: start; gap: 44px;
-  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hair);
-  animation: uv-row .7s .1s cubic-bezier(.2, .8, .2, 1) both;
+@keyframes uv-type { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0 0 0 0) } }
+
+/* the verdict: centred, as long as it takes to read, then the 3D frame carries it */
+.uv-verdict {
+  position: absolute; inset: 0; z-index: 8; pointer-events: none;
+  display: flex; align-items: center; justify-content: center; gap: clamp(48px, 8vw, 140px);
+  animation: uv-verdict 3.4s cubic-bezier(.2, .8, .2, 1) .9s both;
 }
-.uv-forge-verdict p { margin: 0; display: grid; gap: 3px; font: 380 clamp(28px, 2.4vw, 40px)/1 var(--display); letter-spacing: -0.015em; }
-.uv-forge-verdict span { font: 400 10px/1 var(--mono); letter-spacing: 0.24em; text-transform: uppercase; color: var(--faint); }
-.uv-forge-verdict .bad { color: var(--fail); }
-.uv-forge-verdict .good { color: var(--ok); }
+.uv-verdict p { margin: 0; display: grid; justify-items: center; gap: 12px; font: 340 clamp(44px, 5.6vw, 96px)/1 var(--display); letter-spacing: -0.025em; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8); }
+.uv-verdict span { font: 400 11px/1 var(--mono); letter-spacing: 0.32em; margin-right: -0.32em; text-transform: uppercase; color: var(--dim); }
+.uv-verdict .bad { color: var(--fail); }
+.uv-verdict .good { color: var(--ok); }
+@keyframes uv-verdict {
+  0% { opacity: 0; filter: blur(10px); transform: translateY(8px) }
+  16% { opacity: 1; filter: blur(0); transform: none }
+  82% { opacity: 1; filter: blur(0) }
+  100% { opacity: 0; filter: blur(8px) }
+}
 @keyframes uv-row { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
 
 /* ── demo tools: one quiet mark in the corner ─────────────────────────── */
@@ -188,12 +198,11 @@
 .uv-tools .pick input { position: absolute; inset: -6px; opacity: 0; cursor: pointer; }
 .uv-tools .seg { display: flex; gap: 6px; flex-wrap: wrap; }
 .uv-tools .seg button {
-  padding: 4px 10px; border-radius: 999px; background: transparent; border: 1px solid var(--hair); color: var(--dim);
-  transition: color .2s, background .2s, border-color .2s;
+  padding: 2px 0; margin-right: 10px; border: 0; border-bottom: 1px solid transparent; border-radius: 0;
+  background: transparent; color: var(--faint); transition: color .2s, border-color .2s;
 }
-.uv-tools .seg button:hover { color: var(--ink); border-color: rgba(255, 255, 255, 0.2); }
-.uv-tools .seg button.on { color: var(--ink); background: rgba(255, 255, 255, 0.1); border-color: transparent; }
-.uv-tools kbd { font: inherit; color: var(--faint); margin-left: 6px; }
+.uv-tools .seg button:hover { color: var(--ink); }
+.uv-tools .seg button.on { color: var(--ink); border-bottom-color: rgba(255, 255, 255, 0.5); }
 .uv :focus-visible { outline: 1px solid rgba(255, 255, 255, 0.7); outline-offset: 2px; }
 
 /* ── no WebGL ────────────────────────────────────────────────────────── */
@@ -206,10 +215,10 @@
   .uv-log, .uv-forge { left: 14px; right: 14px; bottom: 14px; width: auto; max-width: none; }
   .uv-tools { top: 18px; bottom: auto; right: 16px; }
   .uv-tools-panel { top: 22px; bottom: auto; width: min(292px, calc(100vw - 32px)); }
-  .uv-forge-verdict { gap: 28px; }
+  .uv-verdict { flex-direction: column; gap: 36px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .uv-log, .uv-forge, .uv-forge .row, .uv-forge-verdict, .uv-tools-panel { animation: none; }
+  .uv-log, .uv-forge .row, .uv-tools-panel { animation: none; }
   .uv-log li, .uv-log footer { transition: none; }
   .uv-card-text { filter: none; transform: none; }
 }

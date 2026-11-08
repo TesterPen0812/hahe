@@ -1,8 +1,7 @@
-// What the stage says about a photo, derived only from the server's real verdict: the capture log's
-// steps (one per check the verifier ran, in its order) and the seal parts handed to the 3D scene.
-// Nothing here is invented: a step exists because a check exists.
+// What the capture log says about a photo, derived only from the server's real verdict: one step per
+// check the verifier ran, in its order. Nothing here is invented: a step exists because a check exists.
+// (The seal parts the 3D scene draws come from sealParts.ts.)
 import type { Alg, Check, ItemSummary, SealCheck, TrustLabel, VerificationResult } from '@provenance-demo/shared'
-import type { ForgeryArrival, LiveArrival, SealPart } from './contract'
 
 export const ALG_SHORT: Record<Alg, string> = {
   ed25519: 'Ed25519',
@@ -34,6 +33,17 @@ export interface CaptureStep {
 const clock = (iso: string) => {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-GB', { hour12: false })
+}
+
+/**
+ * When the log entry was written, read against when the photo was received: a live capture is logged
+ * moments later, so that reads as "+40 ms". Anything else (an imported or backdated item) shows its
+ * own clock time, so the two lines never contradict each other.
+ */
+export function loggedAfter(received: string, logged: string): string {
+  const ms = Date.parse(logged) - Date.parse(received)
+  if (!Number.isFinite(ms) || ms < 0 || ms >= 60_000) return clock(logged)
+  return ms < 1000 ? `+${Math.max(1, Math.round(ms))} ms` : `+${(ms / 1000).toFixed(1)} s`
 }
 
 const partsOf = (parts: SealCheck[] | undefined): StepPart[] | undefined =>
@@ -77,7 +87,7 @@ function stepFor(c: Check, item: ItemSummary, i: number): CaptureStep {
       }
     case 'Logged': {
       const e = item.logEntry
-      if (c.pass && e) return { ...base, text: `Logged · entry ${e.seq}`, detail: `${clock(e.timestamp)} · ${short('ml-dsa-65')}` }
+      if (c.pass && e) return { ...base, text: `Logged · entry ${e.seq}`, detail: `${loggedAfter(item.createdAt, e.timestamp)} · ${short('ml-dsa-65')}` }
       return { ...base, text: 'Not in the log' }
     }
     case 'Provenance':
@@ -100,33 +110,4 @@ export function captureSteps(item: ItemSummary): CaptureStep[] {
   v.checks.forEach((c, i) => steps.push(stepFor(c, item, i)))
   steps.push({ key: 'verdict', tone: v.status === 'grey' ? 'fail' : 'ok', text: verdictText(v) })
   return steps
-}
-
-const QUANTUM_BROKEN = new Set<string>(['rsa-pss-2048', 'rsa-toy-96', 'ed25519', 'es256'])
-
-/** The seals on a photo for the 3D frame: the capture signature's parts, Face ID, or the camera's RSA. */
-export function sealParts(v: VerificationResult): SealPart[] {
-  const out: SealPart[] = []
-  const add = (alg: Alg, state: SealPart['state']) => { if (!out.some(p => p.alg === alg)) out.push({ alg, state }) }
-  const held = (alg: Alg) => (v.anchoredBeforeQDay && QUANTUM_BROKEN.has(alg) ? 'anchored' : 'holds')
-  for (const c of v.checks) {
-    if (c.name === 'Capture signature' && c.parts) {
-      for (const p of c.parts) add(p.alg, p.valid && p.counted ? held(p.alg) : p.brokenSinceQDay ? 'broken' : 'missing')
-    } else if ((c.name === 'Person approved capture' || c.name === 'Camera signature') && c.alg) {
-      add(c.alg, c.pass ? held(c.alg) : c.brokenSinceQDay ? 'broken' : 'missing')
-    }
-  }
-  return out
-}
-
-export function liveArrival(item: ItemSummary): LiveArrival {
-  const v = item.verification
-  return { id: item.id, url: item.imageUrl, status: v.status, label: v.label, parts: sealParts(v) }
-}
-
-/** The toy-RSA fake: its camera signature is real (RSA ring), it has no ML-DSA seal, ours rejects it. */
-export function forgeryArrival(r: { itemId: string; imageUrl: string; ours: VerificationResult; naive: VerificationResult }): ForgeryArrival {
-  const parts = sealParts(r.ours)
-  if (!parts.some(p => p.alg === 'ml-dsa-65')) parts.push({ alg: 'ml-dsa-65', state: 'missing' })
-  return { id: r.itemId, url: r.imageUrl, status: r.ours.status, label: r.ours.label, parts, naiveStatus: r.naive.status }
 }

@@ -1,35 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { DEFAULT_Q_DAY_HEADLINE_YEAR, type ItemSummary } from '@provenance-demo/shared'
+import type { ItemSummary } from '@provenance-demo/shared'
 import '@fontsource-variable/newsreader/opsz.css'
 import '@fontsource-variable/newsreader/opsz-italic.css'
 import '@fontsource/ibm-plex-mono/400.css'
 import '@fontsource/ibm-plex-mono/500.css'
 import { api } from '../lib/api'
 import { useWorld } from '../lib/world'
-import { UniverseEngine, type EngineState, type LabelId, type WorldView } from './engine'
+import { UniverseEngine, type EngineState, type WorldView } from './engine'
 import type { GalleryPhoto, SealVerdict } from './gallery'
-import { describeArrival, isAttack, useLiveFeed } from './liveFeed'
-import type { DoorId, DoorTints, RGB, WalkControls, WalkState } from './contract'
+import { isAttack, useLiveFeed } from './liveFeed'
+import type { DoorId, DoorTints, RGB } from './contract'
 import { useGesture, useHands } from '../gesture/gestures'
 import { StoryCard } from './StoryCard'
 import { CaptureLog } from './CaptureLog'
-import { ForgeReadout } from './ForgeReadout'
+import { ForgeReadout, VERDICT_MS } from './ForgeReadout'
 import { StageTools } from './StageTools'
 import { loadTints, useForge, useMockCard } from './stageHooks'
-import { forgeryArrival } from './stageData'
+import { toForgeryArrival, toLiveArrival } from './sealParts'
 import './universe.css'
 
-const INITIAL: EngineState = { phase: 'trunk', branch: null, hovered: null, qday: false, started: false, stop: 0, gliding: false }
+const INITIAL: EngineState = {
+  phase: 'trunk', branch: null, hovered: null, qday: false, started: false, stop: 0, gliding: false,
+  walk: { region: 'tunnel', card: null, liveIndex: null }, stopCount: 0,
+}
 const params = new URLSearchParams(window.location.search)
 // Rehearsal without the phone: /?rehearse, then L lands the newest photo in the live frame.
 const REHEARSE = import.meta.env.DEV && params.has('rehearse')
 // Building the screen before the scene emits walk state: /?mockwalk cycles the cards.
 const MOCKWALK = import.meta.env.DEV && params.has('mockwalk')
 
-/** The scene branch adds `walk` to the engine state and these methods to the engine; read both defensively. */
-type StageState = EngineState & { walk?: WalkState }
-const controls = (e: UniverseEngine | null) => e as unknown as Partial<WalkControls> | null
 
 function webglAvailable() {
   try {
@@ -43,9 +43,8 @@ const typing = (e: KeyboardEvent) => !!(e.target as HTMLElement | null)?.closest
 export default function UniversePage() {
   const host = useRef<HTMLDivElement>(null)
   const engine = useRef<UniverseEngine | null>(null)
-  const root = useRef<HTMLElement>(null)
   const [view, setView] = useState<WorldView>('journey')
-  const [state, setState] = useState<StageState>(INITIAL)
+  const [state, setState] = useState<EngineState>(INITIAL)
   const [failed, setFailed] = useState(() => !webglAvailable())
   const { world, set } = useWorld()
   const setRef = useRef(set)
@@ -69,32 +68,46 @@ export default function UniversePage() {
 
   // ── the live feed: phone photos land in the scene and stream their checks into the log ──
   const feed = useLiveFeed(false)
+  // Photos shown in the live frames, by id; when the world changes they are judged again in place.
+  const shown = useRef(new Set<string>())
   useEffect(() => {
-    if (feed.arrival) engine.current?.showArrival(describeArrival(feed.arrival))
+    if (!feed.arrival) return
+    shown.current.add(feed.arrival.id)
+    engine.current?.showLive(toLiveArrival(feed.arrival))
   }, [feed.arrival])
   const { refresh } = feed
-  useEffect(() => { if (world.mode === 'q-day') refresh() }, [world.mode, refresh])
+  useEffect(() => { refresh() }, [world.mode, refresh])
   useEffect(() => {
-    if (world.mode !== 'q-day' || !feed.items) return
+    if (!feed.items) return
+    for (const i of feed.items) if (shown.current.has(i.id)) engine.current?.showLive(toLiveArrival(i))
+    if (world.mode !== 'q-day') return
     const verdicts = new Map<string, SealVerdict>()
     for (const i of feed.items) verdicts.set(i.id, { status: i.verification.status, anchored: i.verification.anchoredBeforeQDay })
     engine.current?.setVerdicts(verdicts)
   }, [world.mode, feed.items])
 
   // ── the live key break ──
-  const forge = useForge(result => controls(engine.current)?.showForgery?.(forgeryArrival(result)))
+  const forge = useForge(result => engine.current?.showForgery(toForgeryArrival(result)))
   const { run: forgeRun, start: startForge, dismiss: dismissForge } = forge
+  // Once the verdict has been read (or the run failed), the readout goes; the 3D frame stays.
+  useEffect(() => {
+    if (forgeRun?.phase !== 'done' && forgeRun?.phase !== 'error') return
+    const t = setTimeout(dismissForge, forgeRun.phase === 'done' ? VERDICT_MS + 1600 : 4000)
+    return () => clearTimeout(t)
+  }, [forgeRun?.phase, dismissForge])
+  // Only after Q-Day: before it there is nothing to break. A finished run can always be put away.
+  const qday = world.mode === 'q-day'
   const breakKey = useCallback(() => {
     if (forgeRun?.phase === 'running') return
     if (forgeRun) dismissForge()
-    else startForge()
-  }, [forgeRun, startForge, dismissForge])
+    else if (qday) startForge()
+  }, [forgeRun, startForge, dismissForge, qday])
 
   // ── door colours (demo-only tuning, remembered in this browser) ──
   const [tints, setTints] = useState<Partial<DoorTints>>(loadTints)
   const onTint = useCallback((door: DoorId, rgb: RGB) => {
     setTints(t => ({ ...t, [door]: rgb }))
-    controls(engine.current)?.setDoorTint?.(door, rgb)
+    engine.current?.setDoorTint(door, rgb)
   }, [])
 
   const onView = useCallback((next: WorldView) => {
@@ -154,9 +167,9 @@ export default function UniversePage() {
     engine.current = e
     if (handsRef.current) e.setHands(handsRef.current)
     const saved = loadTints()
-    for (const door of Object.keys(saved) as DoorId[]) controls(e)?.setDoorTint?.(door, saved[door]!)
-    const current = controls(e)?.doorTints?.()
-    if (current) queueMicrotask(() => setTints(t => ({ ...current, ...t })))
+    for (const door of Object.keys(saved) as DoorId[]) e.setDoorTint(door, saved[door]!)
+    const current = e.doorTints()
+    queueMicrotask(() => setTints(t => ({ ...current, ...t })))
     // Real photos from the feed line the walk: old-camera (RSA) beside our app's (hybrid).
     api.items().then(items => {
       const pick = (kind: 'legacy' | 'hybrid') => items
@@ -170,17 +183,11 @@ export default function UniversePage() {
       }
       if (engine.current === e) e.setGallery(photos)
     }).catch(() => {})
-    // The engine projects only labels it has a spot for (an unknown id would break its frame loop):
-    // 'door2' exists once the scene implements the walk-v2 contract.
-    const known = new Set<string>(['today', 'qday', 'u0', 'u1', 'u2', ...(controls(e)?.doorTints ? ['door1', 'door2'] : [])])
-    root.current?.querySelectorAll<HTMLElement>('[data-pin]').forEach(el => {
-      if (known.has(el.dataset.pin ?? '')) e.setLabel(el.dataset.pin as LabelId, el)
-    })
     return () => { e.dispose(); engine.current = null }
   }, [failed])
 
   const mockCard = useMockCard(MOCKWALK)
-  const card = MOCKWALK ? mockCard : state.walk?.card ?? null
+  const card = MOCKWALK ? mockCard : state.walk.card
   const journey = view === 'journey'
 
   if (failed) {
@@ -198,33 +205,25 @@ export default function UniversePage() {
   }
 
   return (
-    <main ref={root} className={`uv ${journey ? '' : 'uv-showcase'} ${card ? 'uv-carded' : ''}`}>
+    <main className={`uv ${journey ? '' : 'uv-showcase'}`}>
       <div ref={host} className="uv-stage" />
 
       <header className="uv-top">
-        <span className="uv-brand">Provenance</span>
         {handStatus !== 'off' && (
           <span className={`uv-hand ${handStatus} ${armed ? 'armed' : ''}`} role="status" aria-label={`Hand control ${handStatus}${armed ? ', armed' : ''}`}>
-            <i aria-hidden />hands
+            <i aria-hidden />
           </span>
         )}
       </header>
 
       <div className="uv-story" hidden={!journey}>
-        {/* labels pinned into the 3D scene; only the Q-Day door carries words */}
-        {(['door2', 'qday'] as const).map(id => (
-          <div key={id} className="uv-pin uv-pin-qday" data-pin={id}>
-            <span className="t">Q-Day</span>
-            <span className="y">{DEFAULT_Q_DAY_HEADLINE_YEAR}</span>
-          </div>
-        ))}
         <CaptureLog item={feed.arrival} hidden={!!forgeRun} />
         <ForgeReadout run={forgeRun} />
       </div>
 
       <StoryCard card={journey ? card : null} />
 
-      <StageTools view={view} onView={onView} tints={tints} onTint={onTint} onBreak={breakKey} />
+      <StageTools view={view} onView={onView} tints={tints} onTint={onTint} />
     </main>
   )
 }

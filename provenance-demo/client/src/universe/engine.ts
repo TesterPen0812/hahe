@@ -6,13 +6,13 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { TRAIL_LENGTH, WAKE_LIFE, finishShader } from './shaders'
 import {
-  DOOR, UNIVERSES, type RGB, cloud, doorHalfWidth, doorProgress, gateWall, homeHeight, portal, sceneUniforms,
+  DOOR, type RGB, cloud, doorHalfWidth, doorProgress, gateWall, homeHeight, portal, sceneUniforms,
   tintGateWall, type SceneUniforms,
 } from './worlds'
 import { buildMeadow } from './scenery'
 import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from './gallery'
-import { PHONE_HOST, type Arrival } from './liveFrame'
-import { createLiveSequence } from './liveSequence'
+import { PHONE_HOST } from './liveFrame'
+import { createLiveSequence, LIVE_VIEW } from './liveSequence'
 import { Fluid } from './fluid'
 import { buildGreenWorld } from './greenWorld'
 import { buildPrismWorld } from './prismWorld'
@@ -23,7 +23,7 @@ import { driveVelocity, type HandControl } from '../gesture/handControl'
 import { doorCaption, type DoorCaption } from './doorCaption'
 import { Warp, cardAt, glideSeconds, slowFactor, type Zone } from './walk'
 import type {
-  DoorId, DoorTints, ForgeryArrival, LiveSequence, Region, WalkControls, WalkState,
+  DoorId, DoorTints, ForgeryArrival, LiveArrival, LiveSequence, Region, WalkControls, WalkState,
 } from './contract'
 
 export type WorldView = 'journey' | 'foliage' | 'prism'
@@ -47,9 +47,8 @@ export interface EngineState {
   started: boolean          // the visitor has moved off the start
   stop: number              // the story stop reached, or being glided to (index into the walk's stops)
   gliding: boolean          // the autopilot is walking to that stop
-  // Always emitted; optional only so pages that build an initial EngineState keep compiling.
-  stopCount?: number        // stops on the walk now (grows as live photos arrive)
-  walk?: WalkState
+  stopCount: number         // stops on the walk now (grows as live photos arrive)
+  walk: WalkState
 }
 export interface EngineCallbacks {
   onState: (s: EngineState) => void
@@ -57,8 +56,6 @@ export interface EngineCallbacks {
 }
 export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2' | 'door1' | 'door2'
 
-/** The world behind door 2 (kept for the page's panel): the one that went hybrid. */
-export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
 
 // ── The walk ────────────────────────────────────────────────────────────────
 // Green Foliage tunnel → door 1 → the blue world (today) → door 2 "Q-Day · 2035" → the Prism.
@@ -154,6 +151,7 @@ export class UniverseEngine implements WalkControls {
   private trunk = new THREE.CatmullRomCurve3([v2(0, 8), v2(1.4, -6), v2(-1.6, -20), v2(1.2, -34), v2(-0.6, -46), v2(0, -58)], false, 'centripetal')
   private galleries: { gallery: Gallery; stage: number }[] = []
   private live!: LiveSequence
+  private liveIds = new Set<string>()
   private fluid: Fluid
   private particles = new Map<THREE.Object3D, { simulation: ParticleSimulation; time: number }>()
   private fluidLast = new THREE.Vector2(-1, -1)
@@ -328,13 +326,29 @@ export class UniverseEngine implements WalkControls {
     this.glide = { index, from: w0, to: w1, t0: this.glideClock, dur }
   }
 
-  /** A new phone photo: it takes the next live frame in the Prism. */
-  showArrival(a: Arrival) {
-    this.live.arrive({ id: a.url, url: a.url, status: a.status, label: a.title, parts: [] })
+  /**
+   * A phone photo, as the server judged it: it takes the next live frame in the Prism. The same id
+   * again (re-judged after Q-Day) changes that frame's seal in place. Past the frames the meadow has
+   * room for, new photos wait off stage; one frame is always kept for the forgery.
+   */
+  showLive(a: LiveArrival) {
+    if (!this.liveIds.has(a.id) && this.liveIds.size >= this.maxLive() - 2) return
+    this.liveIds.add(a.id)
+    this.live.arrive(a)
   }
 
   /** The toy-RSA fake has been judged: it hangs beside the live photos. */
-  showForgery(f: ForgeryArrival) { this.live.showForgery(f) }
+  showForgery(f: ForgeryArrival) {
+    if (!this.liveIds.has(f.id) && this.liveIds.size >= this.maxLive() - 1) return
+    this.liveIds.add(f.id)
+    this.live.showForgery(f)
+  }
+
+  /** How many live frames (photos, the forgery and the waiting one) fit before the break and end cards. */
+  private maxLive() {
+    const room = this.stages[2].len - PRISM_TAIL - BREAK_AFTER - END_AFTER - (LIVE_START - LIVE_VIEW)
+    return Math.max(3, Math.floor(room / LIVE_SPACING) + 1)
+  }
 
   /** The server's verdicts after Q-Day, by photo id, for the Prism gallery's captions. */
   setVerdicts(v: Map<string, SealVerdict>) {
@@ -433,7 +447,7 @@ export class UniverseEngine implements WalkControls {
   celebrate(status: 'green' | 'amber' | 'grey') {
     const c = status === 'green' ? [0.3, 1, 0.6] : status === 'amber' ? [1, 0.7, 0.25] : [0.7, 0.72, 0.8]
     this.flashColor.setRGB(c[0], c[1], c[2])
-    this.flash = Math.max(this.flash, 0.22)
+    this.flash = Math.max(this.flash, 0.12)
   }
 
   /** Let the presenter's hands (webcam) walk the timeline; null hands control back to scroll. */
@@ -1145,21 +1159,22 @@ export class UniverseEngine implements WalkControls {
     // Q-Day lands with a cold violet flash and a jolt of zoom.
     if (!this.showcase && this.qdayAt >= 0 && this.flashedQday !== this.qdayAt) {
       this.flashedQday = this.qdayAt
-      this.flash = Math.max(this.flash, this.reducedMotion ? 0.12 : 0.3)
+      this.flash = Math.max(this.flash, this.reducedMotion ? 0.08 : 0.2)
       this.flashColor.setRGB(0.62, 0.55, 1.0)
       this.zoom = this.reducedMotion ? 0 : 0.2
     }
     if (this.flash > 0.5) this.zoom = this.reducedMotion ? 0 : 1 // crossing a doorway
     this.zoom = Math.max(0, this.zoom - dt * 1.6)
 
-    // The eye adapts: a crossing over-exposes for a moment, then settles.
-    const want = (this.showcase ? 1 : this.stages[this.active].exposure) + this.flash * 1.2
-    this.exposure += (want - this.exposure) * Math.min(1, dt * (want > this.exposure ? 8 : 1.4))
+    // The eye adapts: a crossing brightens for a beat, then settles. Kept short and shallow so the
+    // Prism never washes out to white (bloom does the rest).
+    const want = (this.showcase ? 1 : this.stages[this.active].exposure) + this.flash * 0.5
+    this.exposure += (want - this.exposure) * Math.min(1, dt * (want > this.exposure ? 10 : 4))
     this.renderer.toneMappingExposure = this.exposure
 
     const f = this.finish.uniforms
     f.uTime.value = t
-    this.flash = Math.max(0, this.flash - dt * 1.4)
+    this.flash = Math.max(0, this.flash - dt * 1.8)
     f.uFlash.value = this.flash * 0.8
     f.uZoom.value = this.zoom * this.zoom
     for (const u of [...this.stages, ...this.showcases.values()]) {
@@ -1218,6 +1233,7 @@ export class UniverseEngine implements WalkControls {
     }
     for (const [id, el] of this.labels) {
       const spot = spots[id]
+      if (!spot) continue
       const p = spot.p.clone().project(this.camera)
       const visible = !this.showcase && spot.show && p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2
       el.style.opacity = visible ? '1' : '0'

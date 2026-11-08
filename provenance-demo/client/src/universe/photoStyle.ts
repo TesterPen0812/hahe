@@ -12,6 +12,7 @@ export const TONE = {
   brass: { gl: [0.93, 0.77, 0.47] as RGB, css: '#e9c681' },  // held by the signed log, not by its own maths
   rose: { gl: [0.95, 0.5, 0.5] as RGB, css: '#f08f8a' },     // broken, or rejected
   ash: { gl: [0.5, 0.53, 0.6] as RGB, css: '#8c92a0' },      // nothing there
+  live: { gl: [0.12, 0.85, 0.42] as RGB, css: '#1fd86b' },   // the waiting frame's LIVE dot
   // kept under the bloom threshold, so type stays crisp instead of glowing
   ink: { css: '#c6cbd6' },
   dim: { css: 'rgba(170, 177, 192, 0.8)' },

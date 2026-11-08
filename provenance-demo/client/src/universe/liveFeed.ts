@@ -1,32 +1,11 @@
 // The world's feed, polled every two seconds for the whole visit (not only once inside a world),
 // so a photo taken while the walk holds at the Q-Day gate is already waiting in the live frame.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ItemSummary, TrustLabel } from '@provenance-demo/shared'
+import type { ItemSummary } from '@provenance-demo/shared'
 import { api } from '../lib/api'
-import type { Arrival } from './liveFrame'
 
 /** The attack console's own uploads (forgeries and its seeded target) aren't phone arrivals. */
 export const isAttack = (i: ItemSummary) => !!(i.manifest as { demoAttack?: string } | null)?.demoAttack
-
-const LABEL: Record<TrustLabel, string> = {
-  'verified-human': 'Verified human',
-  'device-verified': 'Device-verified',
-  'camera-verified': 'Camera-verified',
-  unknown: 'Unknown origin',
-}
-
-/** What the live frame says about a photo: the server's real verdict, in a line. */
-export function describeArrival(i: ItemSummary): Arrival {
-  const v = i.verification
-  const title = v.status === 'green'
-    ? `${LABEL[v.label]} · quantum-safe seal`
-    : v.status === 'amber' ? `${LABEL[v.label]} · Edited · logged` : LABEL[v.label]
-  const note = v.status === 'green'
-    ? v.label === 'verified-human' ? 'Sealed on the phone with Face ID, just now.' : 'Sealed on the device, just now.'
-    : v.status === 'amber' ? 'Edited, and every edit is in a signed log.'
-      : i.manifest ? 'Its seal doesn’t hold up. Not proven.' : 'No proof attached. All we can do is guess.'
-  return { url: i.imageUrl, status: v.status, title, note }
-}
 
 export interface LiveFeed {
   items: ItemSummary[] | null

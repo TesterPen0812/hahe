@@ -491,32 +491,20 @@ export function homeHeight(x: number, z: number) {
 
 export interface UniverseDef {
   id: 'rsa' | 'hybrid' | 'unsigned'
-  title: string
-  line: string
-  rule: string
   tint: RGB
 }
 
 export const UNIVERSES: UniverseDef[] = [
   {
     id: 'rsa',
-    title: 'The world stayed on RSA',
-    line: 'Proof collapses. Forgeries pass as real.',
-    rule: 'Checked the way today’s apps check: any valid old-style seal counts, even after Q-Day.',
     tint: [1.0, 0.42, 0.16],
   },
   {
     id: 'hybrid',
-    title: 'The world went hybrid',
-    line: 'Proof survives. Forgery caught.',
-    rule: 'Checked by us: broken algorithms only count if the photo was logged before Q-Day. ML-DSA-65 still holds.',
     tint: [0.28, 1.0, 0.62],
   },
   {
     id: 'unsigned',
-    title: 'Nobody signed anything',
-    line: 'Only AI guesses left. Nothing is provable.',
-    rule: 'No seals anywhere. Every photo is a guess — real and fake look the same.',
     tint: [0.72, 0.74, 0.8],
   },
 ]

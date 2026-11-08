@@ -81,10 +81,11 @@ const fragment = /* glsl */ `
     vec4 col = vec4(0.0, 0.0, 0.0, shadow * (1.0 - inCard));
 
     if (dCard < aa) {
-      // Smoked glass, a touch lighter at the top.
+      // Smoked glass, a touch lighter at the top; dense enough that the bright path behind a card
+      // doesn't shine through its label.
       float up = p.y / uCard.y;
       vec3 glass = vec3(0.026, 0.03, 0.042) + vec3(0.012, 0.013, 0.016) * up;
-      col = mix(col, vec4(glass, 0.9), inCard);
+      col = mix(col, vec4(glass, 0.975), inCard);
 
       // The print.
       vec2 pp = p - uPhoto.xy;
@@ -147,7 +148,8 @@ const fragment = /* glsl */ `
         float tarc = ts / 36.0 * TAU * tr;
         float ticks = fill(max(abs(tarc) - w * 0.3, abs(rr - tr) - w * 0.9), aa);
         col.rgb = mix(col.rgb, uSealTone, ticks * 0.32 * allOn * uSealVis);
-        float centre = fill(rr - uSeal.z * 0.1, aa) * smoothstep(0.55, 1.0, all);
+        // a rejected seal has no heart: the centre mark goes, so nothing glows over the empty slot
+        float centre = fill(rr - uSeal.z * 0.1, aa) * smoothstep(0.55, 1.0, all) * (1.0 - uReject);
         col.rgb = mix(col.rgb, uSealTone, centre * 0.9 * uSealVis);
         for (int i = 0; i < 4; i++) {
           vec4 R = uRing[i];
@@ -170,9 +172,11 @@ const fragment = /* glsl */ `
             float flare = R.w > 0.5 && R.w < 1.5 && R.z > -50.0 ? exp(-max(age, 0.0) * 1.4) * step(0.0, age) : 0.0;
             c = base * (1.0 + flare * 1.2);
             m = fill(ringD - flare * w * 0.6, aa);
-            // a slow glint travels round a ring that holds
+            // a slow glint travels round a ring that holds (not on a forgery: its valid ring is no
+            // reason to shine)
             float g = pow(max(cos((a01 - fract(uTime * 0.07 + uSeed + float(i) * 0.31)) * TAU), 0.0), 60.0);
-            c += vec3(0.6) * g * 0.5;
+            c += vec3(0.6) * g * 0.5 * (1.0 - uReject);
+            c *= 1.0 - 0.35 * uReject;
           } else if (R.y < 1.5) {
             // broken: the ring parts into arcs that drift outward and fade
             float k = smoothstep(0.0, 1.6, max(age, 0.0));
@@ -198,14 +202,14 @@ const fragment = /* glsl */ `
             float n = 26.0;
             float s = fract(a01 * n) - 0.5;
             float arc = s / n * TAU * rad;
-            m = fill(length(vec2(arc, rr - rad)) - w * 0.62, aa);
-            c = uAsh;
-            alpha = 0.75;
+            m = fill(length(vec2(arc, rr - rad)) - w * 0.75, aa);
+            c = mix(uAsh, vec3(0.78, 0.8, 0.86), 0.55);
+            alpha = 0.95;
           }
           m *= on * alpha;
           col.rgb = mix(col.rgb, c, m);
           // a faint bloom of the ring's own colour on the glass
-          col.rgb += c * exp(-max(ringD, 0.0) / (w * 1.6)) * 0.07 * on * alpha * step(R.y, 2.5);
+          col.rgb += c * exp(-max(ringD, 0.0) / (w * 1.6)) * 0.07 * on * alpha * step(R.y, 2.5) * (1.0 - uReject);
         }
       }
 
@@ -393,7 +397,8 @@ export class PhotoCard {
     const y1 = ch * (hasLine ? 0.28 : 0.5)
     let x = 2 * k
     if (label.live) {
-      ctx.fillStyle = TONE.mint.css
+      // a saturated green: the caption's glare limit keeps its hue, so it still reads green under bloom
+      ctx.fillStyle = TONE.live.css
       ctx.beginPath(); ctx.arc(x + size * 0.3, y1, size * 0.26, 0, Math.PI * 2); ctx.fill()
       x += size * 0.95
     }
