@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import type { ItemSummary } from '@provenance-demo/shared'
+import type { ItemSummary, WorldMode } from '@provenance-demo/shared'
 import '@fontsource-variable/newsreader/opsz.css'
 import '@fontsource-variable/newsreader/opsz-italic.css'
 import '@fontsource/ibm-plex-mono/400.css'
@@ -10,13 +10,13 @@ import { useWorld } from '../lib/world'
 import { UniverseEngine, type EngineState, type WorldView } from './engine'
 import type { GalleryPhoto, SealVerdict } from './gallery'
 import { isAttack, useLiveFeed } from './liveFeed'
-import type { DoorId, DoorTints, RGB } from './contract'
+import type { DoorId, DoorTints, RGB, WalkState } from './contract'
 import { useGesture, useHands } from '../gesture/gestures'
 import { StoryCard } from './StoryCard'
 import { CaptureLog } from './CaptureLog'
 import { ForgeReadout, VERDICT_MS } from './ForgeReadout'
 import { StageTools } from './StageTools'
-import { loadTints, useForge, useMockCard } from './stageHooks'
+import { loadTints, useForge, useMockCard, useVerdictGate } from './stageHooks'
 import { toForgeryArrival, toLiveArrival } from './sealParts'
 import './universe.css'
 
@@ -49,6 +49,14 @@ export default function UniversePage() {
   const { world, set } = useWorld()
   const setRef = useRef(set)
   useEffect(() => { setRef.current = set })
+  // World writes go out one at a time, in the order they were asked for, so the last one always wins
+  // (the reset on load can never land after a door crossing that came later).
+  const worldWrites = useRef<Promise<unknown>>(Promise.resolve())
+  const writeWorld = useCallback((mode: WorldMode) => {
+    const next = worldWrites.current.catch(() => {}).then(() => setRef.current(mode))
+    worldWrites.current = next
+    void next.catch(() => {})
+  }, [])
 
   // ── hand control: H toggles; the only trace on stage is a small mark in the corner ──
   const [handsOn, setHandsOn] = useState(false)
@@ -93,12 +101,19 @@ export default function UniversePage() {
   // ── the live key break ──
   const forge = useForge(result => engine.current?.showForgery(toForgeryArrival(result)))
   const { run: forgeRun, start: startForge, dismiss: dismissForge } = forge
-  // Once the verdict has been read (or the run failed), the readout goes; the 3D frame stays.
+  const dismissRef = useRef(dismissForge)
+  useEffect(() => { dismissRef.current = dismissForge })
+  // The verdict waits for the forged photo to land in its frame (the scene's `forgeryLanded`; older
+  // scene builds don't send it, and the gate falls back to a short delay).
+  const walk: WalkState & { forgeryLanded?: boolean } = state.walk
+  const verdict = useVerdictGate(forgeRun, walk.forgeryLanded)
+  // Once the verdict has been read (or the run failed and faded), the readout goes; the 3D frame stays.
+  const forgeOver = forgeRun?.phase === 'error' ? 'error' : verdict ? 'verdict' : null
   useEffect(() => {
-    if (forgeRun?.phase !== 'done' && forgeRun?.phase !== 'error') return
-    const t = setTimeout(dismissForge, forgeRun.phase === 'done' ? VERDICT_MS + 1600 : 4000)
+    if (!forgeOver) return
+    const t = setTimeout(dismissForge, forgeOver === 'verdict' ? VERDICT_MS + 400 : 1500)
     return () => clearTimeout(t)
-  }, [forgeRun?.phase, dismissForge])
+  }, [forgeOver, dismissForge])
   // Only after Q-Day: before it there is nothing to break. A finished run can always be put away.
   const qday = world.mode === 'q-day'
   const breakKey = useCallback(() => {
@@ -161,7 +176,11 @@ export default function UniversePage() {
       e = new UniverseEngine(host.current, {
         onState: setState,
         // Crossing the Q-Day door flips the shared world, so the phone and every other screen follow.
-        onQDay: crossed => { void setRef.current(crossed ? 'q-day' : 'today').catch(() => {}) },
+        // Walking back out mid-break aborts the run, so no Post-Quantum verdict lands in today's world.
+        onQDay: crossed => {
+          if (!crossed) dismissRef.current()
+          writeWorld(crossed ? 'q-day' : 'today')
+        },
       })
     } catch (err) {
       console.error(err)
@@ -169,6 +188,9 @@ export default function UniversePage() {
       return
     }
     engine.current = e
+    // The walk always starts before the Post-Quantum Day door, so the shared world starts at today
+    // (a reload mid-demo would otherwise leave the server at Q-Day behind a fresh tunnel).
+    writeWorld('today')
     if (handsRef.current) e.setHands(handsRef.current)
     const saved = loadTints()
     for (const door of Object.keys(saved) as DoorId[]) e.setDoorTint(door, saved[door]!)
@@ -188,7 +210,7 @@ export default function UniversePage() {
       if (engine.current === e) e.setGallery(photos)
     }).catch(() => {})
     return () => { e.dispose(); engine.current = null }
-  }, [failed])
+  }, [failed, writeWorld])
 
   const mockCard = useMockCard(MOCKWALK)
   const card = MOCKWALK ? mockCard : state.walk.card
@@ -221,8 +243,8 @@ export default function UniversePage() {
       </header>
 
       <div className="uv-story" hidden={!journey}>
-        <CaptureLog item={feed.arrival} hidden={!!forgeRun} />
-        <ForgeReadout run={forgeRun} />
+        <CaptureLog item={feed.arrival} hidden={!!forgeRun} fold={!!forgeRun?.result} />
+        <ForgeReadout run={forgeRun} verdict={verdict} />
       </div>
 
       <StoryCard card={journey ? card : null} />

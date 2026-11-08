@@ -50,13 +50,43 @@ export function useForge(onDone: (r: ToyBreakResult) => void) {
       done.current(result)
     }).catch((e: unknown) => {
       if (ctl.signal.aborted) return
+      // The detail is for the console; on stage the readout just fades away without words.
+      console.error('Key break failed:', e)
       setRun(r => ({ ...(r ?? { steps: 0, ms: 0 }), phase: 'error', error: e instanceof Error ? e.message : String(e) }))
     })
   }, [])
 
+  /** Put the run away. Mid-run this aborts it: the worker is terminated and any late result ignored. */
   const dismiss = useCallback(() => { abort.current?.abort(); abort.current = null; setRun(null) }, [])
   useEffect(() => () => abort.current?.abort(), [])
   return { run, start, dismiss }
+}
+
+/** Fallback when the scene never reports the forgery landing (older scene build): show the verdict anyway. */
+export const VERDICT_FALLBACK_MS = 2500
+
+/**
+ * When the centred verdict may come up: only once the forged photo has landed in its frame, so the words
+ * never sit over the genuine photo. `landed` is the scene's `walk.forgeryLanded`; it must rise after
+ * this run's result arrives (a stale `true` from an earlier forgery doesn't count). If it never does,
+ * the verdict shows `VERDICT_FALLBACK_MS` after the result.
+ */
+export function useVerdictGate(run: ForgeRun | null, landed: boolean | undefined): boolean {
+  const result = run?.result ?? null
+  const [gate, setGate] = useState<{ result: ToyBreakResult | null; sawDown: boolean; open: boolean }>({ result: null, sawDown: false, open: false })
+  let g = gate
+  if (g.result !== result) g = { result, sawDown: false, open: false }
+  if (result && !g.open) {
+    if (!landed && !g.sawDown) g = { ...g, sawDown: true }
+    else if (landed && g.sawDown) g = { ...g, open: true }
+  }
+  if (g !== gate) setGate(g)
+  useEffect(() => {
+    if (!result || g.open) return
+    const t = setTimeout(() => setGate(c => (c.result === result ? { ...c, open: true } : c)), VERDICT_FALLBACK_MS)
+    return () => clearTimeout(t)
+  }, [result, g.open])
+  return !!result && g.open
 }
 
 const ORDER: CardId[] = ['today', 'qday', 'break', 'end']

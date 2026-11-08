@@ -43,9 +43,12 @@ const NAMES: Record<TrustLabel, string> = {
   unknown: 'Not proven',
 }
 
-/** The label under a live photo: who or what is proven, then the seals. */
+/**
+ * The label under a live photo: who or what is proven, then the seals. A forgery reads "Rejected" only
+ * while our verifier actually rejects it (status grey); being a forgery alone never decides the verdict.
+ */
 export function labelFor(a: LiveArrival, forgery = false): Label {
-  if (forgery) return { kicker: 'Rejected', tone: 'rose', parts: a.parts }
+  if (forgery && a.status === 'grey') return { kicker: 'Rejected', tone: 'rose', parts: a.parts }
   const tone = a.status === 'green' ? 'mint' : a.status === 'amber' ? 'brass' : 'ash'
   const kicker = NAMES[a.label as TrustLabel] ?? a.label
   return { kicker: a.status === 'amber' ? `${kicker} · edited` : kicker, tone, parts: a.parts }

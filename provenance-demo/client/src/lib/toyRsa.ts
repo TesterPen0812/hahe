@@ -73,8 +73,9 @@ export function factorInWorker(
   })
 }
 
-/** A plainly marked fake. The marking is part of the signed bytes. */
-async function forgedImage(camera: LegacyCamera, n: bigint): Promise<Blob> {
+/** A plainly marked fake: FORGED is part of the signed bytes. (Each run still gets its own manifest:
+ *  the claim carries its capture time, so the log entry is new every time.) */
+async function forgedImage(): Promise<Blob> {
   const canvas = document.createElement('canvas')
   canvas.width = 960; canvas.height = 720
   const ctx = canvas.getContext('2d')!
@@ -88,11 +89,6 @@ async function forgedImage(camera: LegacyCamera, n: bigint): Promise<Blob> {
   ctx.fillStyle = '#ff5a4f'; ctx.font = '900 150px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'
   ctx.fillText('FORGED', 0, 8)
   ctx.restore()
-  ctx.fillStyle = 'rgba(255,255,255,.92)'; ctx.font = '600 26px system-ui, sans-serif'; ctx.textAlign = 'left'
-  ctx.fillText(`Signed as "${camera.name}"`, 40, 620)
-  ctx.font = '22px ui-monospace, monospace'
-  ctx.fillText(`with a private key rebuilt by factoring n = ${n}`, 40, 656)
-  ctx.fillText(new Date().toISOString(), 40, 690)
   const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, 'image/png'))
   if (!blob) throw new ToyBreakError('Could not draw the fake photo.')
   return blob
@@ -103,10 +99,14 @@ async function forgedImage(camera: LegacyCamera, n: bigint): Promise<Blob> {
  * the maths). Never touches the phone's keys: the only target is the toy camera.
  */
 export async function runToyBreak(onStage?: (s: ToyBreakStage) => void, signal?: AbortSignal): Promise<ToyBreakResult> {
+  // Walking back out of Post-Quantum Day aborts the run: stop at the next step, and never upload after it.
+  const stopped = () => { if (signal?.aborted) throw new ToyBreakError('Stopped.') }
   const world = await api.world()
-  if (world.mode !== 'q-day') throw new ToyBreakError('Flip to Q-Day first: the attack is what Q-Day makes possible.')
+  stopped()
+  if (world.mode !== 'q-day') throw new ToyBreakError('Flip to Post-Quantum Day first: the attack is what Post-Quantum Day makes possible.')
 
   const trust = await api.trust()
+  stopped()
   const camera = trust.legacyCameras.find((c) => c.alg === TOY_RSA_ALG)
   if (!camera) throw new ToyBreakError('No toy camera on the trust list. Run scripts/gen-toy-camera.ts and restart the API.')
   const { n } = decodeToyPublicKey(camera.publicKey)
@@ -120,20 +120,23 @@ export async function runToyBreak(onStage?: (s: ToyBreakStage) => void, signal?:
   const d = privateExponent(f.p, f.q)
   onStage?.({ stage: 'key-rebuilt', d })
 
-  const image = await forgedImage(camera, n)
+  const image = await forgedImage()
+  stopped()
   const { contentHash } = await hashFile(image)
   const claim: LegacyClaim = { contentHash, dHash: await dHashFile(image), capturedAt: new Date().toISOString(), cameraId: camera.id }
   const signed = signToyLegacyClaim(claim, n, d)
   // The forged signature really is valid for the camera's public key.
   const selfCheck = await verifyLegacySignature(signed, camera)
   onStage?.({ stage: 'signed', selfCheck })
-  if (signal?.aborted) throw new ToyBreakError('Stopped.')
+  stopped()
 
   const manifest = { ...signed, demoAttack: DEMO_ATTACK_MARKER } as LegacyManifest
   const uploaded = await api.upload(uploadForm(new File([image], 'forged.png', { type: 'image/png' }), manifest, claim.dHash))
+  stopped()
   onStage?.({ stage: 'uploaded', itemId: uploaded.id })
 
   const [ours, naive] = await Promise.all([api.item(uploaded.id), api.item(uploaded.id, { naive: true })])
+  stopped()
   return {
     camera: { id: camera.id, name: camera.name }, n, bits, p: f.p, q: f.q, d, steps: f.steps, ms: f.ms,
     itemId: uploaded.id, imageUrl: uploaded.imageUrl, manifest, ours: ours.verification, naive: naive.verification,

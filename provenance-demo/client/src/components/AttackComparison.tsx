@@ -53,7 +53,7 @@ export function HybridComparison({ result, item, genuine, realPhoto, trust }: Hy
         <div className="attack-verdict-head"><h3>{realPhoto ? 'Taha’s real photo' : 'Genuine demo capture'}</h3>{genuine?.verification.status === 'green' && <span className="attack-outcome outcome-green">STILL VERIFIED</span>}</div>
         {genuine ? <>
           <FeedCard item={genuine} trust={trust} />
-          <p className="small muted">The genuine hybrid seal still verifies after Q-Day.</p>
+          <p className="small muted">The genuine hybrid seal still verifies after Post-Quantum Day.</p>
         </> : <p className="status">No verified genuine hybrid photo is available. Capture one on the phone, then retry this step.</p>}
       </section>
     </div>

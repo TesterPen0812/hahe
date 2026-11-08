@@ -11,11 +11,17 @@ const MARK: Record<CaptureStep['tone'], string> = { ok: '✓', fail: '✕', warn
 /**
  * A corner log of what happened to the photo that just arrived: one line per check the verifier ran,
  * revealed in order, then folded away to the photo's thumbnail. Click it to open the log again.
+ * `fold` turning on (the forgery is on screen) folds it at once, so it never covers the forgery.
  */
-export function CaptureLog({ item, hidden }: { item: ItemSummary | null; hidden?: boolean }) {
+export function CaptureLog({ item, hidden, fold }: { item: ItemSummary | null; hidden?: boolean; fold?: boolean }) {
   const steps = useMemo(() => (item ? captureSteps(item) : []), [item])
   const [shown, setShown] = useState(0)
   const [open, setOpen] = useState(true)
+  const [folding, setFolding] = useState(false)
+  if (!!fold !== folding) {
+    setFolding(!!fold)
+    if (fold) setOpen(false)
+  }
 
   useEffect(() => {
     if (!steps.length) return

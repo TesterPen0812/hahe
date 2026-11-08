@@ -14,7 +14,7 @@ const SWATCHES: { name: string; rgb: RGB }[] = [
   { name: 'Ember', rgb: [1.0, 0.5, 0.28] },
   { name: 'Rose', rgb: [1.0, 0.45, 0.62] },
 ]
-const DOORS: { id: DoorId; name: string }[] = [{ id: 'door1', name: 'Door 1' }, { id: 'door2', name: 'Q-Day door' }]
+const DOORS: { id: DoorId; name: string }[] = [{ id: 'door1', name: 'Door 1' }, { id: 'door2', name: 'Post-Quantum Day door' }]
 const VIEWS: { id: WorldView; name: string }[] = [
   { id: 'journey', name: 'Walk' }, { id: 'foliage', name: 'Foliage' }, { id: 'prism', name: 'Prism' },
 ]
