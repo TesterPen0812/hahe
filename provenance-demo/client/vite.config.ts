@@ -10,8 +10,9 @@ export default defineConfig({
     // Let the iPhone reach the dev server through Tailscale (or ngrok as a fallback)
     allowedHosts: ['.ts.net', '.ngrok-free.app', '.ngrok-free.dev'],
     // Send API calls from the page to the Express server
+    // (API_TARGET lets a second checkout run against its own API, e.g. http://localhost:3002)
     proxy: {
-      '/api': 'http://localhost:3001',
+      '/api': process.env.API_TARGET ?? 'http://localhost:3001',
     },
   },
 })
