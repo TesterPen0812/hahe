@@ -914,6 +914,59 @@ export const portalFragment = /* glsl */ `
   }
 `
 
+/**
+ * A door nothing can be seen through: its inside is opaque, a near-black ground (the crossing wall's)
+ * full of characters in the door's tint, falling in columns. Most are dim; streams of brighter ones run
+ * down through them, so it reads as the falling rain packed solid rather than a block of glowing type.
+ */
+export const portalAsciiFragment = /* glsl */ `
+  uniform sampler2D uGlyphs;
+  uniform vec2 uSize;
+  uniform float uHalfWidth;
+  uniform float uOpen;
+  uniform float uImpact;
+  uniform float uTime;
+  uniform vec3 uTint;
+  varying vec2 vUv;
+  float h1(float x) { return fract(sin(x * 127.1 + 3.7) * 43758.5453); }
+  float h2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+  void main() {
+    vec2 local = (vUv - 0.5) * uSize;
+    float edge = min(uHalfWidth - abs(local.x), uSize.y * 0.5 - abs(local.y));
+    if (edge < 0.0) discard;
+    const float size = 0.13;
+    float column = floor(local.x / size);
+    float seed = h1(column);
+    float rowF = local.y / size + uTime * (1.6 + 3.2 * seed) + seed * 40.0;
+    float row = floor(rowF);
+    vec2 cell = vec2(column, row);
+    float cellSeed = h2(cell * 0.173 + 0.31);
+    // a stream's head is its lowest character, and it dims up the trail behind it
+    float length_ = 16.0 + 18.0 * h1(column + 5.0);
+    float along = fract(row / length_ + h1(column + 9.0));
+    float trail = pow(1.0 - along, 3.0);
+    float head = smoothstep(0.97, 1.0, 1.0 - along);
+    float tick = floor(uTime * (0.6 + 1.6 * cellSeed) + cellSeed * 17.0);
+    float glyph = floor(h2(cell + tick * 0.618) * ${GLYPH_COUNT}.0);
+    vec2 g = vec2(mod(glyph, ${GLYPH_COLUMNS}.0), floor(glyph / ${GLYPH_COLUMNS}.0));
+    vec2 l = vec2(fract(local.x / size), fract(rowF));
+    vec2 q = (l - 0.5) * 1.12 + 0.5;
+    float ink = 0.0;
+    // the level of detail follows the distance, from the continuous position: cell edges would jump
+    float lod = clamp(log2(64.0 * fwidth(local.y) / size), 0.0, 5.0);
+    if (q.x > 0.0 && q.x < 1.0 && q.y > 0.0 && q.y < 1.0)
+      ink = textureLod(uGlyphs, vec2((g.x + q.x) / ${GLYPH_COLUMNS}.0, 1.0 - (g.y + 1.0 - q.y) / ${GLYPH_ROWS}.0), lod).r;
+    vec3 chars = uTint * (0.09 + 0.1 * cellSeed + 0.75 * trail) + mix(uTint, vec3(1.0), 0.45) * head * 0.8;
+    vec3 inside = uTint * 0.02 + chars * ink;
+    float shown = smoothstep(0.0, 0.25, uOpen);
+    float slit = 1.0 - smoothstep(0.0, 0.35, uOpen);
+    // only the outermost edge feathers, into this world: never onto anything behind the door
+    float a = mix(smoothstep(0.0, 0.08, edge), 1.0, slit);
+    gl_FragColor = vec4(inside * shown + uTint * slit * 2.5 * (1.0 + uImpact * 0.4), a);
+  }
+`
+
 export const sparkVertex = /* glsl */ `
   uniform float uTime;
   uniform float uOpen;
