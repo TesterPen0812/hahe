@@ -54,6 +54,8 @@ export function scenePath(u: SceneUniforms, options: ScenePathOptions) {
   stream.geometry.setAttribute('aSize', new THREE.InstancedBufferAttribute(sizes, 1))
   stream.geometry.setAttribute('aHang', new THREE.InstancedBufferAttribute(metadata, 4))
   stream.name = 'White centerline'
+  // drawn after the photo cards' depth-only faces (photoCard.ts), so a card hides the stream behind it
+  stream.renderOrder = 5
   return stream
 }
 
@@ -112,5 +114,6 @@ export function curveStream(u: SceneUniforms, curve: THREE.Curve<THREE.Vector3>,
   stream.geometry.setAttribute('aSize', new THREE.InstancedBufferAttribute(sizes, 1))
   stream.geometry.setAttribute('aHang', new THREE.InstancedBufferAttribute(metadata, 4))
   stream.name = 'White path stream'
+  stream.renderOrder = 5
   return stream
 }

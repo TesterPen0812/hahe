@@ -30,6 +30,8 @@ export interface WalkState {
   card: CardState | null
   /** Index of the live photo the camera is stopped at in the Prism meadow, or null. */
   liveIndex: number | null
+  /** The forgery's frame has flown in and landed in the Prism (the screen waits for it before its verdict). */
+  forgeryLanded?: boolean
 }
 
 /** Engine methods the screen calls (scene implements them on UniverseEngine). */

@@ -1,4 +1,4 @@
-import { Vector2 } from 'three'
+import { Vector2, Vector3 } from 'three'
 import { greenMotion } from './greenMotion'
 import { prismHelpers, prismPlacement } from './prismMotion'
 import { curveStreamMotion, curveStreamPlacement, scenePathMotion, scenePathPlacement } from './scenePathMotion'
@@ -164,7 +164,8 @@ const fieldPlacement = /* glsl */ `
         vec3 local = p - uCenter;
         float across = mix(abs(dot(local, uAxis)), dot(local, uAxis), aPortal.z);
         float grain = 0.5 + 0.5 * portalNoise(vec3(across * 3.0, local.y * 3.0, 5.0));
-        vTwinkle = 0.05 + grain * 0.07 + edge * (0.6 + slit * 1.2) * (0.8 + uImpact * 0.6);
+        // the slab is grains, not a frame: its edge only glows bright as the closed slit, before it opens
+        vTwinkle = 0.04 + grain * 0.05 + edge * (0.16 + slit * 1.6) * (0.8 + uImpact * 0.6);
       } else {
         float distance = aPortal.w;
         float width = uHalfWidth * (1.0 + distance * 0.35) + 0.02;
@@ -266,6 +267,17 @@ const fieldPlacement = /* glsl */ `
     ${prismPlacement}
     ${scenePathPlacement}
     ${curveStreamPlacement}
+    } else if (uMode > 20.5 && uMode < 21.5) {
+      // A door's colour leaking out: each mote leaves the opening, drifts out and settles (on the
+      // floor, into the grains beside it, or in the air), lingers, fades, and starts again.
+      // aHang = (drifts per second, phase); aPrism.xyz = where it drifts to, from its birth.
+      float life = fract(aHang.y + t * aHang.x);
+      float go = 1.0 - pow(1.0 - min(life / 0.7, 1.0), 3.0);
+      p += aPrism.xyz * go;
+      p += vec3(sin(t * 0.7 + aSeed * 40.0), sin(t * 0.9 + aSeed * 23.0) * 0.5, cos(t * 0.6 + aSeed * 31.0)) * 0.04 * go;
+      velocity = aPrism.xyz * aHang.x * 3.0 * pow(1.0 - min(life / 0.7, 1.0), 2.0) / 0.7;
+      vFade = smoothstep(0.0, 0.08, life) * (1.0 - smoothstep(0.8, 1.0, life));
+      vTwinkle = 0.85 + 0.35 * sin(t * (1.5 + aSeed * 2.0) + aSeed * 50.0);
     } else if (uMode > 19.5 && uMode < 20.5) {
       // Character rain: each strand falls as one, down its own column, and starts again at the top.
       // aHang = (falls per second, phase, travel, this glyph's height above the ground).
@@ -894,8 +906,11 @@ export const portalFragment = /* glsl */ `
     float shown = smoothstep(0.0, 0.25, uOpen);
     vec3 next = texture2D(uTex, clamp(pixel / uRes + wobble, 0.0, 1.0)).rgb;
     float slit = 1.0 - smoothstep(0.0, 0.35, uOpen);
-    float rim = exp(-edge * 40.0) * (0.25 + uImpact * 0.4) + slit * 2.5;
-    gl_FragColor = vec4(next * shown + uTint * rim, 1.0);
+    // No glass rim: the view through darkens softly into the edge (the grains crowding round it
+    // and the glow outside hide where it stops), with only a breath of the door's colour inside it.
+    float feather = smoothstep(0.0, 0.16, edge);
+    vec3 inner = uTint * exp(-edge * 9.0) * (0.12 + uImpact * 0.4);
+    gl_FragColor = vec4(next * shown * feather * 0.85 + inner * shown + uTint * slit * 2.5, 1.0);
   }
 `
 
@@ -932,13 +947,14 @@ export const sparkFragment = /* glsl */ `
     float r = length(gl_PointCoord - 0.5) * 2.0;
     if (r > 1.0) discard;
     float a = exp(-r * r * 6.0) * vA;
-    gl_FragColor = vec4(mix(vec3(1.0), uTint, 0.5) * 1.5, a);
+    gl_FragColor = vec4(mix(vec3(1.0), uTint, 0.75) * 1.2, a);
   }
 `
 
 /**
  * Finishing pass, after tone mapping: a lingering pointer ripple, crossing zoom blur,
- * lens dispersion at the edges, vignette, flash, grain and dither.
+ * lens dispersion at the edges, vignette, flash, grain and dither. Crossing into Post-Quantum Day
+ * the whole picture breaks into falling characters (uAscii) and resolves out of them again.
  */
 export const finishShader = {
   uniforms: {
@@ -956,6 +972,10 @@ export const finishShader = {
     uDisplacement: { value: null },
     uFluid: { value: null },
     uFluidAmt: { value: 0 },
+    uAscii: { value: 0 },
+    uAsciiTint: { value: new Vector3(0.55, 0.72, 1.0) },
+    uCell: { value: 11 },
+    uGlyphs: { value: null },
   },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
@@ -976,8 +996,50 @@ export const finishShader = {
     uniform vec2 uFluidTexel;
     uniform vec2 uResolution;
     uniform float uFluidAmt;
+    uniform float uAscii;        // 0..1: how far the picture has broken into characters
+    uniform vec3 uAsciiTint;     // the world the characters belong to (blue before, violet after)
+    uniform float uCell;         // character cell, in output pixels
+    uniform sampler2D uGlyphs;
     varying vec2 vUv;
     float rand(vec2 co) { return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453); }
+    float h1(float n) { return fract(sin(n * 12.9898 + 4.1414) * 43758.5453); }
+
+    // The picture as a dense grid of characters. Columns fall at their own pace, each character
+    // flickers to another now and then, and a bright head runs down every column with its trail
+    // above it, like the scene's own character rain. Each cell takes the colour and light of the
+    // picture beneath it, so the world breaks up into characters rather than under a filter.
+    vec3 asciiPicture(vec2 px, out float reveal) {
+      float column = floor(px.x / uCell);
+      float rate = 2.5 + 7.0 * h1(column + 3.0);                   // cells per second
+      float fall = uTime * rate + h1(column) * 40.0;
+      float rowF = px.y / uCell + fall;
+      float row = floor(rowF);
+      vec2 cell = vec2(column, row);
+      vec2 local = vec2(fract(px.x / uCell), fract(rowF));
+      // the picture under this character, at its centre as it falls past
+      vec2 centre = vec2(column + 0.5, row + 0.5 - fall) * uCell / uResolution;
+      vec3 under = texture2D(tDiffuse, clamp(centre, 0.0, 1.0)).rgb;
+      float lum = dot(under, vec3(0.299, 0.587, 0.114));
+      float seed = rand(cell * 0.173 + 0.31);
+      float tick = floor(uTime * (1.5 + 6.0 * seed) + seed * 17.0);
+      float glyph = floor(rand(cell + tick * 0.618) * ${GLYPH_COUNT}.0);
+      vec2 g = vec2(mod(glyph, ${GLYPH_COLUMNS}.0), floor(glyph / ${GLYPH_COLUMNS}.0));
+      vec2 q = (local - 0.5) * 1.12 + 0.5;
+      float ink = 0.0;
+      if (q.x > 0.0 && q.x < 1.0 && q.y > 0.0 && q.y < 1.0)
+        // one fixed level of detail: the cell edges' jump in uv would otherwise pick a blurry one
+        ink = textureLod(uGlyphs, vec2((g.x + q.x) / ${GLYPH_COLUMNS}.0, 1.0 - (g.y + 1.0 - q.y) / ${GLYPH_ROWS}.0), log2(64.0 / uCell)).r;
+      // a head falling down each column, its trail fading out above it
+      float u = fract(vUv.y * (0.9 + h1(column + 9.0) * 0.8) + uTime * (0.35 + 0.5 * h1(column + 5.0)) + h1(column + 1.0));
+      float trail = pow(1.0 - u, 3.0);
+      float head = smoothstep(0.035, 0.0, u);
+      vec3 hue = under / max(max(under.r, max(under.g, under.b)), 0.05);
+      vec3 colour = mix(hue, uAsciiTint, 0.7);
+      float light = (0.42 + 0.58 * trail) * (0.3 + sqrt(lum) * 3.2);
+      // cells give way one by one, scattered, the upper rows a moment before the lower
+      reveal = smoothstep(0.0, 0.22, uAscii * 1.3 - rand(vec2(column, floor(px.y / uCell)) * 0.71) * 0.7 - (1.0 - vUv.y) * 0.3 + 0.15);
+      return (colour * light + vec3(0.85, 0.9, 1.0) * head * (0.4 + lum)) * ink;
+    }
     float surfaceHeight(vec2 uv) {
       return texture2D(uDye, uv).x + length(texture2D(uFluid, uv).xy * uFluidTexel) * 0.12;
     }
@@ -1009,6 +1071,13 @@ export const finishShader = {
         // dispersion grows toward the frame edges
         vec2 off = c * r2 * 0.0015 + flow * 0.08;
         col = vec3(texture2D(tDiffuse, uv + off).r, texture2D(tDiffuse, uv).g, texture2D(tDiffuse, uv - off).b);
+      }
+      if (uAscii > 0.001) {
+        // the picture sinks away evenly while its characters light up one by one over it
+        float reveal;
+        vec3 chars = asciiPicture(vUv * uResolution, reveal);
+        float k = smoothstep(0.0, 1.0, uAscii);
+        col = col * (1.0 - 0.94 * k) + chars * reveal;
       }
       col *= max(0.0, 1.0 - dot(c, c) * uVignette * 2.0);
       col = mix(col, uFlashColor, uFlash);

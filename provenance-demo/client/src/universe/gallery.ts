@@ -43,7 +43,7 @@ function after(kind: SealKind, v: SealVerdict): { parts: SealPart[]; label: Labe
         { alg: 'ed25519', state: v.status !== 'grey' && v.anchored ? 'anchored' : 'broken' },
       ])
   if (v.status === 'grey') return { parts, lost: 1, label: { kicker: 'Not proven', tone: 'ash', parts } }
-  if (kind === 'legacy') return { parts, lost: 0, label: { kicker: 'Logged before Q-Day', tone: 'brass', parts } }
+  if (kind === 'legacy') return { parts, lost: 0, label: { kicker: 'Logged before Post-Quantum Day', tone: 'brass', parts } }
   return { parts, lost: 0, label: { kicker: v.status === 'amber' ? 'Still proven · edited' : 'Still proven', tone: v.status === 'amber' ? 'brass' : 'mint', parts } }
 }
 
@@ -79,7 +79,8 @@ export function buildGallery(
     const off = 3.1 + (k % 3) * 0.45
     const pos = on.clone().addScaledVector(side, sgn * off)
     pos.y = ground(pos.x, pos.z) + lift + ((k * 37) % 5) * 0.1
-    const card = new PhotoCard({ width: opts.width ?? 2.3, seed: k * 0.37, fog: [26, 50] })
+    // a deep label band, so the captions read on a projector from the path
+    const card = new PhotoCard({ width: opts.width ?? 2.6, band: 0.3, seed: k * 0.37, fog: [26, 50] })
     const b = before(photo.kind)
     card.setParts(b.parts, { at: -100 })
     card.setLabel(b.label)

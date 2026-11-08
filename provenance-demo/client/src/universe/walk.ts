@@ -80,3 +80,32 @@ export const GLIDE_PACE = 6.5
 export function glideSeconds(dw: number) {
   return Math.max(1.2, Math.min(16, Math.abs(dw) / GLIDE_PACE))
 }
+
+/** How long the Q-Day stop holds continuous travel once the camera arrives (card in, held, out). */
+export const HOLD_SECONDS = 3.0
+
+/**
+ * A stop that holds continuous travel (wheel, drag, held keys, hands) for a moment once the camera
+ * arrives, then lets go by itself. "Next" lets go at once; walking back past it arms it again.
+ */
+export class StopHold {
+  held = true
+  private arrived: number | null = null
+  readonly seconds: number
+  constructor(seconds = HOLD_SECONDS) { this.seconds = seconds }
+
+  release() { this.held = false }
+
+  /**
+   * Where travel may go this frame. `at` the stop, `before` the camera's route distance last frame,
+   * `desired` where input wants to go, `camera` where the camera stands now, `now` in seconds.
+   */
+  step(at: number, before: number, desired: number, camera: number, now: number, gliding: boolean) {
+    if (desired < at - 1) { this.held = true; this.arrived = null }
+    if (!this.held) return desired
+    if (this.arrived === null && Math.abs(camera - at) < 0.3) this.arrived = now
+    if (this.arrived !== null && now - this.arrived >= this.seconds) { this.held = false; return desired }
+    if (!gliding && before <= at + 0.05 && desired > at) return at
+    return desired
+  }
+}

@@ -70,14 +70,34 @@ class TunnelPath extends THREE.Curve<THREE.Vector3> {
   }
 }
 
-function tube(z: number, angle: number, out: number): RGB {
+/** The tunnel flares wider and taller toward its mouth, where door 1 stands. */
+export function tunnelFlare(z: number) {
   const exit = smoothstep(-LENGTH + 6, -LENGTH, z)
-  const width = (WIDTH + out) * (1 + exit * 0.4)
+  return { width: 1 + exit * 0.4, rise: 1 + exit * 0.45 }
+}
+
+function tube(z: number, angle: number, out: number): RGB {
+  const flare = tunnelFlare(z)
+  const width = (WIDTH + out) * flare.width
+  const rise = (RISE + out) * flare.rise
   if (Math.abs(angle) < 1.2) {
-    return [pathX(z) + Math.sin(angle) * width, SPRING + Math.cos(angle) * (RISE + out), z]
+    return [pathX(z) + Math.sin(angle) * width, SPRING + Math.cos(angle) * rise, z]
   }
   return [pathX(z) + Math.sign(angle) * width * 0.97,
-    SPRING + Math.cos(1.2) * (RISE + out) - (Math.abs(angle) - 1.2) * 2.4, z]
+    SPRING + Math.cos(1.2) * rise - (Math.abs(angle) - 1.2) * 2.4, z]
+}
+
+/** The tunnel's arch in a cross-section at z, across x (from the centre line) and up y: inside it? */
+export function insideTunnel(z: number, pad = 0) {
+  const flare = tunnelFlare(z)
+  const w = WIDTH * flare.width * 0.97 + pad, spring = SPRING + Math.cos(1.2) * RISE * flare.rise
+  const top = SPRING + RISE * flare.rise + pad
+  return (x: number, y: number) => {
+    if (y < 0 || Math.abs(x) > w) return false
+    if (y <= spring) return true
+    const ry = (y - SPRING) / (top - SPRING), rx = x / w
+    return rx * rx + ry * ry <= 1
+  }
 }
 
 function foliage(u: SceneUniforms, count: number) {
