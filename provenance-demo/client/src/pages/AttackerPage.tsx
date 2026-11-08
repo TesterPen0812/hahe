@@ -80,7 +80,7 @@ function AttackerConsole({ world, setWorld, reset }: { world: WorldState; setWor
       <li>
         <span className="attack-number" aria-hidden>01</span>
         <section aria-labelledby="steal-title" aria-busy={busy === 'recover'}>
-          <h2 id="steal-title">Steal the old camera’s lock</h2>
+          <h2 id="steal-title">Steal the lock on today’s standard</h2>
           <p className="muted small">Simulate recovering a trusted camera’s classical RSA key.</p>
           <button disabled={!qDay || !!busy} onClick={() => void recover()}>{busy === 'recover' ? 'Simulating recovery…' : recovery ? 'Recover again · simulated' : 'Recover key · simulated'}</button>
           {busy === 'recover' && <div className="attack-progress" role="progressbar" aria-label="Simulated key recovery" aria-valuetext="Cosmetic progress, about two seconds"><span /></div>}

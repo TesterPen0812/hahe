@@ -10,11 +10,12 @@ import {
   tintGateWall, tintLeak, tintSurround, type Leak, type SceneUniforms, type Surround,
 } from './worlds'
 import { buildMeadow } from './scenery'
+import { CARD_LOOKS } from './cardLight'
 import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from './gallery'
 import { PHONE_HOST } from './liveFrame'
 import { createLiveSequence, LIVE_VIEW, type LiveFrames } from './liveSequence'
 import { Fluid } from './fluid'
-import { TUNNEL_GLYPH_GREEN, buildGreenWorld, insideTunnel } from './greenWorld'
+import { PQ_TUNNEL, TUNNEL_GLYPH_GREEN, buildGreenWorld } from './greenWorld'
 import { buildPrismWorld } from './prismWorld'
 import { curveStream } from './scenePath'
 import { ParticleSimulation } from './particles'
@@ -58,31 +59,36 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2' | 'door1' | 'door2'
 
 
 // ── The walk ────────────────────────────────────────────────────────────────
-// Green Foliage tunnel → door 1 → the blue world (today) → door 2 "Q-Day · 2035" → the Prism.
-// Stops, one press each (Space / → / PageDown on, ← / PageUp back, or the hand's "next"):
-//   0 tunnel start · 1 blue arrival (card 'today') · 2 inside the Prism (card 'qday') · 3… each
-//   live photo station, then the waiting frame · then a break (card 'break', the forgery hangs
-//   ahead of it) and the end (card 'end').
+// The Prism (the entrance, under the ringed planet) → door 1 → the blue world (today) → door 2
+// "Post-Quantum Day · 2035", through a wall of green characters → the green tunnel, the post-quantum
+// world. Stops, one press each (Space / → / PageDown on, ← / PageUp back, or the hand's "next"):
+//   0 the Prism · 1 blue arrival (card 'today') · 2 inside the tunnel (card 'qday') · 3… each live
+//   photo station, then the waiting frame · then a break (card 'break', the forgery hangs ahead of
+//   it) and the end (card 'end'). The tunnel holds the after gallery (the same photos re-judged),
+//   then the live frames, the break and the end.
 // Each card's slow zone lies just before its stop (walk.ts), so the text passes as the camera
 // slows into the stop and is gone when it arrives. Nothing holds the walk; it is all position.
 // Glides keep an even pace through the warped route (walk.ts, GLIDE_PACE 6.5), so they ease to
-// 25 % in every slow zone. Glide times with one live photo (walk.test.ts): tunnel → today 10.2 s,
-// today → Q-Day 11.3 s, Q-Day → live photo 2.9 s, photo → break 5.4 s, break → end 4.4 s, each
-// card past half strength for about 3 s of it. Walking back runs at twice the pace.
+// 25 % in every slow zone. Walking back runs at twice the pace.
 // Slow zones (centre ± full-slow / back-to-speed, in route units): today and Q-Day 1.6 / 4.1, break
 // and end 2.2 / 4.5 (their glides are short), each ending a quarter unit before its stop; each live
 // station 1.2 / 4, centred on it (a photo is something to look at, not text).
 export const STOP_COUNT = 6 // with one live station; EngineState.stopCount is authoritative
-const TUNNEL_STOP = 4
-const DOOR1_AT = 46        // door 1 on the tunnel's path (48 long)
+const ENTRANCE_STOP = 4
+const DOOR1_AT = 40        // door 1 on the Prism's path
 const TODAY_AT = 10        // blue arrival, after door 1
 const DOOR2_BEFORE_END = 9 // door 2 stands this far before the blue path's end
-const QDAY_AT = 11         // inside the Prism, once the character crossing has resolved
-const LIVE_START = 30      // first live frame station on the Prism path (its middle)
-const LIVE_SPACING = 8
+const QDAY_AT = 11         // inside the tunnel, once the character crossing has resolved
+const GALLERY_FROM = QDAY_AT + 8 // the after gallery starts here on the tunnel's path...
+const GALLERY_GAP = 8      // ...one print every this far, on alternate walls...
+const GALLERY_MAX = 8      // ...at most this many
+const LIVE_AFTER = 13      // the first live frame stands this far past the last print
+const LIVE_SPACING = 11
 const BREAK_AFTER = 11
-const END_AFTER = 11
-const PRISM_TAIL = 3       // the walk ends this far before the Prism path's end
+const END_AFTER = 11        // the end card's zone must clear the break stop (walk.ts CARD_ZONE.short)
+const FORGERY_PAST_END = 4.5 // the forgery hangs this far past the end stop: from the break it is as large
+                             // as the blue world's frames were from there
+const PQ_TAIL = 3          // the walk ends this far before the tunnel path's end
 const DOOR_TINTS: DoorTints = { door1: [0.55, 0.75, 1.0], door2: [1.0, 0.38, 0.22] }
 // The character crossing at door 2 (walk.ts `crossing`): the blue world's characters turn the green of
 // the tunnel's character strands as they close into the wall, and stay green as it clears.
@@ -129,6 +135,11 @@ interface Stage {
   door: Door | null         // the door at the far end, into the next world
   exposure: number
   lift: number              // how far above the path ahead the eye looks
+  /** Where the lens rests, and whether it follows the door from afar (the blue world, as designed) or
+   *  only once nearer than that (the Prism, designed without a door). The green tunnel was designed
+   *  focused on its far door, so it rests far: its near grains stay soft bokeh, not sharp beads. */
+  focus: number
+  followDoor: boolean
   heights: Float32Array     // smoothed ground under the walk, from s = -8 every HEIGHT_STEP
 }
 
@@ -182,7 +193,9 @@ export class UniverseEngine implements WalkControls {
   private v = 0
   private keys = new Set<string>()
   private hands: HandControl | null = null
-  private target: number | null = TUNNEL_STOP
+  private target: number | null = ENTRANCE_STOP
+  /** Where the first live frame stands on the tunnel's path: past the after gallery. */
+  private liveStart = GALLERY_FROM + LIVE_AFTER
   private hovered: number | null = null
   // autopilot: an eased walk to a story stop, through the warped route
   private glide: { index: number; key: string; from: number; to: number; t0: number; dur: number } | null = null
@@ -375,11 +388,11 @@ export class UniverseEngine implements WalkControls {
 
   /** How many live frames (photos and the waiting one) fit before the break and end cards. */
   private maxLive() {
-    const room = this.stages[2].len - PRISM_TAIL - BREAK_AFTER - END_AFTER - (LIVE_START - LIVE_VIEW)
+    const room = this.stages[2].len - PQ_TAIL - BREAK_AFTER - END_AFTER - (this.liveStart - LIVE_VIEW)
     return Math.max(3, Math.floor(room / LIVE_SPACING) + 1)
   }
 
-  /** The server's verdicts after Q-Day, by photo id, for the Prism gallery's captions. */
+  /** The server's verdicts after Q-Day, by photo id, for the after gallery's captions. */
   setVerdicts(v: Map<string, SealVerdict>) {
     for (const g of this.galleries) if (this.stages[g.stage].region === 'qday') g.gallery.setVerdicts(v)
   }
@@ -489,18 +502,28 @@ export class UniverseEngine implements WalkControls {
   setHands(c: HandControl | null) { this.hands = c }
 
   /**
-   * Hang the feed's photos twice: in the blue world, as they are today, and in the Prism, where
-   * Q-Day's wave tests their seals (legacy RSA greys out, hybrid holds).
+   * Hang the feed's photos twice: in the blue world, as they are today, and in the post-quantum
+   * tunnel, where Q-Day's wave tests their seals (legacy RSA greys out, hybrid holds). The live frames
+   * stand past the after gallery.
    */
   setGallery(photos: GalleryPhoto[]) {
     for (const g of this.galleries) { this.stages[g.stage].scene.remove(g.gallery.group); g.gallery.dispose() }
     this.galleries = []
+    const after = Math.min(photos.length, GALLERY_MAX)
+    this.liveStart = GALLERY_FROM + Math.max(0, after - 1) * GALLERY_GAP + LIVE_AFTER
+    this.live.setStart(this.liveStart)
+    this.walkCount = -1
+    this.refreshWalk()
     if (!photos.length) return
-    const blue = this.stages[1], prism = this.stages[2]
+    const blue = this.stages[1], pq = this.stages[2]
     const gate = blue.door!.s
-    this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, { ground: blue.ground }) })
-    // the first prints hang well ahead of the Q-Day stop, so none is cut off at the screen's edge there
-    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, (QDAY_AT + 6) / prism.len, (LIVE_START - 3) / prism.len, 1, { ground: prism.ground }) })
+    this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, { ground: blue.ground, look: CARD_LOOKS.blue }) })
+    // the first prints hang well ahead of the Q-Day stop, so none is cut off at the screen's edge there;
+    // the tunnel is narrow, so its prints are small and hang against its walls, in the foliage's edge
+    const to = GALLERY_FROM + Math.max(1, after - 1) * GALLERY_GAP
+    this.galleries.push({ stage: 2, gallery: buildGallery(photos.slice(0, after), pq.path, GALLERY_FROM / pq.len, to / pq.len, 1, {
+      ground: pq.ground, look: CARD_LOOKS.green, width: 1.4, offset: 1.2, lift: 1.42, gap: GALLERY_GAP - 0.5,
+    }) })
     for (const g of this.galleries) this.stages[g.stage].scene.add(g.gallery.group)
   }
 
@@ -546,12 +569,9 @@ export class UniverseEngine implements WalkControls {
 
   private buildStages() {
     const lp = this.lowPower
-    // 1. The green Foliage tunnel.
-    const tu = sceneUniforms()
-    const tunnel = buildGreenWorld(tu, lp)
-    // Door 1 is the light at the end of the tunnel; the landscape's own exit glow would only wash it out.
-    const exit = tunnel.scene.getObjectByName('Green tunnel exit light')
-    if (exit) exit.visible = false
+    // 1. The Prism: the entrance, under the ringed planet.
+    const pu = sceneUniforms()
+    const prism = buildPrismWorld(pu, lp)
     // 2. The blue world: today's meadow under hanging light, the white stream to door 2.
     const bu = sceneUniforms()
     const blueScene = new THREE.Scene()
@@ -560,32 +580,35 @@ export class UniverseEngine implements WalkControls {
     const blueLen = this.trunk.getLength()
     const door2At = blueLen - DOOR2_BEFORE_END
     blueScene.add(curveStream(bu, new SubCurve(this.trunk, door2At), { lowPower: lp, ground: homeHeight, fog: 130 }))
-    // 3. The Prism meadow, after Q-Day.
-    const pu = sceneUniforms()
-    const prism = buildPrismWorld(pu, lp)
+    // 3. The green tunnel: Post-Quantum Day, a long hall of falling characters.
+    const tu = sceneUniforms()
+    const tunnel = buildGreenWorld(tu, lp, PQ_TUNNEL)
+    // The walk ends inside it: no light at its far end.
+    const exit = tunnel.scene.getObjectByName('Green tunnel exit light')
+    if (exit) exit.visible = false
 
     const stage = (region: Region, scene: THREE.Scene, u: SceneUniforms, path: THREE.Curve<THREE.Vector3>, len: number,
-      ground: (x: number, z: number) => number, exposure: number, lift: number): Stage => {
+      ground: (x: number, z: number) => number, exposure: number, lift: number, focus = 8, followDoor = false): Stage => {
       const s: Stage = {
-        region, scene, u, path, len, ground, start: 0, exposure, lift, door: null,
+        region, scene, u, path, len, ground, start: 0, exposure, lift, focus, followDoor, door: null,
         cam: new THREE.PerspectiveCamera(FOV, 1, 0.05, 900), heights: new Float32Array(0),
       }
       s.heights = this.sampleHeights(s)
       return s
     }
     this.stages = [
-      stage('tunnel', tunnel.scene, tu, tunnel.path, tunnel.length, tunnel.ground, 1.0, 0.3),
-      stage('today', blueScene, bu, this.trunk, blueLen, homeHeight, 0.95, -0.5),
-      stage('qday', prism.scene, pu, prism.path, prism.length, prism.ground, 1.05, 0.1),
+      stage('entrance', prism.scene, pu, prism.path, prism.length, prism.ground, 1.05, 0.1),
+      stage('today', blueScene, bu, this.trunk, blueLen, homeHeight, 0.95, -0.5, 8, true),
+      stage('qday', tunnel.scene, tu, tunnel.path, tunnel.length, tunnel.ground, 1.0, 0.3, 18),
     ]
     this.addDoor(0, 'door1', DOOR1_AT)
     this.addDoor(1, 'door2', door2At)
     this.stages[1].start = this.stages[0].start + DOOR1_AT
     this.stages[2].start = this.stages[1].start + door2At
 
-    // The live photos stand in the middle of the Prism's path.
+    // The live photos stand on the tunnel's path, past the after gallery.
     const p = this.stages[2]
-    p.path.getPointAt(0, this.prismOrigin)
+    p.path.getPointAt(0, this.qdayOrigin)
     // one sample, reused: the sequence reads it at once and keeps nothing
     const sample = { position: new THREE.Vector3(), tangent: new THREE.Vector3() }
     this.live = createLiveSequence({
@@ -598,7 +621,9 @@ export class UniverseEngine implements WalkControls {
         },
         ground: p.ground,
       },
-      start: LIVE_START, spacing: LIVE_SPACING, host: PHONE_HOST,
+      start: this.liveStart, spacing: LIVE_SPACING, host: PHONE_HOST, look: CARD_LOOKS.green,
+      // the tunnel is narrow and low: small frames, stepping just aside into its foliage
+      cardWidth: 1.45, aside: 1.15, lift: 0.55, forgeryScale: 1.5,
       onLand: (_i, a) => { if (this.active === 2) this.celebrate(a.status) },
     })
     p.scene.add(this.live.group)
@@ -643,26 +668,29 @@ export class UniverseEngine implements WalkControls {
         k.set([tmp.x, tmp.y, tmp.z], i)
       }
     }
-    // Grains crowding the opening: at door 1 the tunnel's foliage closes round it like the end of
-    // the tunnel; at door 2 the blue world's grains hug its edges.
+    // Grains crowding the opening, hugging its edges: at door 1 the Prism's pastel grains, at door 2
+    // the blue world's.
     const lp = this.lowPower
-    const inTunnel = st.region === 'tunnel'
+    const inPrism = st.region === 'entrance'
     const hw = DOOR.width / 2
-    const arch = insideTunnel(at.z, 0.35)
-    const sur = doorSurround(inTunnel ? {
-      inside: arch, extent: [3.6, 4.4], count: lp ? 3200 : 8000, hug: 0.8, size: 0.017, seed: 7100, name: 'door 1 foliage', overhang: 0.42,
-      color: (b, tone) => [b * (0.08 + tone * 0.6), b * (0.23 + tone * 0.77), b * (0.018 + tone * 0.1)],
-    } : {
-      inside: (x, y) => y >= 0 && Math.hypot(Math.max(Math.abs(x) - hw, 0), Math.max(y - DOOR.height, 0)) < 1.05,
-      extent: [hw + 1.1, DOOR.height + 1.1], count: lp ? 1600 : 3600, hug: 0.3, size: 0.02, seed: 7300, name: 'door 2 grains',
-      color: (b, tone) => [b * (0.14 + tone * 0.3), b * (0.22 + tone * 0.4), b * (0.7 + tone * 0.35)],
+    const sur = doorSurround({
+      inside: (x, y) => y >= 0 && Math.hypot(Math.max(Math.abs(x) - hw, 0), Math.max(y - DOOR.height, 0)) < (inPrism ? 1.25 : 1.05),
+      extent: [hw + 1.3, DOOR.height + 1.3], count: lp ? 1800 : (inPrism ? 4200 : 3600), hug: inPrism ? 0.35 : 0.3,
+      size: 0.02, seed: inPrism ? 7100 : 7300, name: inPrism ? 'door 1 grains' : 'door 2 grains',
+      color: inPrism
+        // the Prism's meadow palette: violet, teal, rose and pale gold, shifting with each grain
+        ? (b, tone) => {
+            const h = tone * 6.2832
+            return [b * (0.55 + 0.4 * Math.cos(h)), b * (0.55 + 0.4 * Math.cos(h - 2.1)), b * (0.62 + 0.38 * Math.cos(h - 4.2))]
+          }
+        : (b, tone) => [b * (0.14 + tone * 0.3), b * (0.22 + tone * 0.4), b * (0.7 + tone * 0.35)],
     })
     toWorld(sur.pos)
-    // door 1's grains sway like the tunnel's foliage (mode 15); door 2's like the meadow (mode 0)
-    const surround = cloud(st.u, sur.pos, sur.col, sur.size, inTunnel ? 15 : 0, [0, 115], 7101, 1)
+    // both sway like their meadows (mode 0)
+    const surround = cloud(st.u, sur.pos, sur.col, sur.size, 0, [0, 115], 7101, 1)
     surround.geometry.setAttribute('aSize', new THREE.InstancedBufferAttribute(sur.size, 1))
     surround.geometry.setAttribute('aHang', new THREE.InstancedBufferAttribute(sur.hang, 4))
-    surround.name = inTunnel ? 'Door 1 foliage' : 'Door 2 grains'
+    surround.name = inPrism ? 'Door 1 grains' : 'Door 2 grains'
     st.scene.add(surround)
     // Motes of the next world's colour leaking out over the threshold.
     const floor = (x: number, z: number) => {
@@ -691,7 +719,7 @@ export class UniverseEngine implements WalkControls {
     const toNext = entry.matrixWorld.clone().multiply(door.group.matrixWorld.clone().invert())
     st.door = {
       id, s, tint: [...tint] as RGB, rt, portal: door, wall, wallBright: w.bright, caption: null,
-      surround: { mesh: surround, data: sur, always: inTunnel }, leak: { mesh: leak, data: lk },
+      surround: { mesh: surround, data: sur, always: false }, leak: { mesh: leak, data: lk },
       open: 0, presence: 0, rtScale: RT_SCALE, toNext, fromNext: toNext.clone().invert(),
     }
     this.setDoorTint(id, tint)
@@ -715,7 +743,7 @@ export class UniverseEngine implements WalkControls {
   // ── paths ────────────────────────────────────────────────────────────────
 
   private tanTmp = new THREE.Vector3()
-  private prismOrigin = new THREE.Vector3()
+  private qdayOrigin = new THREE.Vector3()
   /** A point on world j's walk at distance s, continuing straight past either end. */
   private pointAt(j: number, s: number, out = new THREE.Vector3()) {
     const st = this.stages[j]
@@ -765,7 +793,7 @@ export class UniverseEngine implements WalkControls {
 
   /** Rebuild the stops, slow zones and warped route whenever the live stations change. */
   private refreshWalk() {
-    const prism = this.stages[2]
+    const pq = this.stages[2]
     // only the photo count changes the stations: compare it, not the list, every frame
     const count = this.live.photoCount()
     if (count === this.walkCount && this.warp) return
@@ -774,7 +802,7 @@ export class UniverseEngine implements WalkControls {
     // a glide under way keeps going to the same stop (the same photo, the break or the end)
     const going = this.glide?.key ?? null
     const [s0, s1, s2] = this.stages.map(s => s.start)
-    const last = prism.len - PRISM_TAIL
+    const last = pq.len - PQ_TAIL
     const live = stations.map(s => s2 + Math.min(s, last - 8))
     const lastLive = live.length ? live[live.length - 1] : s2 + QDAY_AT
     const brk = Math.min(lastLive + BREAK_AFTER, s2 + last - 4)
@@ -782,8 +810,8 @@ export class UniverseEngine implements WalkControls {
     this.stations = live
     // the forgery hangs where the end stop looks at it: ahead of the camera at the break (B there
     // shows it fly in) and at the end, never behind either
-    this.live.setForgeryAt(end - s2 + LIVE_VIEW)
-    this.stopList = [s0 + TUNNEL_STOP, s1 + TODAY_AT, s2 + QDAY_AT, ...live, brk, end]
+    this.live.setForgeryAt(end - s2 + FORGERY_PAST_END)
+    this.stopList = [s0 + ENTRANCE_STOP, s1 + TODAY_AT, s2 + QDAY_AT, ...live, brk, end]
     this.zones = [
       cardZone(s1 + TODAY_AT, 'today', CARD_ZONE.long),
       cardZone(s2 + QDAY_AT, 'qday', CARD_ZONE.long),
@@ -791,7 +819,8 @@ export class UniverseEngine implements WalkControls {
       cardZone(brk, 'break', CARD_ZONE.short),
       cardZone(end, 'end', CARD_ZONE.short),
     ]
-    this.maxRoute = Math.max(end, s2 + last)
+    // the walk ends a little past the forgery: the rest of the tunnel is dark
+    this.maxRoute = Math.min(s2 + last, end + FORGERY_PAST_END + 3)
     this.warp = new Warp(this.zones, this.maxRoute + 1)
     if (going !== null) this.goStop(this.stopIndexOf(going))
   }
@@ -1049,7 +1078,16 @@ export class UniverseEngine implements WalkControls {
     return p
   }
 
+  /** Visual QA (DEV only): hold the eye at a point, looking at another, in the active world's space. */
+  qaEye: { at: [number, number, number]; to: [number, number, number] } | null = null
+
   private placeCamera(blend: number) {
+    if (import.meta.env.DEV && this.qaEye) {
+      this.camera.position.set(...this.qaEye.at)
+      this.camera.lookAt(...this.qaEye.to)
+      this.camera.updateMatrixWorld()
+      return
+    }
     const j = this.active, st = this.stages[j]
     const s = this.r - st.start
     const pos = this.pointAt(j, s)
@@ -1222,10 +1260,9 @@ export class UniverseEngine implements WalkControls {
     this.canvas.style.cursor = this.hovered !== null ? 'pointer' : ''
     for (const g of this.galleries) {
       const q = this.stages[g.stage].region === 'qday'
-      g.gallery.update(t, q ? this.qdayAt : -1, q ? this.prismOrigin : this.camera.position, g.stage === this.active ? this.camera.position : null)
+      g.gallery.update(t, q ? this.qdayAt : -1, q ? this.qdayOrigin : this.camera.position, g.stage === this.active ? this.camera.position : null)
     }
-    const prism = this.stages[2]
-    this.live.update(t, this.active === 2 ? this.camera : prism.cam)
+    this.live.update(t, this.active === 2 ? this.camera : this.stages[2].cam)
   }
 
   private updateUniforms(t: number, dt: number) {
@@ -1332,11 +1369,12 @@ export class UniverseEngine implements WalkControls {
       st.u.uAperture.value = aperture
       st.u.uMaxBlur.value = maxBlur
       if (j !== this.active) { st.u.uFocus.value = 10; return }
-      let focus = 8
+      let focus = st.focus
       if (st.door && st.door.presence > 0.05) {
         const g = st.door.portal.group.position
         this.tmpV.set(g.x, g.y + DOOR.height * 0.45, g.z)
-        focus = THREE.MathUtils.clamp(this.camera.position.distanceTo(this.tmpV), 3, 18)
+        const d = THREE.MathUtils.clamp(this.camera.position.distanceTo(this.tmpV), 3, 18)
+        focus = st.followDoor ? d : Math.min(focus, d)
       }
       st.u.uFocus.value += (focus - st.u.uFocus.value) * (1 - Math.exp(-2.5 * dt))
     })
@@ -1392,7 +1430,7 @@ export class UniverseEngine implements WalkControls {
 
   private emitState() {
     const st = this.stages[this.active]
-    const inPrism = st.region === 'qday'
+    const pq = st.region === 'qday'
     const card = cardAt(this.r, this.zones)
     const i = this.stations.findIndex(x => Math.abs(this.r - x) < 1.5)
     const walk: WalkState = {
@@ -1403,11 +1441,11 @@ export class UniverseEngine implements WalkControls {
       forgeryLanded: this.live.forgeryLanded(),
     }
     const s: EngineState = {
-      phase: inPrism ? 'inside' : 'trunk',
-      branch: inPrism ? 0 : null,
+      phase: pq ? 'inside' : 'trunk',
+      branch: pq ? 0 : null,
       hovered: this.hovered,
-      qday: inPrism,
-      started: this.r > TUNNEL_STOP + 2 || this.glide !== null,
+      qday: pq,
+      started: this.r > ENTRANCE_STOP + 2 || this.glide !== null,
       stop: this.stopIndex(),
       gliding: this.glide !== null,
       stopCount: this.stopList.length,
@@ -1456,7 +1494,12 @@ export class UniverseEngine implements WalkControls {
     this.cullFrustum.setFromProjectionMatrix(this.cullMatrix)
     for (const group of scene.children) {
       if (group.userData.bounds) group.visible = this.cullFrustum.intersectsBox(group.userData.bounds)
-      for (const o of group.children) if (o.userData.bounds) o.visible = this.cullFrustum.intersectsBox(o.userData.bounds)
+      for (const o of group.children) {
+        if (!o.userData.bounds) continue
+        const box = o.userData.bounds as THREE.Box3
+        // long worlds' slices (the tunnel's foliage) also drop out far down the walk
+        o.visible = this.cullFrustum.intersectsBox(box) && !(o.userData.cullFar && box.distanceToPoint(camera.position) > o.userData.cullFar)
+      }
     }
   }
 

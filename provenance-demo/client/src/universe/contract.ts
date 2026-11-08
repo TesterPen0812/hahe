@@ -9,11 +9,14 @@
 //  photos  (branch v2-photos): gallery.ts, liveFrame.ts, liveSequence.ts and new photo/seal modules.
 //                              How photos and seals look in 3D, the live frames, and the rejected forgery.
 import type * as THREE from 'three'
+import type { CardLook } from './cardLight'
 
 export type RGB = [number, number, number]
 
 /** Which world the camera is in. */
-export type Region = 'tunnel' | 'today' | 'qday'
+/** The walk's worlds by role: the entrance (the Prism), today (the blue world), and Post-Quantum Day
+ *  (the green tunnel). 'tunnel' is the old name of the entrance, kept so older screens still type-check. */
+export type Region = 'entrance' | 'tunnel' | 'today' | 'qday'
 
 /** The two doors on the walk. door2 is the Q-Day door, labelled "Q-Day · 2035". */
 export type DoorId = 'door1' | 'door2'
@@ -82,6 +85,15 @@ export interface LiveSequenceOptions {
   /** Address shown in the waiting frame. */
   host: string
   onLand?: (index: number, a: LiveArrival) => void
+  /** The world the frames stand in: its light, fog and particles. */
+  look?: CardLook
+  /** Frame width (2.5 by default), how far a frame steps aside as the visitor reaches it (its centre's
+   *  offset from the path), and the ground-to-label gap. */
+  cardWidth?: number
+  aside?: number
+  lift?: number
+  /** The forgery's frame, relative to a photo's: larger, so it reads from the break stop. */
+  forgeryScale?: number
 }
 export interface LiveSequence {
   readonly group: THREE.Group

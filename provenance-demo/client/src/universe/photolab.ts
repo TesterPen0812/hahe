@@ -78,7 +78,7 @@ let qdayAt = -1
 
 // ---- seal specimens: every state, side by side ----
 const SPECIMENS: { parts: SealPart[]; kicker: string; tone?: 'mint' | 'brass' | 'rose' | 'ash'; reject?: boolean; lost?: boolean }[] = [
-  { kicker: 'Old camera', parts: [{ alg: 'rsa-pss-2048', state: 'holds' }] },
+  { kicker: "Today's standard", parts: [{ alg: 'rsa-pss-2048', state: 'holds' }] },
   { kicker: 'Logged before Post-Quantum Day', tone: 'brass', parts: [{ alg: 'rsa-pss-2048', state: 'anchored' }] },
   { kicker: 'Not proven', tone: 'ash', lost: true, parts: [{ alg: 'rsa-pss-2048', state: 'broken' }] },
   { kicker: 'Verified human', tone: 'mint', parts: [{ alg: 'ml-dsa-65', state: 'holds' }, { alg: 'ed25519', state: 'holds' }, { alg: 'es256', state: 'holds' }] },
