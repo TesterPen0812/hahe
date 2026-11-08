@@ -102,10 +102,32 @@ export interface BulbMeadowOptions {
   palette?: number
   fogColor?: RGB
   name?: string
+  /** Split into this many slices along the walk, each with its bounds, so the engine can skip the
+   *  slices out of view (their simulation and their draw). */
+  chunks?: number
+}
+
+/** Bounds of a cloud's grains, padded for sway and the pointer's push: the engine culls by them. */
+export function setCloudBounds(mesh: THREE.Object3D, pos: Float32Array, pad = 1.2) {
+  const box = new THREE.Box3()
+  const v = new THREE.Vector3()
+  for (let i = 0; i < pos.length; i += 3) box.expandByPoint(v.set(pos[i], pos[i + 1], pos[i + 2]))
+  mesh.userData.bounds = box.expandByScalar(pad)
 }
 
 /** Bulbs of 20 grains: a stem and a round head that sway in a noise breeze and carry travelling colour bands. */
-export function bulbMeadow(u: SceneUniforms, o: BulbMeadowOptions) {
+export function bulbMeadow(u: SceneUniforms, o: BulbMeadowOptions): THREE.Object3D {
+  const n = o.chunks ?? 1
+  if (n > 1) {
+    const group = new THREE.Group()
+    group.name = o.name ?? 'bulb-meadow'
+    for (let k = 0; k < n; k++) {
+      const z: [number, number] = [mix(o.z[0], o.z[1], k / n), mix(o.z[0], o.z[1], (k + 1) / n)]
+      const slice = bulbMeadow(u, { ...o, chunks: 1, bulbs: Math.round(o.bulbs / n), z, seed: (o.seed ?? 1401) + k * 7919, name: `${group.name} ${k + 1}/${n}` })
+      group.add(slice)
+    }
+    return group
+  }
   const { bulbs, pathX: centre, ground: height, spread = 12.5, lane = 0.7, fog = [0, 175], seed = 1401, palette = 0 } = o
   const data = arrays(bulbs * 20)
   for (let bulb = 0; bulb < bulbs; bulb++) {
@@ -130,12 +152,13 @@ export function bulbMeadow(u: SceneUniforms, o: BulbMeadowOptions) {
   }
   const mesh = particles(u, data, 16, fog, seed, { palette, fogColor: o.fogColor })
   mesh.name = o.name ?? 'bulb-meadow'
+  setCloudBounds(mesh, data.position)
   return mesh
 }
 
 function meadow(u: SceneUniforms, lowPower: boolean) {
   return bulbMeadow(u, {
-    bulbs: lowPower ? 6000 : 12000, z: [10, -LENGTH - 12], pathX, ground, name: 'prism-bulb-meadow',
+    bulbs: lowPower ? 6000 : 12000, z: [10, -LENGTH - 12], pathX, ground, name: 'prism-bulb-meadow', chunks: 6,
   })
 }
 
@@ -193,6 +216,8 @@ function stars(u: SceneUniforms, lowPower: boolean) {
   }
   const mesh = particles(u, data, 17, 4000, 51)
   mesh.material.uniforms.uInteraction.value = 0
+  // fixed at infinity and untouched by the pointer: drawn straight from its placement, no simulation
+  mesh.userData.particleCloud = false
   mesh.name = 'prism-star-dome'
   return mesh
 }

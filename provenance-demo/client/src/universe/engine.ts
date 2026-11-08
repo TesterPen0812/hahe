@@ -266,6 +266,8 @@ export class UniverseEngine implements WalkControls {
     this.resize()
     this.bind()
     this.placeCamera(1)
+    this.updatePreviewCamera()
+    this.warm()
     this.raf = requestAnimationFrame(this.frame)
     // visual QA in development: the engine on window, to stand the camera anywhere on the walk
     if (import.meta.env.DEV) (window as unknown as { __engine?: UniverseEngine }).__engine = this
@@ -1185,7 +1187,9 @@ export class UniverseEngine implements WalkControls {
       // the grains round the opening are the tunnel itself at door 1; the spill in front clears as
       // the camera steps through
       const sur = (door.surround.mesh.material as THREE.ShaderMaterial).uniforms
-      sur.uOpacity.value = (door.surround.always ? 1 : door.presence) * (1 - e)
+      // door 1's foliage is the tunnel closing round the door: it fills in as the door comes near (its
+      // grains cost a simulation and a draw, so they are off for the long walk up the tunnel)
+      sur.uOpacity.value = (door.surround.always ? 1 - THREE.MathUtils.smoothstep(remaining, 22, 30) : door.presence) * (1 - e)
       door.surround.mesh.visible = sur.uOpacity.value > 0.001
       const leak = (door.leak.mesh.material as THREE.ShaderMaterial).uniforms
       leak.uOpacity.value = door.presence * THREE.MathUtils.smoothstep(door.open, 0.05, 0.6) * (1 - e)
@@ -1406,6 +1410,7 @@ export class UniverseEngine implements WalkControls {
       return
     }
     const st = this.stages[this.active], door = st.door, next = this.stages[this.active + 1]
+    this.cull(st.scene, this.camera)
     this.simulateParticles(st.scene, this.camera, true)
     if (door && next && door.open >= 0.004) {
       this.projScreen.multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse)
@@ -1414,6 +1419,7 @@ export class UniverseEngine implements WalkControls {
       this.doorSphere.center.set(c.x, c.y + DOOR.height / 2, c.z)
       this.doorSphere.radius = DOOR.height
       if (this.frustum.intersectsSphere(this.doorSphere)) {
+        this.cull(next.scene, next.cam)
         this.simulateParticles(next.scene, next.cam, false)
         this.renderer.setRenderTarget(door.rt)
         this.renderer.render(next.scene, next.cam)
@@ -1423,6 +1429,27 @@ export class UniverseEngine implements WalkControls {
     this.renderPass.scene = st.scene
     this.renderPass.camera = this.camera
     this.composer.render()
+  }
+
+  /** Slices of a world with bounds (the meadows) are skipped, simulation and draw, when out of view. */
+  private cullFrustum = new THREE.Frustum()
+  private cullMatrix = new THREE.Matrix4()
+  private cull(scene: THREE.Scene, camera: THREE.Camera) {
+    this.cullMatrix.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse)
+    this.cullFrustum.setFromProjectionMatrix(this.cullMatrix)
+    for (const group of scene.children) {
+      if (group.userData.bounds) group.visible = this.cullFrustum.intersectsBox(group.userData.bounds)
+      for (const o of group.children) if (o.userData.bounds) o.visible = this.cullFrustum.intersectsBox(o.userData.bounds)
+    }
+  }
+
+  /** Compile every world's programs and allocate its particle state up front, so the first sight of a
+   *  world (through a door) doesn't stall a frame. */
+  private warm() {
+    this.stages.forEach((st, j) => {
+      this.renderer.compile(st.scene, j === 0 ? this.camera : st.cam)
+      this.simulateParticles(st.scene, j === 0 ? this.camera : st.cam, j === 0)
+    })
   }
 
   private simulateParticles(scene: THREE.Scene, camera: THREE.PerspectiveCamera, active: boolean) {

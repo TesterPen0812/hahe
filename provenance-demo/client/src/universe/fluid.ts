@@ -117,6 +117,10 @@ export class Fluid {
   private aspect = 1
   private gridHeight: number
   private iterations: number
+  /** Seconds since the pointer last stirred the surface: once everything has decayed to nothing the
+   *  solver (22 passes a frame) stops, and the surface is cleared to exactly still. */
+  private quiet = 0
+  private still = false
   private mats: Record<'splat' | 'advect' | 'curl' | 'vorticity' | 'divergence' | 'pressure' | 'project' | 'displace', THREE.ShaderMaterial>
 
   constructor(renderer: THREE.WebGLRenderer, lowPower: boolean) {
@@ -160,6 +164,7 @@ export class Fluid {
   }
 
   clear() {
+    this.still = true
     const previous = this.renderer.getRenderTarget()
     const color = this.renderer.getClearColor(new THREE.Color()), alpha = this.renderer.getClearAlpha()
     this.renderer.setClearColor(0, 0)
@@ -177,10 +182,12 @@ export class Fluid {
 
   /** Capsule splats prevent gaps on quick sweeps. Calling this never leaks a render target. */
   splat(start: THREE.Vector2, end: THREE.Vector2, dt: number) {
+    this.quiet = 0
+    this.still = false
     const previous = this.renderer.getRenderTarget()
     const u = this.mats.splat.uniforms
     u.uStart.value.copy(start); u.uEnd.value.copy(end); u.uAspect.value = this.aspect
-    const delta = end.clone().sub(start)
+    const delta = this.delta.copy(end).sub(start)
     u.uForce.value.copy(delta).divide(this.texel).divideScalar(Math.max(dt, 1 / 120)).clampLength(0, 240).multiplyScalar(0.3)
     u.uAmount.value = Math.min(0.8, delta.length() * 22)
     u.uSource.value = this.vel[0].texture; u.uIsDye.value = 0
@@ -190,7 +197,14 @@ export class Fluid {
     this.renderer.setRenderTarget(previous)
   }
 
+  private delta = new THREE.Vector2()
+  /** Velocity, dye and displacement all decay to under a percent within this many quiet seconds. */
+  static readonly SETTLE = 5
+
   step(dt: number) {
+    this.quiet += Math.max(dt, 0)
+    if (this.still) return
+    if (this.quiet > Fluid.SETTLE) { this.clear(); return }
     const previous = this.renderer.getRenderTarget()
     dt = Math.min(Math.max(dt, 0), 1 / 30)
     for (const m of Object.values(this.mats)) { m.uniforms.uDt.value = dt; m.uniforms.uVelocity.value = this.vel[0].texture }
