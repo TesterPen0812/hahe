@@ -63,7 +63,10 @@ function readHand(points: NormalizedLandmark[], aspect: number): HandInfo {
     // a finger is extended when its tip is clearly further from the wrist than its middle joint
     if (dist(points[TIPS[i]], w, aspect) > dist(points[PIPS[i]], w, aspect) * 1.12) fingers++
   }
-  return { points, fingers, open: fingers >= 3, fist: fingers === 0 }
+  // A hand cut off by the frame edge looks like a fist (its fingers vanish), so only trust a fist
+  // when the whole hand is in view.
+  const inFrame = points.every(q => q.x > 0.02 && q.x < 0.98 && q.y > 0.02 && q.y < 0.98)
+  return { points, fingers, open: fingers >= 3, fist: fingers === 0 && inFrame }
 }
 
 function palm(p: NormalizedLandmark[]) {

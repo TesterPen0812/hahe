@@ -12,6 +12,7 @@ import {
 import { buildMeadow, qdayGate } from './scenery'
 import { buildGallery, type Gallery, type GalleryPhoto } from './gallery'
 import { Fluid } from './fluid'
+import { driveVelocity, type HandControl } from '../gesture/handControl'
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
@@ -77,6 +78,7 @@ export class UniverseEngine {
   private d = 0
   private v = 0
   private keys = new Set<string>()
+  private hands: HandControl | null = null
   private target: { seg: number; d: number } | null = { seg: -1, d: 6 }
   private selected: number | null = null
   private hovered: number | null = null
@@ -187,6 +189,9 @@ export class UniverseEngine {
   }
 
   /** Hang real photos from the feed along the path to our door; Q-Day's wave tests their seals. */
+  /** Let the presenter's hands (webcam) walk the timeline; null hands control back to scroll. */
+  setHands(c: HandControl | null) { this.hands = c }
+
   setGallery(photos: GalleryPhoto[]) {
     if (this.gallery) { this.home.remove(this.gallery.group); this.gallery.dispose(); this.gallery = null }
     if (!photos.length || !this.universes[0]) return
@@ -387,6 +392,10 @@ export class UniverseEngine {
     const fwd = this.keys.has('w') || this.keys.has('arrowup')
     const bwd = this.keys.has('s') || this.keys.has('arrowdown')
 
+    // Hands in front of the webcam steer like a scroll wheel: stretch to go forward, fist to stop.
+    const hand = this.hands ? driveVelocity(this.hands, this.v, dt) : null
+    if (hand?.active) this.target = null
+
     if (this.target) {
       const tg = this.target
       if (this.seg < 0 && tg.seg >= 0) this.selected = tg.seg
@@ -395,6 +404,8 @@ export class UniverseEngine {
       const want = THREE.MathUtils.clamp(err * 1.3, -15, 15)
       this.v += (want - this.v) * Math.min(1, dt * 3)
       if (Math.abs(err) < 0.04 && (tg.seg === this.seg || (tg.seg < 0 && this.seg < 0))) { this.target = null; this.v = 0 }
+    } else if (hand?.active) {
+      this.v = hand.v
     } else if (fwd || bwd) {
       this.v = THREE.MathUtils.clamp(this.v + (fwd ? 16 : -16) * dt, -9, 9)
     } else {
