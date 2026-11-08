@@ -1,46 +1,42 @@
 // Hand-gesture control from the laptop webcam. MediaPipe's Hand Landmarker (Apache-2.0) finds 21
-// points on each hand, entirely in the browser. From them we read one thing: how far apart the two
-// hands are, measured in hand-sizes so it doesn't matter how close the presenter stands.
+// points on each hand, entirely in the browser.
 //
-//   stretch  pull your open hands apart to push the scene forward, bring them together to pull it
-//            back, like a pinch-zoom in the air. Closing your hands (or dropping them) lets go, so
-//            you can reset and stretch again without walking backwards.
-//   hold     a joystick: the spread when your hands first appear is neutral; hold them wider to
-//            keep walking forward, closer to walk back.
-//   brake    a closed fist stops.
+// The gesture is a pinch-zoom in the air, one hand: spread thumb and index finger apart to zoom
+// in (walk forward), pinch them together to zoom out (walk back).
+//
+//   pose    it only counts in a deliberate pinch pose: middle, ring and little fingers curled, so
+//           talking with your hands doesn't move the scene.
+//   reset   on a phone you lift your fingers to zoom again; here, a quick opposite movement right
+//           after a zoom is the return stroke and is ignored. Zoom, return, zoom keeps going the
+//           same way. To change direction, pause for a moment first.
 //
 // The model and the WASM runtime are served from this app, not a CDN, so it works on venue wifi.
 import type { HandLandmarker, NormalizedLandmark } from '@mediapipe/tasks-vision'
 import wasmLoaderPath from '@mediapipe/tasks-vision/vision_wasm_internal.js?url'
 import wasmBinaryPath from '@mediapipe/tasks-vision/vision_wasm_internal.wasm?url'
 
-export type GestureMode = 'stretch' | 'hold'
+export type Stroke = 'none' | 'in' | 'out' | 'return'
 
 export interface HandInfo {
   points: NormalizedLandmark[]
-  /** Extended fingers (index to little), 0..4. */
-  fingers: number
-  open: boolean
-  fist: boolean
+  /** Middle, ring and little fingers curled (at least two of them): the pinch pose. */
+  pinchPose: boolean
 }
 
 export interface GestureFrame {
   hands: HandInfo[]
-  /** Distance between the palms in hand-sizes (smoothed), or null without two hands. */
-  spread: number | null
-  /** Both hands visible and open: movement counts. */
-  engaged: boolean
-  brake: boolean
-  /** hold mode: the walking speed the hands ask for (null when not engaged). */
-  holdSpeed: number | null
-  /** stretch mode: the push this frame, in walk-velocity units. */
+  /** The hand doing the zoom, or -1. */
+  active: number
+  /** Thumb-to-index gap in hand-sizes (smoothed), or null. */
+  gap: number | null
+  stroke: Stroke
+  /** Distance this frame's zoom adds to the walk, in scene units (+ forward). */
   impulse: number
   fps: number
 }
 
 export interface HandControlOptions {
-  mode?: GestureMode
-  /** Multiplier on how much a gesture moves the scene. */
+  /** Multiplier on how much a zoom moves the scene. */
   sensitivity?: number
   /** Detections per second; the scene shares the GPU, so keep this modest. */
   rate?: number
@@ -48,9 +44,12 @@ export interface HandControlOptions {
   video?: HTMLVideoElement
 }
 
-const WRIST = 0, INDEX_MCP = 5, MIDDLE_MCP = 9, PINKY_MCP = 17
-const TIPS = [8, 12, 16, 20], PIPS = [6, 10, 14, 18]
-const MAX_SPEED = 14 // the engine clamps walking speed to ±14
+const WRIST = 0, THUMB_TIP = 4, INDEX_TIP = 8, MIDDLE_MCP = 9
+const CURL_TIPS = [12, 16, 20], CURL_PIPS = [10, 14, 18]
+const MAX_SPEED = 14       // the engine clamps walking speed to ±14
+const GAIN = 14            // scene units walked per hand-size of gap change (a full zoom ≈ 20)
+const MOVING = 0.55        // hand-sizes per second before a change counts as a stroke
+const RETURN_WINDOW = 900  // ms after a zoom in which an opposite stroke is the return
 
 function dist(a: NormalizedLandmark, b: NormalizedLandmark, aspect: number) {
   return Math.hypot((a.x - b.x) * aspect, a.y - b.y)
@@ -58,22 +57,12 @@ function dist(a: NormalizedLandmark, b: NormalizedLandmark, aspect: number) {
 
 function readHand(points: NormalizedLandmark[], aspect: number): HandInfo {
   const w = points[WRIST]
-  let fingers = 0
-  for (let i = 0; i < 4; i++) {
-    // a finger is extended when its tip is clearly further from the wrist than its middle joint
-    if (dist(points[TIPS[i]], w, aspect) > dist(points[PIPS[i]], w, aspect) * 1.12) fingers++
+  let curled = 0
+  for (let i = 0; i < 3; i++) {
+    // curled: the fingertip is no further from the wrist than its middle joint
+    if (dist(points[CURL_TIPS[i]], w, aspect) < dist(points[CURL_PIPS[i]], w, aspect) * 1.05) curled++
   }
-  // A hand cut off by the frame edge looks like a fist (its fingers vanish), so only trust a fist
-  // when the whole hand is in view.
-  const inFrame = points.every(q => q.x > 0.02 && q.x < 0.98 && q.y > 0.02 && q.y < 0.98)
-  return { points, fingers, open: fingers >= 3, fist: fingers === 0 && inFrame }
-}
-
-function palm(p: NormalizedLandmark[]) {
-  return {
-    x: (p[WRIST].x + p[INDEX_MCP].x + p[PINKY_MCP].x) / 3,
-    y: (p[WRIST].y + p[INDEX_MCP].y + p[PINKY_MCP].y) / 3,
-  }
+  return { points, pinchPose: curled >= 2 }
 }
 
 let loading: Promise<HandLandmarker> | null = null
@@ -106,7 +95,6 @@ export function loadHandLandmarker(): Promise<HandLandmarker> {
 
 export class HandControl {
   readonly video: HTMLVideoElement
-  mode: GestureMode
   sensitivity: number
   private rate: number
   private landmarker: HandLandmarker | null = null
@@ -114,10 +102,15 @@ export class HandControl {
   private raf = 0
   private lastDetect = 0
   private lastVideoTime = -1
-  private spread: number | null = null
-  private neutral: number | null = null
-  private engagedFrames = 0
-  private pending = 0
+  // the zooming hand
+  private gap: number | null = null
+  private wrist: { x: number; y: number } | null = null
+  private settle = 0
+  // strokes
+  private stroke: { dir: number; ignored: boolean } | null = null
+  private still = 0
+  private lastDir = 0          // direction of the last stroke that counted
+  private lastEnd = -Infinity  // when the last stroke (counted or return) ended
   private fpsT = 0
   private fpsN = 0
   private fps = 0
@@ -128,9 +121,8 @@ export class HandControl {
 
   private constructor(video: HTMLVideoElement, opts: HandControlOptions) {
     this.video = video
-    this.mode = opts.mode ?? 'stretch'
     this.sensitivity = opts.sensitivity ?? 1
-    this.rate = opts.rate ?? 20
+    this.rate = opts.rate ?? 24
   }
 
   /** Ask for the camera, load the model and start tracking. */
@@ -156,12 +148,6 @@ export class HandControl {
     return c
   }
 
-  onFrame(cb: (f: GestureFrame) => void) {
-    this.listeners.add(cb)
-    return () => { this.listeners.delete(cb) }
-  }
-
-  setMode(m: GestureMode) { this.mode = m }
   setSensitivity(x: number) { this.sensitivity = x }
 
   /** Show the camera inside `el` (first child), styled with `className`. Returns a remover. */
@@ -171,12 +157,13 @@ export class HandControl {
     return () => { this.video.remove() }
   }
 
-  /** Stretch impulses since the last call, for a render loop to add to its velocity. */
-  takeImpulse() {
-    const p = this.pending
-    this.pending = 0
-    return p
+  onFrame(cb: (f: GestureFrame) => void) {
+    this.listeners.add(cb)
+    return () => { this.listeners.delete(cb) }
   }
+
+  /** Distance still to glide from zooms, in scene units. driveVelocity() spends it. */
+  glide = 0
 
   stop() {
     this.stopped = true
@@ -200,69 +187,83 @@ export class HandControl {
     const result = this.landmarker.detectForVideo(v, now)
     this.fpsN++
     if (now - this.fpsT > 1000) { this.fps = this.fpsN * 1000 / (now - this.fpsT); this.fpsN = 0; this.fpsT = now }
-    this.update(result.landmarks, dt)
+    this.update(result.landmarks, dt, now)
   }
 
-  private update(landmarks: NormalizedLandmark[][], dt: number) {
+  private endStroke(now: number) {
+    if (this.stroke && !this.stroke.ignored) this.lastDir = this.stroke.dir
+    if (this.stroke) this.lastEnd = now
+    this.stroke = null
+  }
+
+  private update(landmarks: NormalizedLandmark[][], dt: number, now: number) {
     const aspect = this.video.videoWidth / Math.max(1, this.video.videoHeight) || 4 / 3
     const hands = landmarks.map(p => readHand(p, aspect))
-    const brake = hands.some(h => h.fist)
-    const engaged = hands.length === 2 && hands[0].open && hands[1].open
 
-    let spread: number | null = null
-    if (hands.length === 2) {
-      const [a, b] = hands.map(h => palm(h.points))
-      // hand size: wrist to middle knuckle, averaged over both hands
-      const size = (dist(hands[0].points[WRIST], hands[0].points[MIDDLE_MCP], aspect) +
-        dist(hands[1].points[WRIST], hands[1].points[MIDDLE_MCP], aspect)) / 2
-      spread = Math.hypot((a.x - b.x) * aspect, a.y - b.y) / Math.max(size, 1e-3)
-    }
-
-    // Smooth the spread; landmarks jitter by a few pixels from frame to frame.
-    const prev = this.spread
-    const smooth = spread === null ? null : prev === null ? spread : prev + (spread - prev) * 0.55
-    this.spread = smooth
+    // The zooming hand: in the pinch pose, preferring the one we were already following.
+    let active = -1, best = Infinity
+    hands.forEach((h, i) => {
+      if (!h.pinchPose) return
+      const w = h.points[WRIST]
+      const d = this.wrist ? Math.hypot(w.x - this.wrist.x, w.y - this.wrist.y) : i
+      if (d < best) { best = d; active = i }
+    })
+    if (active >= 0 && this.wrist && best > 0.2) active = -1 // a different hand: start over
 
     let impulse = 0
-    let holdSpeed: number | null = null
-    if (engaged && smooth !== null) {
-      this.engagedFrames++
-      if (this.neutral === null) this.neutral = smooth
-      // the first couple of frames only settle the reading, so a hand arriving doesn't lurch
-      if (this.engagedFrames > 2 && prev !== null) {
-        const rate = (smooth - prev) / dt // hand-sizes per second
-        if (Math.abs(rate) > 0.35) impulse = (smooth - prev) * 2.6 * this.sensitivity
-      }
-      const off = smooth - this.neutral
-      const dead = 0.5
-      holdSpeed = Math.abs(off) < dead ? 0
-        : Math.max(-MAX_SPEED, Math.min(MAX_SPEED, (off - Math.sign(off) * dead) * 3.5 * this.sensitivity))
+    let stroke: Stroke = 'none'
+    if (active < 0) {
+      this.gap = null; this.wrist = null; this.settle = 0
+      this.endStroke(now)
     } else {
-      this.engagedFrames = 0
-      this.neutral = null
+      const p = hands[active].points
+      this.wrist = { x: p[WRIST].x, y: p[WRIST].y }
+      const size = Math.max(dist(p[WRIST], p[MIDDLE_MCP], aspect), 1e-3)
+      const raw = dist(p[THUMB_TIP], p[INDEX_TIP], aspect) / size
+      const prev = this.gap
+      const gap = prev === null ? raw : prev + (raw - prev) * 0.6
+      this.gap = gap
+      this.settle++
+      if (prev !== null && this.settle > 2) {
+        const rate = (gap - prev) / dt
+        if (Math.abs(rate) > MOVING) {
+          this.still = 0
+          const dir = Math.sign(rate)
+          if (this.stroke && this.stroke.dir !== dir) this.endStroke(now)
+          if (!this.stroke) {
+            // the opposite of the last zoom, straight after it, is just the fingers resetting
+            const ignored = this.lastDir === -dir && now - this.lastEnd < RETURN_WINDOW
+            this.stroke = { dir, ignored }
+          }
+          if (!this.stroke.ignored) impulse = (gap - prev) * GAIN * this.sensitivity
+        } else if (this.stroke && ++this.still >= 3) {
+          this.endStroke(now)
+        }
+      }
+      if (this.stroke) stroke = this.stroke.ignored ? 'return' : this.stroke.dir > 0 ? 'in' : 'out'
     }
-    if (this.mode === 'stretch') this.pending += impulse
-    else impulse = 0
-    if (this.mode !== 'hold') holdSpeed = null
+    // a new zoom against the current glide replaces it rather than cancelling it out
+    if (impulse !== 0) this.glide = Math.sign(impulse) === Math.sign(this.glide) || this.glide === 0 ? this.glide + impulse : impulse
 
-    const frame: GestureFrame = { hands, spread: smooth, engaged, brake, holdSpeed, impulse, fps: this.fps }
+    const frame: GestureFrame = { hands, active, gap: this.gap, stroke, impulse, fps: this.fps }
     this.latest = frame
     for (const cb of this.listeners) cb(frame)
   }
 }
 
 /**
- * Apply the hands to a walking velocity, once per rendered frame. Returns the new velocity and
- * whether the hands are steering (so the caller can skip its own coasting).
+ * Glide the walk through the distance the zooms asked for, once per rendered frame: ease up to a
+ * speed that shrinks as the remaining distance does, then hand back to coasting. Returns the new
+ * velocity and whether the hands are driving it (so the caller skips its own coasting).
  */
 export function driveVelocity(c: HandControl, v: number, dt: number): { v: number; active: boolean } {
-  const f = c.latest
-  const impulse = c.takeImpulse()
-  if (!f) return { v, active: false }
-  if (f.brake) return { v: v * Math.exp(-dt * 9), active: true }
-  if (f.holdSpeed !== null) return { v: v + (f.holdSpeed - v) * Math.min(1, dt * 3), active: true }
-  if (impulse !== 0) return { v: Math.max(-MAX_SPEED, Math.min(MAX_SPEED, v + impulse)), active: true }
-  return { v, active: false }
+  if (Math.abs(c.glide) < 0.05) { c.glide = 0; return { v, active: false } }
+  const want = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, c.glide * 2.2))
+  const nv = v + (want - v) * Math.min(1, dt * 5)
+  // spend the glide only with movement in its direction; stop once it's used up
+  const step = Math.sign(nv) === Math.sign(c.glide) ? nv * dt : 0
+  c.glide = Math.abs(step) >= Math.abs(c.glide) ? 0 : c.glide - step
+  return { v: nv, active: true }
 }
 
 /** The bones to draw between landmarks, for previews. */

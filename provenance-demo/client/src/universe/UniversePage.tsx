@@ -137,7 +137,7 @@ export default function UniversePage() {
       {hands && (
         <div className="uv-hands">
           <HandPreview control={hands} />
-          <p>Stretch open hands apart to walk · together to go back · fist to stop</p>
+          <p>Curl three fingers, then spread thumb and index to zoom in · pinch to zoom out</p>
         </div>
       )}
 

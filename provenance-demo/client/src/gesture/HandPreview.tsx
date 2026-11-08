@@ -1,12 +1,15 @@
-// A mirrored webcam view with the tracked hand skeletons drawn over it, so the audience can see
-// the scene is following real hands.
+// A mirrored webcam view with the tracked hands drawn over it, so the audience can see the scene
+// is following real fingers. The thumb-index line is the zoom: green zooming in, amber zooming out,
+// grey for the ignored return stroke.
 import { useEffect, useRef } from 'react'
-import { HAND_BONES, type GestureFrame, type HandControl } from './handControl'
+import { HAND_BONES, type GestureFrame, type HandControl, type Stroke } from './handControl'
 
 interface Props {
   control: HandControl
   className?: string
 }
+
+const STROKE_TONE: Record<Stroke, string> = { none: '#ffffff', in: '#7dffb3', out: '#ffc46b', return: '#8a93a3' }
 
 export default function HandPreview({ control, className }: Props) {
   const box = useRef<HTMLDivElement>(null)
@@ -22,31 +25,30 @@ export default function HandPreview({ control, className }: Props) {
       if (cv.width !== w) cv.width = w
       if (cv.height !== h) cv.height = h
       ctx.clearRect(0, 0, w, h)
-      const tone = f.brake ? '#ff8f7a' : f.engaged ? '#7dffb3' : '#c9d3ff'
-      for (const hand of f.hands) {
+      f.hands.forEach((hand, i) => {
         const p = hand.points
-        ctx.strokeStyle = tone
-        ctx.lineWidth = 3
-        ctx.globalAlpha = 0.85
+        const isActive = i === f.active
+        ctx.strokeStyle = isActive ? '#c9d3ff' : 'rgba(201, 211, 255, 0.45)'
+        ctx.lineWidth = isActive ? 3 : 2
         ctx.beginPath()
         for (const [a, b] of HAND_BONES) {
           ctx.moveTo(p[a].x * w, p[a].y * h)
           ctx.lineTo(p[b].x * w, p[b].y * h)
         }
         ctx.stroke()
-        ctx.fillStyle = '#ffffff'
-        ctx.globalAlpha = 1
-        for (const q of p) { ctx.beginPath(); ctx.arc(q.x * w, q.y * h, 3.2, 0, Math.PI * 2); ctx.fill() }
-      }
-      // the line between the palms is the gesture itself
-      if (f.hands.length === 2) {
-        const c = f.hands.map(hd => hd.points[9])
-        ctx.setLineDash([8, 8])
-        ctx.strokeStyle = tone
-        ctx.lineWidth = 2
-        ctx.beginPath(); ctx.moveTo(c[0].x * w, c[0].y * h); ctx.lineTo(c[1].x * w, c[1].y * h); ctx.stroke()
-        ctx.setLineDash([])
-      }
+        ctx.fillStyle = isActive ? '#ffffff' : 'rgba(255, 255, 255, 0.5)'
+        for (const q of p) { ctx.beginPath(); ctx.arc(q.x * w, q.y * h, isActive ? 3.2 : 2.4, 0, Math.PI * 2); ctx.fill() }
+        if (!isActive) return
+        // the zoom itself: thumb tip to index tip
+        const t = p[4], ix = p[8]
+        ctx.strokeStyle = STROKE_TONE[f.stroke]
+        ctx.lineWidth = f.stroke === 'in' || f.stroke === 'out' ? 6 : 3
+        ctx.beginPath(); ctx.moveTo(t.x * w, t.y * h); ctx.lineTo(ix.x * w, ix.y * h); ctx.stroke()
+        for (const q of [t, ix]) {
+          ctx.fillStyle = STROKE_TONE[f.stroke]
+          ctx.beginPath(); ctx.arc(q.x * w, q.y * h, 7, 0, Math.PI * 2); ctx.fill()
+        }
+      })
     }
     const off = control.onFrame(draw)
     return () => { off(); unmount() }
