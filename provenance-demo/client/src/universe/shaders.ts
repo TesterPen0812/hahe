@@ -5,6 +5,38 @@ export const TRAIL_LENGTH = 16
 /** Seconds a pointer wake stamp lingers. */
 export const WAKE_LIFE = 1.6
 
+const portalNoise = /* glsl */ `
+vec3 portalHash(vec3 point) {
+    vec3 value = fract(point * vec3(0.1031, 0.1030, 0.0973));
+    value += vec3(dot(value, value.yxz + 33.33));
+    return fract((value.xxy + value.yxx) * value.zyx) * 2.0 - 1.0;
+}
+
+// Gradient noise with quintic interpolation, roughly -1..1.
+float portalNoise(vec3 point) {
+    vec3 cell = floor(point);
+    vec3 local = fract(point);
+    vec3 curve = local * local * local * (local * (local * 6.0 - 15.0) + 10.0);
+
+    float n000 = dot(portalHash(cell + vec3(0.0, 0.0, 0.0)), local - vec3(0.0, 0.0, 0.0));
+    float n100 = dot(portalHash(cell + vec3(1.0, 0.0, 0.0)), local - vec3(1.0, 0.0, 0.0));
+    float n010 = dot(portalHash(cell + vec3(0.0, 1.0, 0.0)), local - vec3(0.0, 1.0, 0.0));
+    float n110 = dot(portalHash(cell + vec3(1.0, 1.0, 0.0)), local - vec3(1.0, 1.0, 0.0));
+    float n001 = dot(portalHash(cell + vec3(0.0, 0.0, 1.0)), local - vec3(0.0, 0.0, 1.0));
+    float n101 = dot(portalHash(cell + vec3(1.0, 0.0, 1.0)), local - vec3(1.0, 0.0, 1.0));
+    float n011 = dot(portalHash(cell + vec3(0.0, 1.0, 1.0)), local - vec3(0.0, 1.0, 1.0));
+    float n111 = dot(portalHash(cell + vec3(1.0, 1.0, 1.0)), local - vec3(1.0, 1.0, 1.0));
+
+    float x00 = mix(n000, n100, curve.x);
+    float x10 = mix(n010, n110, curve.x);
+    float x01 = mix(n001, n101, curve.x);
+    float x11 = mix(n011, n111, curve.x);
+
+    return mix(mix(x00, x10, curve.y), mix(x01, x11, curve.y), curve.z) * 1.8;
+}
+
+`
+
 /**
  * Shared particle lens model. A point's sharp footprint grows into a bokeh disc the further it
  * sits from the focal distance; its brightness is spread over the larger disc so blurred
@@ -80,6 +112,15 @@ export const fieldVertex = /* glsl */ `
   varying float vTwinkle;
   varying float vFade;
   ${lens}
+  #ifdef PORTAL_DUST
+    attribute vec4 aPortal;
+    uniform float uHalfWidth;
+    uniform float uDoorOuter;
+    uniform float uDoorSpeed;
+    uniform float uDoorOpen;
+    uniform float uImpact;
+    ${portalNoise}
+  #endif
 
   float hash(float n) { return fract(sin(n) * 43758.5453); }
 
@@ -101,6 +142,26 @@ export const fieldVertex = /* glsl */ `
     vFade = 1.0;
     vec3 velocity = vec3(0.0);
 
+    #ifdef PORTAL_DUST
+      p += uAxis * aPortal.x * uHalfWidth;
+      velocity = uAxis * aPortal.x * uDoorSpeed;
+      if (aPortal.w < 0.0) {
+        float edge = exp(-aPortal.y * (uDoorOuter - uHalfWidth) * 6.0) * mix(1.0, 0.2, aPortal.z);
+        float slit = 1.0 - smoothstep(0.0, 0.4, uDoorOpen);
+        vec3 local = p - uCenter;
+        float across = mix(abs(dot(local, uAxis)), dot(local, uAxis), aPortal.z);
+        float grain = 0.5 + 0.5 * portalNoise(vec3(across * 3.0, local.y * 3.0, 5.0));
+        vTwinkle = 0.05 + grain * 0.07 + edge * (0.6 + slit * 1.2) * (0.8 + uImpact * 0.6);
+      } else {
+        float distance = aPortal.w;
+        float width = uHalfWidth * (1.0 + distance * 0.35) + 0.02;
+        float across = dot(p - uCenter, uAxis);
+        float ripple = portalNoise(vec3(across * 2.0, distance * 2.0, t * 0.5)) * 0.5 + 0.5;
+        p.y += ripple * 0.02;
+        float falloff = exp(-distance * 0.45) * (1.0 - smoothstep(width * 0.6, width, abs(across)));
+        vTwinkle = smoothstep(0.0, 0.15, uDoorOpen + 0.05) * falloff * (0.4 + ripple * 0.6) * (0.8 + uImpact * 0.5);
+      }
+    #else
     if (uMode < 0.5) {
       // Wind combs the meadow in long slow waves; tall grains sway more.
       float lift = fract(aSeed * 17.31);
@@ -215,6 +276,8 @@ export const fieldVertex = /* glsl */ `
       p.y += (1.0 - cos(ang)) * reach * 0.9;                          // tips rise only as far as the arc allows
       vTwinkle = (0.75 + 0.35 * sin(t * 1.1 + p.y * 0.6 + strand * 20.0)) * mix(1.0, 0.6, settle);
     }
+
+    #endif
 
     float lit = 0.0;
     if (uInteraction > 0.0) {
@@ -598,106 +661,57 @@ export const portalVertex = /* glsl */ `
 export const portalFragment = /* glsl */ `
   uniform sampler2D uTex;
   uniform vec2 uRes;
+  uniform vec2 uSize;
+  uniform float uHalfWidth;
   uniform float uOpen;
-  uniform float uHover;
+  uniform float uImpact;
   uniform float uTime;
   uniform vec3 uTint;
-  uniform float uEnter;
   varying vec2 vUv;
-
-  float hn(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }
-  float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
-    return mix(mix(hn(i), hn(i + vec2(1, 0)), f.x), mix(hn(i + vec2(0, 1)), hn(i + vec2(1, 1)), f.x), f.y); }
-
-  uniform vec2 uSize;    // size of the quad, world units; the opening is the disc inside it
+  ${portalNoise}
 
   void main() {
-    // A moon gate: the opening swells from a point of light to the full circle, its rim
-    // shimmering like air over heat.
-    float open = smoothstep(0.0, 1.0, uOpen);
-    vec2 wp = (vUv - 0.5) * uSize;
-    float hx = mix(0.02, uSize.x * 0.5, open);
-    float ang = atan(wp.y, wp.x);
-    float wobble = (vn(vec2(ang * 3.0, uTime * 0.8)) - 0.5) * 0.14 * open;
-    float sd = length(wp) - hx + wobble;
-    if (sd > 0.0) discard;
-    vec2 suv = gl_FragCoord.xy / uRes;
-    // Light bends near the rim: the view through the door lenses slightly at its edges.
-    float bend = exp(-max(-sd, 0.0) * 5.0);
-    vec2 drift = vec2(vn(vUv * 6.0 + uTime * 0.3), vn(vUv * 6.0 - uTime * 0.27)) - 0.5;
-    suv += (drift * 0.006) * bend * (1.0 - uEnter);
-    vec3 world = texture2D(uTex, suv).rgb;
-    float rim = exp(-max(-sd, 0.0) * 40.0) * (1.0 - uEnter);
+    vec2 local = (vUv - 0.5) * uSize;
+    float edge = min(uHalfWidth - abs(local.x), uSize.y * 0.5 - abs(local.y));
+    if (edge < 0.0) discard;
+    vec2 pixel = gl_FragCoord.xy;
+    // WGSL uses downward screen Y; preserve its noise field, then convert its UV offset.
+    vec2 nativePixel = vec2(pixel.x, uRes.y - pixel.y);
+    vec2 wobble = vec2(
+      portalNoise(vec3(nativePixel * 0.012, uTime * 0.7)),
+      portalNoise(vec3(nativePixel * 0.012 + 17.0, uTime * 0.7))
+    ) * exp(-edge * 5.0) * 0.006 * vec2(1.0, -1.0);
+    float shown = smoothstep(0.0, 0.25, uOpen);
+    vec3 next = texture2D(uTex, clamp(pixel / uRes + wobble, 0.0, 1.0)).rgb;
     float slit = 1.0 - smoothstep(0.0, 0.35, uOpen);
-    vec3 col = world * smoothstep(0.0, 0.25, uOpen);
-    col += mix(vec3(1.0), uTint, 0.7) * rim * (0.6 + 0.4 * uHover);
-    col = mix(col, vec3(1.6, 1.55, 1.5), slit);
-    // a faint inner veil of light near the floor of the opening
-    col += uTint * exp(-vUv.y * 9.0) * 0.25 * (1.0 - uEnter);
-    gl_FragColor = vec4(col, 1.0);
+    float rim = exp(-edge * 40.0) * (0.25 + uImpact * 0.4) + slit * 2.5;
+    gl_FragColor = vec4(next * shown + uTint * rim, 1.0);
   }
 `
 
-/** Glow around a door: distance to the opening's border, additive. */
-export const frameFragment = /* glsl */ `
-  uniform float uOpen;
-  uniform float uHover;
-  uniform float uTime;
-  uniform float uEnter;
-  uniform vec3 uTint;
-  uniform vec2 uDoor;    // door half-size, world units
-  uniform vec2 uPlane;   // this plane's size, world units
-  varying vec2 vUv;
-  void main() {
-    vec2 c = (vUv - 0.5) * uPlane;
-    float open = smoothstep(0.0, 1.0, uOpen);
-    float outside = length(c) - mix(0.02, uDoor.x, open);
-    if (outside < 0.0) discard;
-    float line = exp(-outside * 14.0) * 0.55;
-    float halo = exp(-outside * 1.6) * 0.16 + exp(-outside * 0.5) * 0.03;
-    // a point of light before it opens, so the gate is found in the dark
-    float seed = (1.0 - smoothstep(0.0, 0.25, uOpen)) * exp(-length(c) * 3.0) * 1.5 * step(0.001, uOpen);
-    float rays = seed;
-    float pulse = 0.85 + 0.15 * sin(uTime * 1.3);
-    float fade = 1.0 - uEnter;
-    vec3 col = (mix(vec3(1.0), uTint, 0.75) * line + uTint * halo * (0.7 + uHover) * pulse + uTint * rays) * fade;
-    float a = clamp(line + halo + rays, 0.0, 1.0) * fade;
-    gl_FragColor = vec4(col, a);
-  }
-`
-
-/** Light spilled from an open doorway onto the ground in front of it. */
-export const spillFragment = /* glsl */ `
-  uniform float uOpen;
-  uniform float uHover;
-  uniform vec3 uTint;
-  varying vec2 vUv;
-  void main() {
-    vec2 c = (vUv - vec2(0.5, 1.0)) * vec2(1.0, 1.0);
-    float fan = exp(-abs(c.x) / (0.12 + -c.y * 0.45) * 1.4) * exp(c.y * 3.2);
-    float a = fan * 0.35 * smoothstep(0.0, 1.0, uOpen) * (0.8 + 0.4 * uHover);
-    gl_FragColor = vec4(uTint, a);
-  }
-`
-
-/** Sparks lifting off a doorway's frame. */
 export const sparkVertex = /* glsl */ `
   uniform float uTime;
   uniform float uOpen;
-  uniform float uEnter;
+  uniform float uPresence;
+  uniform float uHalfWidth;
+  uniform float uImpact;
   uniform float uScale;
   attribute float aSeed;
   varying float vA;
   void main() {
+    float span = mix(3.0, 6.0, aSeed);
+    float progress = fract(uTime / span + aSeed * 17.0);
+    float age = progress * span;
     vec3 p = position;
-    float life = fract(uTime * (0.08 + aSeed * 0.12) + aSeed * 17.0);
-    p.y += life * 3.5;
-    p.x += sin(uTime * 0.7 + aSeed * 40.0) * 0.25 * life;
-    p.z += cos(uTime * 0.6 + aSeed * 30.0) * 0.4 * life;
-    vA = smoothstep(0.0, 0.1, life) * (1.0 - life) * smoothstep(0.2, 0.9, uOpen) * (1.0 - uEnter);
+    p.x *= uHalfWidth;
+    p.x += (fract(aSeed * 37.0) - 0.5) * 0.3 * age;
+    p.y += fract(aSeed * 43.0) * 0.15 * age + 0.01 * age * age;
+    p.z += mix(0.1, 0.45, fract(aSeed * 59.0)) * age;
+    vA = smoothstep(0.0, 0.15, progress) * (1.0 - smoothstep(0.6, 1.0, progress))
+       * smoothstep(0.0, 0.3, uOpen) * uPresence * (0.5 + uImpact);
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
     gl_Position = projectionMatrix * mv;
-    gl_PointSize = uScale * (0.6 + aSeed) / max(-mv.z, 0.5);
+    gl_PointSize = min(32.0, uScale * (0.5 + aSeed * 0.7) / max(-mv.z, 0.5));
   }
 `
 

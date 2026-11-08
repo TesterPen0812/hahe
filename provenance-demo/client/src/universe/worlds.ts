@@ -1,8 +1,8 @@
 import * as THREE from 'three'
 import { fbm, rng } from './noise'
 import {
-  TRAIL_LENGTH, fieldFragment, fieldVertex, frameFragment, pathFragment, pathVertex,
-  portalFragment, portalVertex, skyFragment, skyVertex, sparkFragment, sparkVertex, spillFragment,
+  TRAIL_LENGTH, fieldFragment, fieldVertex, pathFragment, pathVertex,
+  portalFragment, portalVertex, skyFragment, skyVertex, sparkFragment, sparkVertex,
   starFragment, starVertex,
 } from './shaders'
 
@@ -297,14 +297,33 @@ export function glowingPath(
 }
 
 /** The gate is round: a circle of radius width/2 whose top is at `height`. */
-export const DOOR = { width: 6.0, height: 6.3 }
-const GATE_R = DOOR.width / 2, GATE_Y = DOOR.height - DOOR.width / 2
+export const DOOR = { width: 2.3, height: 3.4, frame: 1.1, slit: 0.012 }
+
+/** Shared by the membrane, sliding dust and CPU picking. */
+export function doorHalfWidth(open: number) {
+  return DOOR.slit + 1.138 * THREE.MathUtils.clamp(open, 0, 1)
+}
+
+export function doorProgress(remaining: number) {
+  const reveal = THREE.MathUtils.smoothstep(44 - remaining, 0, 14)
+  const approach = THREE.MathUtils.smoothstep(26 - remaining, 0, 18)
+  return { presence: reveal, open: THREE.MathUtils.smoothstep(approach, 0, 1) }
+}
+
+function portalRandom(index: number, salt: number) {
+  const pcg = (v: number) => {
+    const state = (Math.imul(v, 747796405) + 2891336453) >>> 0
+    const word = Math.imul((state >>> ((state >>> 28) + 4)) ^ state, 277803737) >>> 0
+    return ((word >>> 22) ^ word) >>> 0
+  }
+  return pcg(index ^ pcg(pcg(salt))) / 4294967295
+}
 
 /**
- * A doorway: an opaque window showing another universe, an additive glowing frame,
- * light spilling onto the ground in front, and sparks lifting off the frame.
+ * A depth-writing window into another universe and sparks drifting out of it.
+ * The frame and ground spill are rendered as particles by gateWall.
  */
-export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
+export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = false) {
   const group = new THREE.Group()
   const contentMat = new THREE.ShaderMaterial({
     vertexShader: portalVertex,
@@ -313,51 +332,28 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
       uTex: { value: target.texture },
       uRes: { value: new THREE.Vector2(1, 1) },
       uOpen: { value: 0 },
-      uHover: { value: 0 },
+      uHalfWidth: { value: DOOR.slit },
+      uImpact: { value: 0 },
+      uPresence: { value: 0 },
       uTime: { value: 0 },
       uTint: { value: new THREE.Color(...tint) },
-      uEnter: { value: 0 },
-      uSize: { value: new THREE.Vector2(DOOR.width, DOOR.width) },
+      uSize: { value: new THREE.Vector2(DOOR.width, DOOR.height) },
     },
   })
-  const content = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width, DOOR.width), contentMat)
-  content.position.y = GATE_Y
-  const fw = DOOR.width * 2.6, fh = fw
+  const content = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width, DOOR.height), contentMat)
+  content.position.y = DOOR.height / 2
   const shared = {
     uOpen: contentMat.uniforms.uOpen,
-    uHover: contentMat.uniforms.uHover,
     uTint: contentMat.uniforms.uTint,
     uTime: contentMat.uniforms.uTime,
-    uEnter: contentMat.uniforms.uEnter,
+    uHalfWidth: contentMat.uniforms.uHalfWidth,
+    uImpact: contentMat.uniforms.uImpact,
+    uPresence: contentMat.uniforms.uPresence,
   }
-  const frameMat = new THREE.ShaderMaterial({
-    vertexShader: portalVertex,
-    fragmentShader: frameFragment,
-    uniforms: { ...shared, uDoor: { value: new THREE.Vector2(GATE_R, 0) }, uPlane: { value: new THREE.Vector2(fw, fh) } },
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  })
-  const frame = new THREE.Mesh(new THREE.PlaneGeometry(fw, fh), frameMat)
-  frame.position.set(0, GATE_Y, 0.01)
-  frame.renderOrder = 5
-
-  // Light pooled on the ground, fanning out toward the visitor.
-  const spillMat = new THREE.ShaderMaterial({
-    vertexShader: portalVertex, fragmentShader: spillFragment, uniforms: shared,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
-  })
-  const spill = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width * 4, 16), spillMat)
-  spill.rotation.x = -Math.PI / 2
-  spill.position.set(0, 0.06, 8)
-  spill.renderOrder = 4
-
-  // Sparks rising off the frame's edges and threshold.
-  const n = 260, r = rng(Math.floor(tint[0] * 97 + tint[1] * 31))
+  const n = lowPower ? 320 : 800, r = rng(Math.floor(tint[0] * 97 + tint[1] * 31))
   const sp = new Float32Array(n * 3), ss = new Float32Array(n)
   for (let i = 0; i < n; i++) {
-    // sparks drift off the rim
-    const a = r() * Math.PI * 2
-    const x = Math.cos(a) * GATE_R, y = GATE_Y + Math.sin(a) * GATE_R
-    sp.set([x + (r() - 0.5) * 0.15, y, 0.1 + (r() - 0.5) * 0.3], i * 3)
+    sp.set([r() * 2 - 1, r() * DOOR.height, 0.1], i * 3)
     ss[i] = r()
   }
   const sg = new THREE.BufferGeometry()
@@ -372,40 +368,37 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget) {
   sparks.frustumCulled = false
   sparks.renderOrder = 6
 
-  group.add(content, frame, sparks)
-  spillMat.dispose(); spill.geometry.dispose()
-  return { group, content, frame, contentMat }
+  group.add(content, sparks)
+  group.visible = false
+  return { group, content, contentMat, sparkMat }
 }
 
-/**
- * The wall the moon gate is cut into: a long low wall of dust, lit by the other world's light,
- * with a bright ring of beads around the opening. Positions are in the door's own frame.
- */
 export function gateWall(tint: RGB, lowPower: boolean) {
-  const r = rng(Math.floor(tint[1] * 131) + 5), n = lowPower ? 4500 : 11000
-  const pos: number[] = [], col: number[] = [], size: number[] = []
-  const halfLen = 14
+  const n = lowPower ? 3680 : 9200
+  const pos: number[] = [], col: number[] = [], size: number[] = [], shape: number[] = []
+  const outer = DOOR.width / 2 + DOOR.frame
   for (let i = 0; i < n; i++) {
-    const rim = i < n * 0.22
-    let x: number, y: number
-    if (rim) {
-      const a = r() * Math.PI * 2, rr = GATE_R + 0.06 + Math.pow(r(), 2) * 0.45
-      x = Math.cos(a) * rr; y = GATE_Y + Math.sin(a) * rr
-      if (y < 0) continue
+    const r = (salt: number) => portalRandom(i, salt)
+    if (i < n * (0.6 / 0.92)) {
+      const side = r(81) < 0.5 ? 1 : -1, reach = Math.pow(r(82), 1.8), top = r(83) < 0.18
+      const x = top ? (r(86) * 2 - 1) * outer : side * reach * outer
+      const y = top ? DOOR.height + r(85) * DOOR.frame * 0.6 : r(84) * DOOR.height
+      pos.push(x, y, (r(87) - 0.5) * 0.35)
+      // x: movement per unit half-width, y: reach, z: top beam, w: -1 for slab.
+      shape.push(top ? 0 : side * (1 - reach), reach, top ? 1 : 0, -1)
+      const b = r(88) < 0.09 ? 1.5 : 0.65 + r(89) * 0.35
+      col.push((tint[0] * 0.7 + 0.3) * b, (tint[1] * 0.7 + 0.3) * b, (tint[2] * 0.7 + 0.3) * b)
+      size.push(0.04 * THREE.MathUtils.lerp(0.6, 1.2, r(89)))
     } else {
-      x = (r() - 0.5) * 2 * halfLen
-      const top = 7.4 - Math.pow(Math.abs(x) / halfLen, 2) * 3.2 + Math.sin(x * 0.7) * 0.15
-      y = r() * top
-      if (Math.hypot(x, y - GATE_Y) < GATE_R + 0.1) continue
+      const distance = Math.pow(r(91), 1.6) * 7
+      const bell = (r(92) + r(93) + r(94)) * (2 / 3) - 1
+      pos.push(bell * 0.02, 0.015, distance + 0.175)
+      shape.push(bell * (1 + distance * 0.35), 0, 0, distance)
+      col.push(tint[0] * 0.7 + 0.3, tint[1] * 0.7 + 0.3, tint[2] * 0.7 + 0.3)
+      size.push(0.04 * THREE.MathUtils.lerp(0.6, 1.2, r(94)))
     }
-    const z = (r() - 0.5) * (rim ? 0.25 : 0.7)
-    pos.push(x, y, z)
-    const edge = 1 - Math.abs(x) / halfLen
-    const b = rim ? 0.9 + r() * 0.8 : (0.12 + r() * 0.28) * (0.4 + 0.6 * edge) * (y > 6.6 - Math.pow(Math.abs(x) / halfLen, 2) * 3.2 ? 1.8 : 1)
-    col.push(tint[0] * b * 0.8 + b * 0.2, tint[1] * b * 0.8 + b * 0.2, tint[2] * b * 0.8 + b * 0.2)
-    size.push(rim ? 0.035 + r() * 0.04 : 0.03 + r() * 0.05)
   }
-  return { pos: new Float32Array(pos), col: new Float32Array(col), size: new Float32Array(size) }
+  return { pos: new Float32Array(pos), col: new Float32Array(col), size: new Float32Array(size), shape: new Float32Array(shape) }
 }
 
 // ── The home meadow (today) ────────────────────────────────────────────────
@@ -496,14 +489,14 @@ export function universeScene(def: UniverseDef, u: SceneUniforms, lowPower: bool
 
 // Our world: a tunnel of hanging glass beads, quiet and exact, lit by one light ahead.
 // Gentle floor, nearly flat near the door so the threshold is level.
-const hybridHeight = (x: number, z: number) =>
+export const hybridHeight = (x: number, z: number) =>
   entrance(x, z) * (0.6 * fbm(x * 0.04, z * 0.04, 3) + 0.25 * Math.sin(x * 0.08))
 
 const HYBRID_FOG: RGB = [0.01, 0.06, 0.05]
 
 /** The walk inside our world: straight through the door, then winding toward the light. */
 export const HYBRID_PATH = new THREE.CatmullRomCurve3([
-  new THREE.Vector3(0, 0, -0.5), new THREE.Vector3(0, 0, -16), new THREE.Vector3(1.6, 0, -30),
+  new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -16), new THREE.Vector3(1.6, 0, -30),
   new THREE.Vector3(-1.8, 0, -44), new THREE.Vector3(1.2, 0, -58), new THREE.Vector3(-0.6, 0, -72),
   new THREE.Vector3(0.8, 0, -86),
 ], false, 'centripetal')

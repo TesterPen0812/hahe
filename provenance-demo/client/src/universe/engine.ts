@@ -6,7 +6,7 @@ import { ShaderPass } from 'three/examples/jsm/postprocessing/ShaderPass.js'
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js'
 import { TRAIL_LENGTH, WAKE_LIFE, finishShader } from './shaders'
 import {
-  DOOR, UNIVERSES, type RGB, cloud, gateWall, glowingPath, homeHeight, portal, sceneUniforms,
+  DOOR, HYBRID_PATH, UNIVERSES, type RGB, cloud, doorHalfWidth, doorProgress, gateWall, glowingPath, homeHeight, hybridHeight, portal, sceneUniforms,
   universeScene, type SceneUniforms, type UniverseDef,
 } from './worlds'
 import { buildMeadow, qdayGate } from './scenery'
@@ -30,7 +30,8 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2'
 /** The worlds behind the gate. For now there is one door: into the world that went hybrid. */
 export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
 
-const EYE = 1.7
+const EYE = 1.15
+const FOV = 50
 // a wake stamp every this many ms, so TRAIL_LENGTH stamps span WAKE_LIFE seconds
 const TRAIL_MS = (WAKE_LIFE * 1000) / TRAIL_LENGTH
 
@@ -45,7 +46,7 @@ interface Universe {
   len: number
   base: number
   open: number
-  hover: number
+  presence: number
   rtScale: number
   wall: THREE.Points
 }
@@ -59,7 +60,7 @@ export class UniverseEngine {
   private renderPass: RenderPass
   private bloom: UnrealBloomPass
   private finish: ShaderPass
-  private camera = new THREE.PerspectiveCamera(55, 1, 0.05, 900)
+  private camera = new THREE.PerspectiveCamera(FOV, 1, 0.05, 900)
   private home = new THREE.Scene()
   private homeU = sceneUniforms()
   private universes: Universe[] = []
@@ -75,11 +76,13 @@ export class UniverseEngine {
   // travel state
   private seg = -1
   private d = 0
+  private desiredRoute = 0
   private v = 0
   private keys = new Set<string>()
   private target: { seg: number; d: number } | null = { seg: -1, d: 6 }
   private selected: number | null = null
   private hovered: number | null = null
+  private keyboardDoor: number | null = null
   private qdayAt = -1
   private flash = 0
   private flashColor = new THREE.Color(1, 1, 1)
@@ -99,7 +102,7 @@ export class UniverseEngine {
   private lastNdc = new THREE.Vector2()
   private pointerIn = false
   private lastTrail = 0
-  private down: { x: number; y: number } | null = null
+  private down: { x: number; y: number; door: number | null } | null = null
   private touchY: number | null = null
 
   private startedAt = performance.now()
@@ -170,6 +173,7 @@ export class UniverseEngine {
 
   /** Walk into a universe. */
   choose(branch: number) {
+    if (!this.universes[branch]) return
     if (!this.pastGate()) {
       this.target = { seg: -1, d: this.L0 }
       this.selected = branch
@@ -244,26 +248,40 @@ export class UniverseEngine {
       const tan = curve.getTangentAt(1).setY(0).normalize()
       const base = homeHeight(end.x, end.z)
       const rt = new THREE.WebGLRenderTarget(16, 16, { type: THREE.HalfFloatType })
-      const door = portal(def.tint, rt)
+      const door = portal(def.tint, rt, this.lowPower)
       door.group.position.set(end.x, base, end.z)
       door.group.lookAt(end.x - tan.x, base, end.z - tan.z) // +z faces the visitor; -z leads into the universe
       door.group.updateMatrixWorld(true)
       this.home.add(door.group)
-      // the long wall of dust the round gate is cut into, placed in world space
+      // Sliding slab and ground spill, in home-world coordinates for pointer interactions.
       const w = gateWall(def.tint, this.lowPower)
       const tmp = new THREE.Vector3()
       for (let k = 0; k < w.pos.length; k += 3) {
         tmp.set(w.pos[k], w.pos[k + 1], w.pos[k + 2]).applyMatrix4(door.group.matrixWorld)
         w.pos.set([tmp.x, tmp.y, tmp.z], k)
       }
-      const wall = cloud(this.homeU, w.pos, w.col, w.size, 9, [10, 95], 61, 0, { interaction: 0 })
+      const axis = new THREE.Vector3(1, 0, 0).transformDirection(door.group.matrixWorld)
+      const wall = cloud(this.homeU, w.pos, w.col, w.size, 14, [10, 95], 61, 0, {
+        interaction: 0.35, center: door.group.position, axis,
+      })
+      wall.geometry.setAttribute('aPortal', new THREE.BufferAttribute(w.shape, 4))
+      const wallMat = wall.material as THREE.ShaderMaterial
+      wallMat.defines = { PORTAL_DUST: 1 }
+      Object.assign(wallMat.uniforms, {
+        uHalfWidth: door.contentMat.uniforms.uHalfWidth,
+        uDoorOpen: door.contentMat.uniforms.uOpen,
+        uImpact: door.contentMat.uniforms.uImpact,
+        uDoorOuter: { value: DOOR.width / 2 + DOOR.frame },
+        uDoorSpeed: { value: 0 },
+      })
+      wall.visible = false
       this.home.add(wall)
       const u = sceneUniforms()
       this.universes.push({
-        def, u, rt, door, curve, base, open: 0, hover: 0, rtScale: RT_SCALE, wall,
+        def, u, rt, door, curve, base, open: 0, presence: 0, rtScale: RT_SCALE, wall,
         len: curve.getLength(),
         scene: universeScene(def, u, this.lowPower),
-        cam: new THREE.PerspectiveCamera(55, 1, 0.05, 900),
+        cam: new THREE.PerspectiveCamera(FOV, 1, 0.05, 900),
       })
     })
   }
@@ -304,21 +322,25 @@ export class UniverseEngine {
     this.v = THREE.MathUtils.clamp(this.v + dy * 0.011, -14, 14)
   }
   private onKeyDown = (e: KeyboardEvent) => {
-    if ((e.target as HTMLElement | null)?.closest?.('input, textarea')) return
+    if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, button, a, [contenteditable="true"]')) return
     const k = e.key.toLowerCase()
     if (['w', 's', 'arrowup', 'arrowdown'].includes(k)) { this.keys.add(k); this.target = null; e.preventDefault() }
     if (this.atFork() || this.seg >= 0) {
       const n = Number(k)
       if (n >= 1 && n <= this.universes.length) this.choose(n - 1)
-      if (k === 'arrowleft') this.hovered = Math.max(0, (this.hovered ?? 0) - 1)
-      if (k === 'arrowright') this.hovered = Math.min(this.universes.length - 1, (this.hovered ?? 0) + 1)
-      if (k === 'enter' && this.hovered !== null) this.choose(this.hovered)
+      if (k === 'arrowleft') this.keyboardDoor = Math.max(0, (this.keyboardDoor ?? 0) - 1)
+      if (k === 'arrowright') this.keyboardDoor = Math.min(this.universes.length - 1, (this.keyboardDoor ?? 0) + 1)
+      if (k === 'enter') {
+        const door = this.hovered ?? this.keyboardDoor ?? (this.universes.length === 1 ? 0 : null)
+        if (door !== null) { this.choose(door); e.preventDefault() }
+      }
     }
     if (k === 'escape' && this.seg >= 0) this.back()
   }
   private onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()) }
   private onPointerMove = (e: PointerEvent) => {
     this.pointerIn = true
+    this.keyboardDoor = null
     const rect = this.canvas.getBoundingClientRect()
     const previous = this.ndc.clone()
     this.ndc.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
@@ -334,20 +356,29 @@ export class UniverseEngine {
   private onPointerEnter = () => { this.pointerIn = true }
   private onPointerLeave = () => { this.pointerIn = false; this.fluidLast.set(-1, -1); this.down = null }
   private onPointerDown = (e: PointerEvent) => {
+    if (e.button !== 0) return
     this.onPointerMove(e)
-    this.down = { x: e.clientX, y: e.clientY }
+    this.down = { x: e.clientX, y: e.clientY, door: this.pickDoor() }
+  }
+  private onPointerUp = (e: PointerEvent) => {
+    if (!this.down || e.button !== 0) return
+    const moved = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y)
+    const pressed = this.down.door
+    this.down = null
+    this.onPointerMove(e)
+    if (moved > 6) return
     const world = this.insideIndex()
     const cam = world >= 0 ? this.universes[world].cam : this.camera
     this.pulsePending = this.reducedMotion ? null : {
       ray: this.pointerRay(), origin: cam.position.clone(), world,
       time: (performance.now() - this.startedAt) / 1000,
     }
-  }
-  private onPointerUp = (e: PointerEvent) => {
-    if (!this.down) return
-    const moved = Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y)
-    this.down = null
-    if (moved < 8 && this.hovered !== null && this.pastGate() && this.seg < 0) this.choose(this.hovered)
+    // Resolve the release against the visible aperture, even between animation frames.
+    const released = this.pickDoor()
+    if (pressed !== null && pressed === released) {
+      this.universes[pressed].door.contentMat.uniforms.uImpact.value = this.reducedMotion ? 0 : 1
+      this.choose(pressed)
+    }
   }
   private onTouchStart = (e: TouchEvent) => { this.touchY = e.touches[0]?.clientY ?? null }
   private onTouchMove = (e: TouchEvent) => {
@@ -370,6 +401,7 @@ export class UniverseEngine {
     this.canvas.addEventListener('pointerleave', this.onPointerLeave)
     this.canvas.addEventListener('pointerdown', this.onPointerDown)
     this.canvas.addEventListener('pointerup', this.onPointerUp)
+    this.canvas.addEventListener('pointercancel', this.onBlur)
     this.canvas.addEventListener('touchstart', this.onTouchStart, { passive: true })
     this.canvas.addEventListener('touchmove', this.onTouchMove, { passive: false })
     window.addEventListener('keydown', this.onKeyDown)
@@ -383,6 +415,7 @@ export class UniverseEngine {
     this.canvas.removeEventListener('pointerleave', this.onPointerLeave)
     this.canvas.removeEventListener('pointerdown', this.onPointerDown)
     this.canvas.removeEventListener('pointerup', this.onPointerUp)
+    this.canvas.removeEventListener('pointercancel', this.onBlur)
     this.canvas.removeEventListener('touchstart', this.onTouchStart)
     this.canvas.removeEventListener('touchmove', this.onTouchMove)
     window.removeEventListener('keydown', this.onKeyDown)
@@ -406,30 +439,32 @@ export class UniverseEngine {
       const tg = this.target
       if (this.seg < 0 && tg.seg >= 0) this.selected = tg.seg
       const goal = this.seg >= 0 && tg.seg !== this.seg ? this.L0 : (tg.seg < 0 ? tg.d : this.L0 + tg.d)
-      const err = goal - before
+      const err = goal - this.desiredRoute
       const want = THREE.MathUtils.clamp(err * 1.3, -15, 15)
       this.v += (want - this.v) * Math.min(1, dt * 3)
-      if (Math.abs(err) < 0.04 && (tg.seg === this.seg || (tg.seg < 0 && this.seg < 0))) { this.target = null; this.v = 0 }
+      if (Math.abs(goal - before) < 0.04 && (tg.seg === this.seg || (tg.seg < 0 && this.seg < 0))) { this.target = null; this.v = 0 }
     } else if (fwd || bwd) {
       this.v = THREE.MathUtils.clamp(this.v + (fwd ? 16 : -16) * dt, -9, 9)
     } else {
-      this.v *= Math.exp(-dt * 2.4)
+      this.v *= Math.exp(-dt * 3.2)
     }
 
-    let r = before + this.v * dt
+    const destination = this.universes[this.seg >= 0 ? this.seg : this.selected ?? 0]
+    this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + this.v * dt, 0, this.L0 + destination.len + 22)
+    let r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
     if (this.seg < 0) {
       if (r < 0) { r = 0; this.v = Math.max(0, this.v) }
       if (r >= this.L0) {
         // With a single door there is nothing to choose: keep walking straight through it.
         if (this.selected === null && this.universes.length === 1) this.selected = 0
         const b = this.selected
-        if (b !== null && this.universes[b].open > 0.6) { this.seg = b; this.d = r - this.L0 }
+        if (b !== null) { this.seg = b; this.d = r - this.L0 }
         else { this.d = this.L0; this.v = Math.min(0, this.v) }
       } else this.d = r
     }
     if (this.seg >= 0) {
       let d = this.seg >= 0 && r >= this.L0 ? r - this.L0 : -1
-      if (d < 0) {
+      if (d < 0 || (this.target?.seg === -1 && r <= this.L0 + 0.04 && this.desiredRoute <= this.L0)) {
         // walked back past the fork
         this.seg = -1
         this.selected = null
@@ -437,7 +472,9 @@ export class UniverseEngine {
       } else {
         const u = this.universes[this.seg]
         // a door that hasn't opened can't be walked through
-        if (u.open < 0.95 && d > u.len - 1.2) { d = u.len - 1.2; this.v = Math.min(0, this.v) }
+        if (u.open < 0.95 && d > u.len - 1.2) {
+          d = u.len - 1.2; this.desiredRoute = this.L0 + d; this.v = Math.min(0, this.v)
+        }
         if (d > u.len + 22) { d = u.len + 22; this.v = Math.min(0, this.v) }
         this.d = d
       }
@@ -456,11 +493,14 @@ export class UniverseEngine {
     }
   }
 
-  /** Point on the walk for (segment, distance); extends straight through a door into its universe. */
+  /** The camera follows the same curve that draws the white path, across the threshold too. */
   private pointAt(seg: number, d: number, out = new THREE.Vector3()) {
     if (seg < 0) return this.trunk.getPointAt(THREE.MathUtils.clamp(d / this.L0, 0, 1), out)
     const u = this.universes[seg]
     if (d <= u.len) return u.curve.getPointAt(Math.max(0, d / u.len), out)
+    if (u.def.id === 'hybrid') {
+      return HYBRID_PATH.getPointAt(Math.min(1, (d - u.len) / HYBRID_PATH.getLength()), out).applyMatrix4(u.door.group.matrixWorld)
+    }
     const end = u.curve.getPointAt(1, out)
     const tan = u.curve.getTangentAt(1).setY(0).normalize()
     return end.addScaledVector(tan, d - u.len)
@@ -470,7 +510,10 @@ export class UniverseEngine {
     const p = this.pointAt(seg, d)
     if (seg >= 0) {
       const u = this.universes[seg]
-      if (d >= u.len) return u.base
+      if (d >= u.len) {
+        const local = p.clone().applyMatrix4(u.door.group.matrixWorld.clone().invert())
+        return u.base + (u.def.id === 'hybrid' ? hybridHeight(local.x, local.z) : 0)
+      }
       // ease into the doorway's floor height so there's no step at the threshold
       const k = THREE.MathUtils.smoothstep(d, u.len - 6, u.len)
       return THREE.MathUtils.lerp(this.smoothHeight(seg, d, p), u.base, k)
@@ -486,6 +529,7 @@ export class UniverseEngine {
   private tmpM = new THREE.Matrix4()
   private tmpQ = new THREE.Quaternion()
   private tmpE = new THREE.Euler(0, 0, 0, 'YXZ')
+  private gaze = new THREE.Vector3(0, 0, -1)
 
   private placeCamera(blend: number) {
     const seg = this.seg, d = this.d
@@ -496,8 +540,8 @@ export class UniverseEngine {
 
     let target: THREE.Vector3
     if (seg < 0) {
-      const ahead = this.pointAt(-1, d + 7)
-      ahead.y = this.groundAt(-1, Math.min(d + 7, this.L0)) + EYE - 0.55
+      const ahead = this.pointAt(-1, d + 6)
+      ahead.y = this.groundAt(-1, Math.min(d + 6, this.L0)) + EYE - 0.55
       // Near the fork, turn to take in all three doors.
       const k = THREE.MathUtils.smoothstep(d, this.L0 - 14, this.L0)
       const mid = this.universes[Math.floor(this.universes.length / 2)]
@@ -505,18 +549,20 @@ export class UniverseEngine {
       target = ahead.lerp(focus, k * 0.85)
     } else {
       const u = this.universes[seg]
-      const ahead = this.pointAt(seg, d + 7)
-      ahead.y = (d + 7 >= u.len ? u.base : this.groundAt(seg, d + 7)) + EYE - (d < u.len ? 0.45 : 0)
+      const ahead = this.pointAt(seg, d + 6)
+      const dip = 0.45 * (1 - THREE.MathUtils.smoothstep(d, u.len - 8, u.len))
+      ahead.y = this.groundAt(seg, d + 6) + EYE - dip
       target = ahead
     }
 
-    this.tmpM.lookAt(pos, target, THREE.Object3D.DEFAULT_UP)
+    this.gaze.lerp(target.sub(pos).normalize(), blend)
+    this.tmpM.lookAt(pos, target.copy(pos).add(this.gaze), THREE.Object3D.DEFAULT_UP)
     this.tmpQ.setFromRotationMatrix(this.tmpM)
     // The view leans gently toward the pointer.
     this.tmpE.set(this.look.y * 0.1, -this.look.x * 0.2, 0)
     this.tmpQ.multiply(new THREE.Quaternion().setFromEuler(this.tmpE))
     this.camera.position.copy(pos)
-    this.camera.quaternion.slerp(this.tmpQ, blend)
+    this.camera.quaternion.copy(this.tmpQ)
     this.camera.updateMatrixWorld()
   }
 
@@ -533,7 +579,7 @@ export class UniverseEngine {
 
     this.look.lerp(this.ndc, 1 - Math.exp(-dt * 5))
     this.travel(dt, t)
-    this.placeCamera(1 - Math.exp(-dt * 6))
+    this.placeCamera(1 - Math.exp(-dt * 3))
     this.updatePreviewCameras()
     this.updateDoors(dt, t)
     this.emitState()
@@ -576,45 +622,51 @@ export class UniverseEngine {
     } else p.good = 0
   }
 
+  /** Only the currently visible rectangle is actionable; discarded shader pixels never hit. */
+  private pickDoor(): number | null {
+    if (!this.pointerIn || !this.pastGate() || this.insideIndex() >= 0) return null
+    this.raycaster.setFromCamera(this.ndc, this.camera)
+    const hits = this.raycaster.intersectObjects(this.universes.map(u => u.door.content), false)
+    for (const hit of hits) {
+      const i = this.universes.findIndex(u => u.door.content === hit.object)
+      const u = this.universes[i]
+      if (u.presence < 0.05 || !hit.uv) continue
+      if (Math.abs(hit.uv.x - 0.5) * DOOR.width <= doorHalfWidth(u.open)) return i
+    }
+    return null
+  }
+
   private updateDoors(dt: number, t: number) {
     const past = this.pastGate()
     const since = this.qdayAt < 0 ? 99 : t - this.qdayAt
-    // Hover by pointer (raycast) when we're on the home side past the gate.
-    if (past && this.insideIndex() < 0 && this.seg < 0) {
-      this.raycaster.setFromCamera(this.ndc, this.camera)
-      const hits = this.raycaster.intersectObjects(this.universes.map(u => u.door.content), false).filter(hit => {
-        const door = this.universes.find(u => u.door.content === hit.object)
-        return door && door.open > 0.05 && hit.uv && hit.uv.distanceTo(new THREE.Vector2(0.5, 0.5)) <= THREE.MathUtils.smoothstep(door.open, 0, 1) * 0.5
-      })
-      const idx = hits.length ? this.universes.findIndex(u => u.door.content === hits[0].object) : -1
-      if (idx >= 0) this.hovered = idx
-      else if (this.hovered !== null && !this.atFork()) this.hovered = null
-      this.canvas.style.cursor = idx >= 0 ? 'pointer' : ''
-    } else this.canvas.style.cursor = ''
-
     this.universes.forEach((u, i) => {
-      let want = 0
-      if (past) {
-        if (this.seg < 0) want = since > 0.9 + i * 0.45 ? 1 : 0
-        else want = this.seg === i ? 1 : 0.3
-      }
-      u.open += (want - u.open) * Math.min(1, dt * (want > u.open ? 1.5 : 3))
-      const hov = (this.hovered === i && this.seg < 0) || this.seg === i ? 1 : 0
-      u.hover += (hov - u.hover) * Math.min(1, dt * 5)
+      const before = doorHalfWidth(u.open)
+      const remaining = this.seg === i ? u.len - this.d : this.L0 - this.route() + u.len
+      const progress = doorProgress(remaining)
+      u.presence = past ? progress.presence * THREE.MathUtils.smoothstep(since, 0, 0.6) : 0
+      u.open = past ? progress.open : 0
       const m = u.door.contentMat.uniforms
       m.uOpen.value = u.open
-      m.uHover.value = u.hover
+      m.uHalfWidth.value = doorHalfWidth(u.open)
+      m.uPresence.value = u.presence
+      m.uImpact.value *= Math.exp(-dt * 3.5)
       m.uTime.value = t
-      // Fade the rim as the physical opening fills the view on approach.
-      const e = this.seg !== i ? 0 : this.d >= u.len ? 1 : THREE.MathUtils.smoothstep(this.d, u.len - 8, u.len - 0.3)
-      m.uEnter.value = e
+      // Clear the last foreground spill grains as the camera crosses the near plane.
+      const e = this.seg !== i ? 0 : this.d >= u.len ? 1 : THREE.MathUtils.smoothstep(this.d, u.len - 0.6, u.len - 0.08)
       // The physical aperture fills the view naturally; scaling it breaks occlusion.
       u.door.content.scale.setScalar(1)
-      ;(u.wall.material as THREE.ShaderMaterial).uniforms.uOpacity.value = u.open * (1 - e * 0.7)
+      u.door.group.visible = u.presence > 0.001
+      u.wall.visible = u.presence > 0.001
+      const wall = (u.wall.material as THREE.ShaderMaterial).uniforms
+      wall.uOpacity.value = u.presence * (1 - e)
+      wall.uDoorSpeed.value = dt > 0 ? (m.uHalfWidth.value - before) / dt : 0
+      u.door.sparkMat.uniforms.uScale.value = this.host.clientHeight * this.renderer.getPixelRatio() * 0.055
       // render the world behind the door at full resolution once it's about to fill the screen
       const rtWant = this.seg === i && this.d > u.len - 10 ? 1 : RT_SCALE
       if (rtWant !== u.rtScale) { u.rtScale = rtWant; this.resize() }
     })
+    this.hovered = this.pickDoor() ?? (past && this.insideIndex() < 0 ? this.keyboardDoor : null)
+    this.canvas.style.cursor = this.hovered !== null ? 'pointer' : ''
     if (this.gallery) this.gallery.update(t, this.qdayAt, this.trunk.getPointAt(this.gateD / this.L0))
     const gains = this.homePath.material as THREE.ShaderMaterial
     const g = gains.uniforms.uBranchGain.value as THREE.Vector3
@@ -833,11 +885,9 @@ export class UniverseEngine {
 
   private resize() {
     const w = Math.max(1, this.host.clientWidth), h = Math.max(1, this.host.clientHeight)
-    // Render to a pixel budget rather than full Retina density: soft bokeh looks the same at a
-    // lower resolution, and fill rate is what this scene spends. Quality adapts to the frame rate.
-    const budget = this.lowPower ? 1.1e6 : 1.85e6
+    const budget = 1.1e6
     const pr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, Math.sqrt(budget / (w * h))) * this.quality)
-    const fov = w / h < 0.8 ? 78 : 55
+    const fov = w / h < 0.8 ? 78 : FOV
     for (const cam of [this.camera, ...this.universes.map(u => u.cam)]) {
       cam.fov = fov
       cam.aspect = w / h
