@@ -22,7 +22,13 @@ export type DoorTints = Record<DoorId, RGB>
 /** Story cards. The scene decides WHERE (slow zones on the path); the screen decides the words and the look. */
 export type CardId = 'today' | 'qday' | 'break' | 'end'
 /** strength 0..1 rises as the camera enters the card's zone and falls as it leaves; it drives text + blur. */
-export interface CardState { id: CardId; strength: number }
+export interface CardState {
+  id: CardId
+  strength: number
+  /** Where the camera is through the card's zone: 0 entering, 0.5 centre, 1 leaving. Purely positional
+   *  (no timers), so scrolling fast through a card moves the text and the slowness together. */
+  progress?: number
+}
 
 /** Emitted by the engine as `EngineState.walk`. */
 export interface WalkState {
@@ -40,6 +46,8 @@ export interface WalkControls {
   doorTints(): DoorTints
   /** The toy-RSA fake has been uploaded and judged; show it next to the live photos. */
   showForgery(f: ForgeryArrival): void
+  /** B was pressed: glide to the break stop, where the forgery will hang, unless already there. */
+  goToBreak?(): void
 }
 
 // ---- photos → scene: the live photos in the Prism meadow ----
