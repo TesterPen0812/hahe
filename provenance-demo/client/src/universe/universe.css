@@ -144,6 +144,8 @@
   transition: opacity .8s, filter .8s;
 }
 .uv-forge.done { opacity: 0; filter: blur(6px); transition-delay: .9s; }
+/* a failed run leaves no words on stage: the evidence just goes */
+.uv-forge.error { opacity: 0; filter: blur(6px); transition-delay: .3s; }
 .uv-forge dl { margin: 0; display: grid; gap: 0; }
 .uv-forge .row { display: grid; grid-template-columns: 3em 1fr; gap: 12px; animation: uv-type .5s steps(8, end) both; }
 .uv-forge dt { color: rgba(214, 236, 224, 0.42); }
@@ -152,14 +154,13 @@
 .uv-forge dd em { font-style: normal; color: rgba(214, 236, 224, 0.42); margin-left: 1.2em; word-break: normal; white-space: nowrap; }
 .uv-forge dd i { font-style: normal; color: rgba(214, 236, 224, 0.42); padding: 0 0.3em; }
 .uv-forge dd.live::after { content: ""; display: inline-block; width: 0.55em; height: 1.05em; margin-left: 0.5em; vertical-align: -0.18em; background: currentColor; animation: uv-blink .9s steps(1) infinite; }
-.uv-forge-error { margin: 0; color: var(--dim); }
 @keyframes uv-type { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0 0 0 0) } }
 
 /* the verdict: centred, as long as it takes to read, then the 3D frame carries it */
 .uv-verdict {
   position: absolute; inset: 0; z-index: 8; pointer-events: none;
   display: flex; align-items: center; justify-content: center; gap: clamp(48px, 8vw, 140px);
-  animation: uv-verdict 3.4s cubic-bezier(.2, .8, .2, 1) .9s both;
+  animation: uv-verdict 3.4s cubic-bezier(.2, .8, .2, 1) .15s both;
 }
 /* a soft dimming behind the words, so they never sit straight on a photo */
 .uv-verdict::before {
