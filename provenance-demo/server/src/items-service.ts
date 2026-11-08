@@ -42,12 +42,33 @@ export async function createItem(input: NewItem): Promise<ItemSummary> {
   return toSummary(row);
 }
 
-/** Build the API response, recomputing verification from scratch in the current world. */
+// A verdict depends only on the stored item (image + manifest, fixed once saved), its log entry, the
+// trust list, the world and the options. Every open screen polls the feed every two seconds, and each
+// poll used to re-read and re-hash every image and re-check every signature; now a verdict is reused
+// until one of those inputs changes (a world switch, say, changes the key and so re-verifies everything).
+type Verdict = Awaited<ReturnType<typeof verifyItem>>;
+const verdicts = new Map<string, Promise<Verdict>>();
+const MAX_VERDICTS = 2000;
+
+function verifyCached(row: ItemRow, manifest: Manifest | null, logEntry: ReturnType<typeof findEntry>, opts: VerifyOptions): Promise<Verdict> {
+  const trust = trustList();
+  const world = getWorld();
+  const key = sha256Hex(JSON.stringify([row.id, row.content_hash, row.manifest, logEntry, trust, world, opts]));
+  const hit = verdicts.get(key);
+  if (hit) return hit;
+  if (verdicts.size >= MAX_VERDICTS) verdicts.clear();
+  const p = verifyItem(readImage(row), manifest, trust, logEntry, world, opts);
+  verdicts.set(key, p);
+  p.catch(() => verdicts.delete(key));   // never keep a failure
+  return p;
+}
+
+/** Build the API response, verified in the current world (reusing a verdict whose inputs are unchanged). */
 export async function toSummary(row: ItemRow, opts: VerifyOptions = {}): Promise<ItemSummary> {
   const manifest = row.manifest ? (JSON.parse(row.manifest) as Manifest) : null;
   let logEntry = null;
   try { logEntry = manifest ? findEntry(hashObject(manifest)) : null; } catch { logEntry = null; }
-  const verification = await verifyItem(readImage(row), manifest, trustList(), logEntry, getWorld(), opts);
+  const verification = await verifyCached(row, manifest, logEntry, opts);
   return {
     id: row.id,
     imageUrl: `/api/items/${row.id}/image`,

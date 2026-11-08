@@ -29,4 +29,5 @@ export const api = {
   setWorld: (mode: WorldState['mode'], signal: AbortSignal = AbortSignal.timeout(WORLD_WRITE_TIMEOUT_MS)) =>
     call<WorldState>('/world', { ...json('POST', { mode }), signal }),
   post: <T>(path: string, body: unknown = {}) => call<T>(path, json('POST', body)),
+  captureProgress: () => call<import('./captureProgress').CaptureProgress | null>('/capture/progress', { cache: 'no-store' }),
 }

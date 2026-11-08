@@ -64,6 +64,7 @@ export function StoryCard({ card }: { card: CardState | null }) {
     '--card-veil': look.veil.toFixed(3),
     '--card-rise': `${look.rise.toFixed(2)}px`,
     '--card-scale': look.scale.toFixed(4),
+    '--card-glitch': (1 - look.decode).toFixed(3),
   } as CSSProperties
   return (
     <div className={`uv-card uv-card-${card.id} ${look.text > 0.5 ? 'in' : ''}`} style={style}>

@@ -2,12 +2,16 @@
    Two families: Newsreader (display, optical sizes) for words, IBM Plex Mono for evidence. */
 .uv {
   --display: "Newsreader Variable", "Iowan Old Style", Georgia, serif;
+  /* the centred story words: soft, geometric, a little from the future */
+  --story: "Sora Variable", "Avenir Next", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
   --ink: #f2f0ea;
   --dim: rgba(242, 240, 234, 0.62);
   --faint: rgba(242, 240, 234, 0.36);
   --hair: rgba(255, 255, 255, 0.08);
   --glass: rgba(6, 8, 13, 0.56);
+  /* the panels that stay on stage: a touch more solid, so they read over busy particles */
+  --panel: rgba(4, 6, 10, 0.74);
   --ok: #a6ecc6;
   --warn: #f0cc85;
   --fail: #ff9a86;
@@ -67,111 +71,155 @@
 }
 .uv-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .uv-card h2 {
-  margin: 0; font: 340 clamp(52px, 7.4vw, 132px)/0.98 var(--display);
-  letter-spacing: -0.028em; text-wrap: balance; color: #f6f3ec;
+  margin: 0; font: 300 clamp(46px, 6.6vw, 118px)/1.04 var(--story);
+  letter-spacing: -0.035em; text-wrap: balance; color: #f6f3ec;
 }
 .uv-card h2 .nw { white-space: nowrap; }
 .uv-card p {
-  margin: 0.55em 0 0; font: italic 300 clamp(21px, 2.3vw, 38px)/1.2 var(--display);
-  letter-spacing: -0.005em; color: rgba(246, 243, 236, 0.78); text-wrap: balance;
+  margin: 0.7em 0 0; font: 250 clamp(19px, 2.05vw, 34px)/1.3 var(--story);
+  letter-spacing: -0.012em; color: rgba(246, 243, 236, 0.78); text-wrap: balance;
 }
 .uv-card-qday h2 { color: #fbe6dc; }
-.uv-card-end p { color: #f6f3ec; font-style: italic; }
+.uv-card-end p { color: #f6f3ec; }
+/* While the words resolve out of glyphs their colour channels sit apart, closing up as they settle
+   (--card-glitch follows the decode, so it is positional like everything else on the card)… */
+.uv-card h2, .uv-card p {
+  --g: var(--card-glitch, 0);
+  text-shadow: calc(var(--g) * 0.05em) 0 rgba(255, 70, 120, calc(var(--g) * 0.7)), calc(var(--g) * -0.05em) 0 rgba(80, 230, 255, calc(var(--g) * 0.7));
+}
+/* …and the moment they come in, a short glitch: slices jump sideways, channels split, then it settles. */
+.uv-card.in h2 { animation: uv-glitch .46s backwards; }
+.uv-card.in p { animation: uv-glitch .46s .09s backwards; }
+@keyframes uv-glitch {
+  0%   { clip-path: inset(14% 0 56% 0); transform: translateX(-0.05em); text-shadow: 0.09em 0 rgba(255, 70, 120, .85), -0.09em 0 rgba(80, 230, 255, .85); animation-timing-function: steps(1, end); }
+  12%  { clip-path: inset(60% 0 6% 0); transform: translateX(0.06em); animation-timing-function: steps(1, end); }
+  24%  { clip-path: inset(0 0 68% 0); transform: translateX(-0.03em); text-shadow: -0.07em 0 rgba(255, 70, 120, .8), 0.07em 0 rgba(80, 230, 255, .8); animation-timing-function: steps(1, end); }
+  36%  { clip-path: inset(38% 0 28% 0); transform: translateX(0.035em); animation-timing-function: steps(1, end); }
+  48%  { clip-path: inset(0); transform: translateX(-0.015em); text-shadow: 0.035em 0 rgba(255, 70, 120, .6), -0.035em 0 rgba(80, 230, 255, .6); animation-timing-function: steps(1, end); }
+  62%  { clip-path: inset(0); transform: translateX(0.008em); text-shadow: -0.015em 0 rgba(255, 70, 120, .4), 0.015em 0 rgba(80, 230, 255, .4); }
+  100% { clip-path: inset(0); transform: none; }
+}
 /* While a card is being read, the corner panels step back. (The verdict waits for the card in UniversePage.) */
 .uv:has(.uv-card.in) .uv-log, .uv:has(.uv-card.in) .uv-forge { opacity: 0.25; }
 
-/* ── capture log: what happened to the photo that just arrived ─────────── */
+/* ── capture log: what happened to the photo that just arrived; stays until put away ── */
 .uv-log {
-  position: absolute; left: 24px; bottom: 24px; z-index: 7; width: 348px; box-sizing: border-box;
-  padding: 12px 14px 12px; border-radius: 12px; background: var(--glass); border: 1px solid var(--hair);
-  backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
-  font-size: 12px; line-height: 1.5; color: var(--ink); cursor: default;
+  position: absolute; left: 24px; bottom: 24px; z-index: 7; width: 392px; box-sizing: border-box;
+  padding: 14px 16px 14px; border-radius: 12px; background: var(--panel); border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(18px) saturate(0.9); -webkit-backdrop-filter: blur(18px) saturate(0.9);
+  font-size: 13.5px; line-height: 1.5; color: var(--ink); cursor: pointer;
   animation: uv-rise .7s cubic-bezier(.2, .8, .2, 1) both;
   transition: opacity .45s, transform .45s;
 }
 /* (animation: none, or the rise animation's end state would keep it visible) */
 .uv-log.away { opacity: 0; transform: translateY(10px); pointer-events: none; animation: none; }
-.uv-log.folded {
-  cursor: pointer; width: auto; padding: 0; background: transparent; border-color: transparent;
-  backdrop-filter: none; -webkit-backdrop-filter: none;
-}
-.uv-log.folded .uv-log-title, .uv-log.folded .uv-log-id, .uv-log.folded ol, .uv-log.folded footer { display: none; }
-.uv-log.folded header { grid-template-columns: 22px; }
-.uv-log.folded header img { opacity: 0.7; box-shadow: 0 0 0 1px var(--faint); transition: opacity .3s; }
-.uv-log.folded:hover header img { opacity: 1; }
-.uv-log-green.folded header img { box-shadow: 0 0 0 1px var(--ok), 0 0 10px rgba(166, 236, 198, 0.45); }
-.uv-log-amber.folded header img { box-shadow: 0 0 0 1px var(--warn); }
-.uv-log-grey.folded header img { box-shadow: 0 0 0 1px var(--fail); }
-.uv-log header { display: grid; grid-template-columns: 22px auto 1fr; align-items: center; gap: 10px; }
-.uv-log header img { width: 22px; height: 22px; border-radius: 4px; object-fit: cover; display: block; }
-.uv-log-title { font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: var(--dim); }
-.uv-log-id { justify-self: end; font-size: 10px; color: var(--faint); letter-spacing: 0.04em; }
-.uv-log ol { list-style: none; margin: 8px 0 0; padding: 0; }
+.uv-log header { display: grid; grid-template-columns: 26px auto 1fr; align-items: center; gap: 10px; }
+.uv-log header img { width: 26px; height: 26px; border-radius: 4px; object-fit: cover; display: block; }
+.uv-log-title { font-size: 10.5px; letter-spacing: 0.22em; text-transform: uppercase; color: rgba(242, 240, 234, 0.78); }
+.uv-log-id { justify-self: end; font-size: 11px; color: var(--dim); letter-spacing: 0.04em; }
+.uv-log ol { list-style: none; margin: 10px 0 0; padding: 0; }
 .uv-log li {
-  display: grid; grid-template-columns: 14px 1fr auto; gap: 8px; align-items: baseline;
+  --tone: rgba(242, 240, 234, 0.5);
+  position: relative; display: grid; grid-template-columns: 15px 1fr auto; gap: 9px; align-items: baseline;
+  margin: 0 -8px; padding: 0 8px; border-radius: 4px;
   max-height: 0; opacity: 0; transform: translateY(5px); overflow: hidden;
   transition: max-height .45s cubic-bezier(.2, .8, .2, 1), opacity .4s, transform .45s, padding .45s;
 }
-.uv-log li.in { max-height: 48px; opacity: 1; transform: none; padding: 2.5px 0; }
-.uv-log.folded li.in { max-height: 0; opacity: 0; padding: 0; }
-.uv-log .m { text-align: center; color: var(--faint); }
+.uv-log li.t-ok { --tone: var(--ok); }
+.uv-log li.t-warn { --tone: var(--warn); }
+.uv-log li.t-fail { --tone: var(--fail); }
+.uv-log li.in { max-height: 52px; opacity: 1; transform: none; padding-top: 3px; padding-bottom: 3px; animation: uv-land 1.6s ease-out both; }
+/* the phone's own steps arrive one by one as it reports them: each one fades up as it mounts */
+.uv-log li.ph.in { animation: uv-ph-in .45s cubic-bezier(.2, .8, .2, 1) both, uv-land 1.6s ease-out both; }
+@keyframes uv-ph-in { from { opacity: 0; transform: translateY(5px) } to { opacity: 1; transform: none } }
+/* before the photo lands, a recording light stands where its thumbnail will be */
+.uv-log-rec { width: 9px; height: 9px; margin: 0 auto; border-radius: 50%; background: var(--ok); box-shadow: 0 0 12px rgba(166, 236, 198, 0.8); animation: uv-blink 1.4s ease-in-out infinite; }
+/* each line lands with a hairline and a wash in its own colour, which then settle back */
+.uv-log li::before {
+  content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px; border-radius: 1px;
+  background: var(--tone); opacity: 0;
+}
+.uv-log li.in::before { animation: uv-land-line 1.6s ease-out both; }
+@keyframes uv-land { from { background: color-mix(in srgb, var(--tone) 16%, transparent) } to { background: transparent } }
+@keyframes uv-land-line { 0% { opacity: 1; box-shadow: 0 0 10px var(--tone) } 100% { opacity: 0.3; box-shadow: 0 0 0 transparent } }
+.uv-log .m { text-align: center; color: var(--dim); }
 .uv-log .t-ok .m { color: var(--ok); }
 .uv-log .t-warn .m { color: var(--warn); }
 .uv-log .t-fail .m { color: var(--fail); }
 .uv-log .t-fail .x { color: var(--fail); }
-.uv-log .x { min-width: 0; }
-.uv-log .d { color: var(--faint); font-variant-numeric: tabular-nums; font-size: 11px; }
+.uv-log .x { min-width: 0; color: #f6f4ee; }
+.uv-log .d { color: var(--dim); font-variant-numeric: tabular-nums; font-size: 12px; }
 .uv-log .parts { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: 1px; }
-.uv-log .parts span { font-size: 9.5px; letter-spacing: 0.02em; padding: 0 4px; border-radius: 3px; line-height: 15px; border: 1px solid; }
-.uv-log .parts .ok { color: var(--ok); border-color: rgba(166, 236, 198, 0.35); }
-.uv-log .parts .broken { color: var(--fail); border-color: rgba(255, 154, 134, 0.35); text-decoration: line-through; }
-.uv-log .parts .no { color: var(--faint); border-color: var(--hair); text-decoration: line-through; }
+.uv-log .parts span { font-size: 10.5px; letter-spacing: 0.02em; padding: 0 4px; border-radius: 3px; line-height: 16px; border: 1px solid; }
+.uv-log .parts .ok { color: var(--ok); border-color: rgba(166, 236, 198, 0.45); }
+.uv-log .parts .broken { color: var(--fail); border-color: rgba(255, 154, 134, 0.45); text-decoration: line-through; }
+.uv-log .parts .no { color: var(--dim); border-color: rgba(255, 255, 255, 0.16); text-decoration: line-through; }
 .uv-log footer {
-  display: flex; align-items: center; gap: 9px; margin-top: 8px; padding-top: 9px; border-top: 1px solid var(--hair);
-  font: 400 18px/1.1 var(--display); letter-spacing: -0.005em;
-  opacity: 0; transform: translateY(4px); transition: opacity .5s, transform .5s, border-color .5s, padding .5s, margin .5s;
+  display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255, 255, 255, 0.1);
+  font: 400 21px/1.1 var(--display); letter-spacing: -0.005em;
+  opacity: 0; transform: translateY(4px); transition: opacity .5s, transform .5s;
 }
 .uv-log footer.in { opacity: 1; transform: none; }
-.uv-log.folded footer { border-top-color: transparent; padding-top: 0; margin-top: 6px; }
-.uv-log .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
+.uv-log .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
 .uv-log-green .dot { background: var(--ok); box-shadow: 0 0 12px rgba(166, 236, 198, 0.8); }
 .uv-log-amber .dot { background: var(--warn); box-shadow: 0 0 12px rgba(240, 204, 133, 0.7); }
 .uv-log-grey .dot { background: var(--fail); }
+.uv-log-green footer.in { color: #c9f5dc; }
+.uv-log-amber footer.in { color: #f6dda6; }
 @keyframes uv-rise { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: none } }
 
-/* ── the live key break: a terminal printing onto the scene, no card ─── */
+/* ── the live key break: a terminal printing onto the scene, on a soft dark backing; stays until put away.
+   On a wide screen it sits opposite the capture log, so both stay readable. ── */
 .uv-forge {
-  position: absolute; left: 28px; bottom: 26px; z-index: 7; box-sizing: border-box;
-  width: max-content; max-width: min(1100px, calc(100vw - 56px));
-  font-size: clamp(17px, 1.45vw, 24px); line-height: 1.6; color: rgba(214, 236, 224, 0.86);
-  text-shadow: 0 0 14px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
-  transition: opacity .8s, filter .8s;
+  position: absolute; right: 24px; bottom: 24px; z-index: 7; box-sizing: border-box;
+  width: max-content; max-width: min(760px, calc(100vw - 48px - 392px - 24px));
+  padding: 12px 18px; border-radius: 12px; cursor: pointer;
+  background: var(--panel); box-shadow: 0 0 40px 10px rgba(4, 6, 10, 0.4);
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  font-size: clamp(17px, 1.4vw, 23px); line-height: 1.55; color: rgba(226, 244, 234, 0.96);
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.9);
+  animation: uv-rise .5s cubic-bezier(.2, .8, .2, 1) both;
+  transition: opacity .6s, filter .6s, transform .45s;
 }
-.uv-forge.done { opacity: 0; filter: blur(6px); transition-delay: .9s; }
+.uv-forge.away { opacity: 0; transform: translateY(10px); pointer-events: none; animation: none; }
 /* a failed run leaves no words on stage: the evidence just goes */
-.uv-forge.error { opacity: 0; filter: blur(6px); transition-delay: .3s; }
+.uv-forge.error { opacity: 0; filter: blur(6px); transition-delay: .3s; pointer-events: none; }
 .uv-forge dl { margin: 0; display: grid; gap: 0; }
-.uv-forge .row { display: grid; grid-template-columns: 3.5em 1fr; gap: 12px; animation: uv-type .5s steps(8, end) both; }
-.uv-forge dt { color: rgba(214, 236, 224, 0.42); }
-.uv-forge dt::before { content: "› "; }
+.uv-forge .row {
+  --tone: rgba(226, 244, 234, 0.6);
+  position: relative; display: grid; grid-template-columns: 3.2em 1fr; gap: 12px;
+  margin: 0 -10px; padding: 0 10px; border-radius: 4px;
+  animation: uv-type .5s steps(8, end) both, uv-land 1.6s ease-out both;
+}
+.uv-forge .row.t-fail { --tone: var(--fail); }
+.uv-forge .row::before {
+  content: ""; position: absolute; left: 0; top: 0.35em; bottom: 0.35em; width: 2px; border-radius: 1px;
+  background: var(--tone); animation: uv-land-line 1.6s ease-out both;
+}
+.uv-forge .row.cont::before { display: none; }
+.uv-forge dt { color: rgba(226, 244, 234, 0.55); }
+.uv-forge dt:not(:empty)::before { content: "› "; }
+.uv-forge .t-fail dt { color: rgba(255, 154, 134, 0.8); }
 .uv-forge dd { margin: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
-.uv-forge dd em { font-style: normal; color: rgba(214, 236, 224, 0.42); margin-left: 1.2em; word-break: normal; white-space: nowrap; }
+.uv-forge dd em { font-style: normal; color: rgba(226, 244, 234, 0.55); margin-left: 1.2em; word-break: normal; white-space: nowrap; }
 .uv-forge dd.note { word-break: normal; }
-.uv-forge dd i { font-style: normal; color: rgba(214, 236, 224, 0.42); padding: 0 0.3em; }
+.uv-forge .t-fail dd.note { color: #ffc2b5; }
+.uv-forge dd i { font-style: normal; color: rgba(226, 244, 234, 0.55); padding: 0 0.3em; }
 .uv-forge dd.live::after { content: ""; display: inline-block; width: 0.55em; height: 1.05em; margin-left: 0.5em; vertical-align: -0.18em; background: currentColor; animation: uv-blink .9s steps(1) infinite; }
 @keyframes uv-type { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0 0 0 0) } }
 
-/* the verdict: either side of the forged frame (never over it), as long as it takes to read, then the
-   3D frame carries it. The middle column is the frame's width; the frame scales with the viewport height. */
+/* the verdict: either side of the forged frame (never over it), until it is put away. The middle column
+   is the frame's width; the frame scales with the viewport height. */
 .uv-verdict {
   --frame: 52vh;
   position: absolute; inset: 0; z-index: 8; pointer-events: none;
   display: grid; grid-template-columns: 1fr var(--frame) 1fr; align-items: center;
   padding: 0 4vw 6vh; box-sizing: border-box;
-  animation: uv-verdict 3.4s cubic-bezier(.2, .8, .2, 1) .15s both;
+  animation: uv-verdict .9s cubic-bezier(.2, .8, .2, 1) .15s both;
 }
 .uv-verdict p {
-  position: relative; margin: 0; display: grid; gap: 14px;
+  position: relative; margin: 0; display: grid; gap: 14px; pointer-events: auto; cursor: pointer;
   font: 340 clamp(44px, 5.6vw, 96px)/1 var(--display); letter-spacing: -0.025em; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
 }
 .uv-verdict p:first-child { grid-column: 1; justify-items: end; text-align: right; }
@@ -185,10 +233,8 @@
 .uv-verdict .bad { color: var(--fail); }
 .uv-verdict .good { color: var(--ok); }
 @keyframes uv-verdict {
-  0% { opacity: 0; filter: blur(10px); transform: translateY(8px) }
-  16% { opacity: 1; filter: blur(0); transform: none }
-  82% { opacity: 1; filter: blur(0) }
-  100% { opacity: 0; filter: blur(8px) }
+  from { opacity: 0; filter: blur(10px); transform: translateY(8px) }
+  to { opacity: 1; filter: blur(0); transform: none }
 }
 @keyframes uv-row { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
 
@@ -240,7 +286,9 @@
 @media (max-width: 720px) {
   .uv-top { padding: 16px 18px; }
   .uv-log, .uv-forge { left: 14px; right: 14px; bottom: 14px; width: auto; max-width: none; }
-  .uv-forge { font-size: 15px; }
+  .uv-forge { font-size: 15px; padding: 10px 14px; }
+  /* no room for both on a phone: while the readout is up, it takes the log's place */
+  .uv-log.forging { opacity: 0; transform: translateY(10px); pointer-events: none; animation: none; }
   .uv-tools { top: 18px; bottom: auto; right: 16px; }
   .uv-tools-panel { top: 22px; bottom: auto; width: min(292px, calc(100vw - 32px)); }
   /* On a phone the frame fills the middle: the two words sit side by side below it. */
@@ -254,5 +302,8 @@
 @media (prefers-reduced-motion: reduce) {
   .uv-log, .uv-forge .row, .uv-tools-panel { animation: none; }
   .uv-log li, .uv-log footer { transition: none; }
+  .uv-log li.in, .uv-log li.in::before, .uv-forge .row::before, .uv-verdict { animation: none; }
+  .uv-forge .row { animation: none; }
   .uv-card-text { transform: none; }
+  .uv-card.in h2, .uv-card.in p { animation: none; }
 }

@@ -23,7 +23,7 @@ api.use(trustRouter, devicesRouter, itemsRouter, worldRouter, logRouter);
 
 // Optional routers (some owned by Person B, some still placeholders).
 // Mounted only if the file exports a router as `default` or `router`.
-const OPTIONAL = ['passkeys', 'edits', 'lookup', 'detect', 'attack'];
+const OPTIONAL = ['passkeys', 'edits', 'lookup', 'detect', 'attack', 'capture'];
 for (const name of OPTIONAL) {
   try {
     const mod = (await import(`./routes/${name}.js`)) as { default?: unknown; router?: unknown };

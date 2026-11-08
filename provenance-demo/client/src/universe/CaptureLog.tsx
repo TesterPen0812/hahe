@@ -1,91 +1,91 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ItemSummary } from '@provenance-demo/shared'
-import type { Region } from './contract'
-import { captureSteps, type CaptureStep } from './stageData'
+import type { CaptureProgress } from '../lib/captureProgress'
+import { captureSteps, phoneSteps, type CaptureStep } from './stageData'
 
 const FIRST = 500     // ms before the first line, while the photo flies into its frame
 const EVERY = 340     // ms between lines
-const SETTLE = 3500   // ms the full log stays open after the verdict before it folds to a thumbnail
-const LINGER = 4000   // ms the folded thumbnail stays before it fades away too
 
 const MARK: Record<CaptureStep['tone'], string> = { ok: '✓', fail: '✕', warn: '!', info: '·' }
 
+function Line({ s, cls }: { s: CaptureStep; cls: string }) {
+  return (
+    <li className={`t-${s.tone} ${cls}`}>
+      <span className="m" aria-hidden>{MARK[s.tone]}</span>
+      <span className="x">
+        {s.text}
+        {s.parts && (
+          <span className="parts">
+            {s.parts.map(p => <span key={p.alg} className={p.ok ? 'ok' : p.broken ? 'broken' : 'no'}>{p.alg}</span>)}
+          </span>
+        )}
+      </span>
+      {s.detail && <span className="d">{s.detail}</span>}
+    </li>
+  )
+}
+
 /**
- * A corner log of what happened to the photo that just arrived: one line per check the verifier ran,
- * revealed in order, then folded away to the photo's thumbnail. Click it to open the log again.
- * `fold` turning on (the forgery is on screen) folds it at once, so it never covers the forgery.
- * The folded thumbnail lingers a few seconds, then goes until the next photo arrives; walking back to
- * the tunnel or to Today (before the Post-Quantum Day door) clears it at once.
+ * A corner log of the photo being captured and then judged. `live`: the phone's own steps, each shown
+ * the moment the phone reports it (taken, hashed, signed, Face ID, sending, logged). When the photo
+ * itself arrives (`item`), the verifier's checks follow on, revealed in order, each landing with a
+ * brief accent in its colour. When the verdict is in, the log stays open with every line until it is
+ * put away (`open` goes false: a click on it, Esc, or walking back before the Post-Quantum Day door);
+ * the next photo replaces it. `forging`: the key break's readout is up, which on a phone takes the log's place.
  */
-export function CaptureLog({ item, hidden, fold, region }: { item: ItemSummary | null; hidden?: boolean; fold?: boolean; region?: Region }) {
-  const steps = useMemo(() => (item ? captureSteps(item) : []), [item])
+export function CaptureLog({ item, live, open, forging, onClose }: {
+  item: ItemSummary | null
+  live?: CaptureProgress | null
+  open: boolean
+  forging?: boolean
+  onClose: () => void
+}) {
+  const phone = useMemo(() => (live ? phoneSteps(live) : []), [live])
+  const fromPhone = phone.length > 0
+  // After the phone's "received and logged", the verifier's own "received" would say it twice.
+  const steps = useMemo(
+    () => (item ? captureSteps(item).filter(s => !(fromPhone && s.key === 'received')) : []),
+    [item, fromPhone],
+  )
   const [shown, setShown] = useState(0)
-  const [open, setOpen] = useState(true)
-  const [folding, setFolding] = useState(false)
-  // The arrival that has been put away (by time or by walking back); a new arrival is a new object.
-  const [gone, setGone] = useState<ItemSummary | null>(null)
-  if (!!fold !== folding) {
-    setFolding(!!fold)
-    if (fold) setOpen(false)
-  }
-  const [lastRegion, setLastRegion] = useState(region)
-  if (region !== lastRegion) {
-    setLastRegion(region)
-    if (item && region !== 'qday') setGone(item)
-  }
 
   useEffect(() => {
     if (!steps.length) return
     const timers: number[] = []
-    timers.push(window.setTimeout(() => { setShown(0); setOpen(true) }, 0))
+    timers.push(window.setTimeout(() => setShown(0), 0))
     steps.forEach((_, i) => timers.push(window.setTimeout(() => setShown(i + 1), FIRST + i * EVERY)))
-    timers.push(window.setTimeout(() => setOpen(false), FIRST + steps.length * EVERY + SETTLE))
     return () => timers.forEach(clearTimeout)
   }, [steps])
 
-  const done = shown >= steps.length
-  useEffect(() => {
-    if (!item || open || !done || hidden) return
-    const t = window.setTimeout(() => setGone(item), LINGER)
-    return () => clearTimeout(t)
-  }, [item, open, done, hidden])
-
-  if (!item || !steps.length) return null
-  const verdict = steps[steps.length - 1]
+  if (!item && !fromPhone) return null
+  const verdict = steps.length ? steps[steps.length - 1] : null
   const body = steps.slice(0, -1)
-  const tone = item.verification.status
+  const tone = item ? item.verification.status : 'live'
+  const done = verdict !== null && shown >= steps.length
 
   return (
     <aside
-      className={`uv-log uv-log-${tone} ${open ? 'open' : 'folded'} ${hidden || gone === item ? 'away' : ''}`}
-      onClick={() => done && setOpen(o => !o)}
+      key={live?.session ?? `${item!.id}:${item!.createdAt}`}
+      className={`uv-log uv-log-${tone} ${open ? '' : 'away'} ${forging ? 'forging' : ''}`}
+      onClick={onClose}
       aria-label="Capture log"
+      aria-hidden={!open}
     >
       <header>
-        <img src={item.imageUrl} alt="" />
+        {item ? <img src={item.imageUrl} alt="" /> : <i className="uv-log-rec" aria-hidden />}
         <span className="uv-log-title">Capture</span>
-        <span className="uv-log-id">{item.id.slice(0, 8)}</span>
+        <span className="uv-log-id">{item ? item.id.slice(0, 8) : 'live'}</span>
       </header>
       <ol>
-        {body.map((s, i) => (
-          <li key={s.key} className={`t-${s.tone} ${i < shown ? 'in' : ''}`}>
-            <span className="m" aria-hidden>{MARK[s.tone]}</span>
-            <span className="x">
-              {s.text}
-              {s.parts && (
-                <span className="parts">
-                  {s.parts.map(p => <span key={p.alg} className={p.ok ? 'ok' : p.broken ? 'broken' : 'no'}>{p.alg}</span>)}
-                </span>
-              )}
-            </span>
-            {s.detail && <span className="d">{s.detail}</span>}
-          </li>
-        ))}
+        {phone.map(s => <Line key={s.key} s={s} cls="in ph" />)}
+        {body.map((s, i) => <Line key={s.key} s={s} cls={i < shown ? 'in' : ''} />)}
       </ol>
-      <footer className={done ? 'in' : ''}>
-        <span className="dot" aria-hidden />
-        <span>{verdict.text}</span>
-      </footer>
+      {verdict && (
+        <footer className={done ? 'in' : ''}>
+          <span className="dot" aria-hidden />
+          <span>{verdict.text}</span>
+        </footer>
+      )}
     </aside>
   )
 }
