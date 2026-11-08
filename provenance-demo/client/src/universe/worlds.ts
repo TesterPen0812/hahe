@@ -5,7 +5,7 @@ import { groundGrains } from './greenWorld'
 import { curveStream } from './scenePath'
 import {
   GLYPH_COLUMNS, GLYPH_ROWS, TRAIL_LENGTH, fieldFragment, fieldVertex, pathFragment, pathVertex,
-  portalFragment, portalVertex, skyFragment, skyVertex, sparkFragment, sparkVertex,
+  portalFragment, portalAsciiFragment, portalVertex, skyFragment, skyVertex, sparkFragment, sparkVertex,
   starFragment, starVertex,
 } from './shaders'
 
@@ -394,12 +394,13 @@ function portalRandom(index: number, salt: number) {
  * A depth-writing window into another universe and sparks drifting out of it.
  * The frame and ground spill are rendered as particles by gateWall.
  */
-export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = false) {
+export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = false, solid = false) {
   const group = new THREE.Group()
   const contentMat = new THREE.ShaderMaterial({
     vertexShader: portalVertex,
-    fragmentShader: portalFragment,
+    fragmentShader: solid ? portalAsciiFragment : portalFragment,
     uniforms: {
+      uGlyphs: { value: solid ? glyphAtlas() : null },
       uTex: { value: target.texture },
       uRes: { value: new THREE.Vector2(1, 1) },
       uOpen: { value: 0 },

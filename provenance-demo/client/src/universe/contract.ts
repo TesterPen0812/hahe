@@ -23,7 +23,7 @@ export type DoorId = 'door1' | 'door2'
 export type DoorTints = Record<DoorId, RGB>
 
 /** Story cards. The scene decides WHERE (slow zones on the path); the screen decides the words and the look. */
-export type CardId = 'today' | 'qday' | 'break' | 'end'
+export type CardId = 'today' | 'qday' | 'break'
 /** strength 0..1 rises as the camera enters the card's zone and falls as it leaves; it drives text + blur. */
 export interface CardState {
   id: CardId
@@ -41,6 +41,8 @@ export interface WalkState {
   liveIndex: number | null
   /** The forgery's frame has flown in and landed in the Prism (the screen waits for it before its verdict). */
   forgeryLanded?: boolean
+  /** The ending: darkness on its way (either direction), or fully black. */
+  ending?: 'none' | 'fading' | 'black'
 }
 
 /** Engine methods the screen calls (scene implements them on UniverseEngine). */
@@ -94,7 +96,13 @@ export interface LiveSequenceOptions {
   lift?: number
   /** The forgery's frame, relative to a photo's: larger, so it reads from the break stop. */
   forgeryScale?: number
+  /** Show the empty waiting frame (default). The forgery's own sequence has none. */
+  waiting?: boolean
+  /** Where earlier photos stand once a newer one (or the visitor) has moved them on, most recent first. */
+  sideSlots?: SideSlot[]
 }
+/** A place at the side of the path: `at` along it, on one side, `off` from the centre line. */
+export interface SideSlot { at: number; side: 1 | -1; off?: number }
 export interface LiveSequence {
   readonly group: THREE.Group
   /** A new phone photo: it takes the next free frame (the waiting frame moves one along). */

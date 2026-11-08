@@ -28,6 +28,10 @@ export interface GalleryOptions {
   gap?: number
   /** How far to the side of the path a print's centre hangs. */
   offset?: number
+  /** Distances along the curve to hang at, in place of spreading evenly over `from`..`to`. */
+  at?: number[]
+  /** Distance ahead over which a print comes into sight [fully there, not yet there]. */
+  farFade?: [number, number]
 }
 
 /** Every photo hung here was logged before the gate is crossed; until the server answers, this is what it says. */
@@ -83,9 +87,10 @@ export function buildGallery(
   // Evenly along the span, but never closer than `gap`: neighbours stand well apart, on alternate sides.
   const span = (to - from) * curve.getLength()
   const gap = opts.gap ?? 9
-  const n = Math.min(photos.length, Math.max(1, Math.floor(span / gap) + 1))
+  const places = opts.at?.map(d => d / curve.getLength())
+  const n = Math.min(photos.length, places?.length ?? Math.max(1, Math.floor(span / gap) + 1))
   photos.slice(0, n).forEach((photo, i) => {
-    const f = n === 1 ? (from + to) / 2 : from + (to - from) * (i / (n - 1))
+    const f = places ? places[i] : n === 1 ? (from + to) / 2 : from + (to - from) * (i / (n - 1))
     const on = curve.getPointAt(f)
     const tan = curve.getTangentAt(f).setY(0).normalize()
     const side = new THREE.Vector3(-tan.z, 0, tan.x)
@@ -129,7 +134,8 @@ export function buildGallery(
         // a print fades as the visitor comes alongside it, rather than hanging half off the screen's edge
         if (camera) {
           const ahead = (fr.base.x - camera.x) * fr.tan.x + (fr.base.z - camera.z) * fr.tan.z
-          fr.card.alpha = THREE.MathUtils.smoothstep(ahead, 2.5, 6)
+          const far = opts.farFade ? 1 - THREE.MathUtils.smoothstep(ahead, opts.farFade[0], opts.farFade[1]) : 1
+          fr.card.alpha = THREE.MathUtils.smoothstep(ahead, 2.5, 6) * far
           // the label goes first, so a passing print never leaves its type huge at the screen's edge
           fr.card.captionOn = THREE.MathUtils.smoothstep(ahead, 4.5, 7)
         } else { fr.card.alpha = 1; fr.card.captionOn = 1 }

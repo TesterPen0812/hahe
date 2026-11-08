@@ -10,7 +10,6 @@ const CARDS: Record<CardId, { title: string; line?: string }> = {
   today: { title: 'Today.', line: 'Every seal checks out.' },
   qday: { title: `Post-Quantum Day · ${DEFAULT_Q_DAY_HEADLINE_YEAR}` },
   break: { title: 'Watch a key break.' },
-  end: { title: 'We don’t detect fakes.', line: 'We prove what’s real.' },
 }
 
 /**

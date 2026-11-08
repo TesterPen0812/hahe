@@ -9,8 +9,8 @@ import '@fontsource-variable/sora/index.css'
 import { api } from '../lib/api'
 import { latestWins, useWorld } from '../lib/world'
 import { UniverseEngine, type EngineState, type WorldView } from './engine'
-import type { GalleryPhoto, SealVerdict } from './gallery'
-import { isAttack, useLiveFeed } from './liveFeed'
+import type { SealVerdict } from './gallery'
+import { feedPhoto, isAttack, useLiveFeed } from './liveFeed'
 import type { DoorId, DoorTints, RGB, WalkControls } from './contract'
 import { useGesture, useHands } from '../gesture/gestures'
 import { StoryCard } from './StoryCard'
@@ -21,6 +21,8 @@ import { StageTools } from './StageTools'
 import { loadTints, useForge, useMockCard, usePanels, useVerdictGate } from './stageHooks'
 import { toForgeryArrival, toLiveArrival } from './sealParts'
 import { breakKeyAction, cardShowing } from './stageData'
+import { CLOSING_LINES } from './ending'
+import { todayPicks } from './galleryPick'
 import './universe.css'
 
 const INITIAL: EngineState = {
@@ -46,6 +48,7 @@ const typing = (e: KeyboardEvent) => !!(e.target as HTMLElement | null)?.closest
 export default function UniversePage() {
   const host = useRef<HTMLDivElement>(null)
   const engine = useRef<UniverseEngine | null>(null)
+  const endingEl = useRef<HTMLDivElement | null>(null)
   const [view, setView] = useState<WorldView>('journey')
   const [state, setState] = useState<EngineState>(INITIAL)
   const mockCard = useMockCard(MOCKWALK)
@@ -98,7 +101,10 @@ export default function UniversePage() {
     for (const i of feed.items) showLive(i, false)
     if (world.mode !== 'q-day') return
     const verdicts = new Map<string, SealVerdict>()
-    for (const i of feed.items) verdicts.set(i.id, { status: i.verification.status, anchored: i.verification.anchoredBeforeQDay })
+    for (const i of feed.items) {
+      // a photo with no seal at all has no rings to show as broken
+      verdicts.set(i.id, { status: i.verification.status, anchored: i.verification.anchoredBeforeQDay, ...(i.verification.kind ? {} : { parts: [] }) })
+    }
     engine.current?.setVerdicts(verdicts)
   }, [world.mode, feed.items, showLive])
 
@@ -132,7 +138,7 @@ export default function UniversePage() {
   const logItem = liveCapture && liveCapture.itemId !== arrival?.id ? null : arrival
   // The log opens when a capture starts, and again when its photo lands (so the verdict is seen).
   const logKey = liveCapture ? `${liveCapture.session}:${logItem ? 'landed' : 'live'}` : arrival?.id ?? null
-  const panels = usePanels(logKey, forgeRun?.id ?? null, state.walk.region, verdictOpen)
+  const panels = usePanels(logKey, forgeRun?.id ?? null, verdictOpen)
   const { close: closePanel } = panels
   const verdict = panels.up.verdict && !cardUp
   // A failed run leaves no words on stage: its readout fades and the run is put away.
@@ -232,6 +238,7 @@ export default function UniversePage() {
     return () => { delete w.uv }
   }, [])
 
+  const endingMask = useCallback((el: HTMLDivElement | null) => { endingEl.current = el; engine.current?.setEndingMask(el) }, [])
   useEffect(() => {
     if (failed || !host.current) return
     let e: UniverseEngine
@@ -251,6 +258,7 @@ export default function UniversePage() {
       return
     }
     engine.current = e
+    e.setEndingMask(endingEl.current)
     // The walk always starts before the Post-Quantum Day door, so the shared world starts at today
     // (a reload mid-demo would otherwise leave the server at Q-Day behind a fresh tunnel).
     writeWorld('today')
@@ -259,18 +267,10 @@ export default function UniversePage() {
     for (const door of Object.keys(saved) as DoorId[]) e.setDoorTint(door, saved[door]!)
     const current = e.doorTints()
     queueMicrotask(() => setTints(t => ({ ...current, ...t })))
-    // Real photos from the feed line the walk: old-camera (RSA) beside our app's (hybrid).
-    api.items().then(items => {
-      const pick = (kind: 'legacy' | 'hybrid') => items
-        .filter(i => !isAttack(i) && i.verification.kind === kind && i.verification.status === 'green').slice(0, 6)
-        .map(i => ({ id: i.id, url: i.imageUrl, kind }))
-      const legacy = pick('legacy'), hybrid = pick('hybrid')
-      const photos: GalleryPhoto[] = []
-      for (let i = 0; i < Math.max(legacy.length, hybrid.length); i++) {
-        if (legacy[i]) photos.push(legacy[i])
-        if (hybrid[i]) photos.push(hybrid[i])
-      }
-      if (engine.current === e) e.setGallery(photos)
+    // Photos from the feed line the walk, real photographs first.
+    Promise.all([api.items(), api.world()]).then(async ([items, w]) => {
+      const feed = await Promise.all(items.filter(i => !isAttack(i)).map(i => feedPhoto(i, w.mode)))
+      if (engine.current === e) e.setGallery(todayPicks(feed), feed)
     }).catch(() => {})
     return () => { e.dispose(); engine.current = null }
   }, [failed, writeWorld])
@@ -314,6 +314,14 @@ export default function UniversePage() {
       <StoryCard card={journey ? card : null} />
 
       <StageTools view={view} onView={onView} tints={tints} onTint={onTint} />
+
+      {/* the ending: darkness over everything, then the closing line alone on it */}
+      <div ref={endingMask} className="uv-ending" aria-hidden />
+      {CLOSING_LINES.length > 0 && (
+        <div className={`uv-closing ${state.walk.ending === 'black' ? 'on' : ''}`} aria-hidden={state.walk.ending !== 'black'}>
+          {CLOSING_LINES.map(line => <p key={line}>{line}</p>)}
+        </div>
+      )}
     </main>
   )
 }

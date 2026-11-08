@@ -34,7 +34,7 @@ export function slowFactor(r: number, zones: readonly Zone[]) {
 /** Where a card's zone ends, short of its stop, so a camera parked at the stop sees no text. */
 export const CARD_GAP = 0.25
 /** Zone sizes, tuned so a Space glide spends about 3 s with the card past half strength (see tests):
- *  the long glides to today and Q-Day run faster through the warp than the short ones to break and end. */
+ *  the long glides to today and the break run faster through the warp than the short ones to Q-Day and the end. */
 export const CARD_ZONE = { long: { inner: 1.6, outer: 4.1 }, short: { inner: 2.2, outer: 4.5 } } as const
 
 /** A card's slow zone, ending CARD_GAP before its stop. */
@@ -117,4 +117,45 @@ export function crossing(x: number) {
   // at the threshold the characters close into a solid wall: nothing of either world shows through
   const wall = x < 0 ? ss(-2.8, -0.9, x) : 1 - ss(0.9, 3, x)
   return { density, scramble, shift, wall }
+}
+
+// ── The photo station's hold ─────────────────────────────────────────────────
+// Walking forward stops at the station until a photo has landed there during this visit. Nothing on
+// screen says so, and it can never trap the presenter: checkpoint jumps pass it, and so does simply
+// keeping on walking for HOLD_ESCAPE seconds. Walking back past `resetAt` starts a new visit.
+export const HOLD_ESCAPE = 2
+
+export interface HoldState {
+  armed: boolean
+  /** Seconds of forward input spent against the hold, unbroken. */
+  pushed: number
+}
+export const newHold = (): HoldState => ({ armed: true, pushed: 0 })
+
+export interface HoldStep {
+  /** Route distance at the end of the last frame, and where this frame's input wants it. */
+  before: number
+  after: number
+  /** The station's stop, and the point behind it that ends a visit. */
+  stop: number
+  resetAt: number
+  /** A checkpoint glide is carrying the walk. */
+  gliding: boolean
+  /** A photo landed at the station this frame. */
+  landed: boolean
+  /** Forward input is being given (a key, the wheel, a drag, a hand). */
+  pushing: boolean
+  dt: number
+}
+
+/** One frame of the hold: updates `s` in place and returns where the walk may go. */
+export function stepHold(s: HoldState, i: HoldStep) {
+  if (i.before >= i.resetAt && i.after < i.resetAt) s.armed = true
+  if (i.landed) s.armed = false
+  if (!s.armed || i.before > i.stop) { s.pushed = 0; return i.after }
+  if (i.after <= i.stop && !(i.after >= i.stop - 1e-6 && i.pushing)) { s.pushed = 0; return i.after }
+  if (i.gliding) { if (i.after > i.stop) { s.armed = false; s.pushed = 0 } return i.after }
+  s.pushed = i.pushing ? s.pushed + i.dt : 0
+  if (s.pushed >= HOLD_ESCAPE) { s.armed = false; s.pushed = 0; return i.after }
+  return Math.min(i.after, i.stop)
 }
