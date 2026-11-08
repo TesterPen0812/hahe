@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { CARD_GAP, CARD_ZONE, CROSSING_FROM, CROSSING_TO, SLOW, Warp, cardAt, cardZone, crossing, glideSeconds, slowFactor, type Zone } from '../src/universe/walk.ts'
+import { CLOSING_LINES, endingBackground, endingMask, stepEnding } from '../src/universe/ending.ts'
+import { CARD_GAP, CARD_ZONE, CROSSING_FROM, CROSSING_TO, HOLD_ESCAPE, SLOW, Warp, cardAt, cardZone, crossing, glideSeconds, newHold, slowFactor, stepHold, type HoldStep, type Zone } from '../src/universe/walk.ts'
 
 const zones: Zone[] = [
   { at: 20, inner: 1.5, outer: 4, card: 'today' },
@@ -44,17 +45,17 @@ test('progress runs 0 → 0.5 → 1 through a card zone, from position alone', (
   for (let i = 1; i < ps.length; i++) assert.ok(ps[i] > ps[i - 1])
 })
 
-// The walk's real stops (one live station): the Prism, today, Q-Day (in the green tunnel), the live
-// station past the after gallery, break, end.
-const STOPS = [4, 50, 109, 147.5, 158.5, 169.5]
+// The walk's seven checkpoints (with four prints in the after gallery): the Prism, today, the photo
+// station, door 2, Q-Day, break, end.
+const STOPS = [4, 50, 64, 89, 109, 153, 164]
 const route: Zone[] = [
-  cardZone(50, 'today', CARD_ZONE.long), cardZone(109, 'qday', CARD_ZONE.long),
-  { at: 147.5, inner: 1.2, outer: 4 },
-  cardZone(158.5, 'break', CARD_ZONE.short), cardZone(169.5, 'end', CARD_ZONE.short),
+  cardZone(50, 'today', CARD_ZONE.long), { at: 64, inner: 1.2, outer: 4 },
+  cardZone(109, 'qday', CARD_ZONE.short),
+  cardZone(153, 'break', CARD_ZONE.long), { at: 164 - CARD_ZONE.short.outer, inner: CARD_ZONE.short.inner, outer: CARD_ZONE.short.outer },
 ]
 /** Seconds a Space glide from stop a to stop b spends with a card past half strength. */
 function glideCardTime(a: number, b: number) {
-  const w = new Warp(route, 178)
+  const w = new Warp(route, 172.5)
   const w0 = w.at(a), w1 = w.at(b), dur = glideSeconds(w1 - w0)
   let above = 0
   for (let t = 0; t <= dur; t += 0.002) {
@@ -74,7 +75,8 @@ test('a card zone sits before its stop: parked at a stop there is no text', () =
 test('a Space glide spends about 2.5 to 3 s with each card past half strength', () => {
   for (let i = 0; i < STOPS.length - 1; i++) {
     const t = glideCardTime(STOPS[i], STOPS[i + 1])
-    if (STOPS[i + 1] === 147.5) { assert.equal(t, 0); continue }
+    // the station, door 2 and the end carry no words
+    if ([64, 89, 164].includes(STOPS[i + 1])) { assert.equal(t, 0); continue }
     assert.ok(t >= 2.5 && t <= 3.1, `${STOPS[i]} → ${STOPS[i + 1]}: ${t.toFixed(2)} s`)
   }
 })
@@ -114,4 +116,85 @@ test('the character crossing builds toward door 2, closes into a wall at it, cle
   const qday = cardZone(11, 'qday', CARD_ZONE.long)
   for (let x = qday.at - qday.inner; x <= 11; x += 0.05) assert.ok(crossing(x).density === 0 && crossing(x).wall === 0)
   assert.ok(qday.at - qday.inner >= CROSSING_TO)
+})
+
+test('no checkpoint lies inside the character crossing at door 2', () => {
+  const door = 98
+  for (const stop of STOPS) assert.ok(stop - door <= CROSSING_FROM || stop - door >= CROSSING_TO, `stop ${stop}`)
+})
+
+// ── the station's hold ──
+const step = (over: Partial<HoldStep>): HoldStep => ({
+  before: 60, after: 60.5, stop: 64, resetAt: 52, gliding: false, landed: false, pushing: true, dt: 1 / 60, ...over,
+})
+
+test('walking forward stops at the station until a photo lands', () => {
+  const h = newHold()
+  assert.equal(stepHold(h, step({})), 60.5)                        // short of it: free
+  assert.equal(stepHold(h, step({ before: 64, after: 64.4 })), 64) // at it: held
+  assert.equal(stepHold(h, step({ before: 64, after: 64.4, landed: true })), 64.4)
+  assert.equal(h.armed, false)
+  assert.equal(stepHold(h, step({ before: 64.4, after: 66 })), 66) // and it stays open this visit
+})
+
+test('holding forward for about 2 s walks through; letting go starts the count again', () => {
+  const h = newHold()
+  let held = 0
+  for (let t = 0; t < 1.5; t += 0.1) { stepHold(h, step({ before: 64, after: 64.2, dt: 0.1 })); held += 0.1 }
+  assert.ok(h.armed && h.pushed > 1.3)
+  stepHold(h, step({ before: 64, after: 64, pushing: false, dt: 0.1 }))
+  assert.equal(h.pushed, 0)
+  let route = 64
+  for (let t = 0; t < HOLD_ESCAPE + 0.15 && h.armed; t += 0.1) route = stepHold(h, step({ before: 64, after: 64.2, dt: 0.1 }))
+  assert.equal(h.armed, false)
+  assert.equal(route, 64.2)
+  assert.ok(held > 0)
+})
+
+test('a checkpoint jump always passes the hold', () => {
+  const h = newHold()
+  assert.equal(stepHold(h, step({ before: 63.9, after: 65, gliding: true })), 65)
+  assert.equal(h.armed, false)
+})
+
+test('walking back past the visit\'s start arms the hold again', () => {
+  const h = newHold()
+  stepHold(h, step({ before: 64, after: 64.4, landed: true }))
+  assert.equal(h.armed, false)
+  stepHold(h, step({ before: 52.1, after: 51.9, pushing: false }))
+  assert.equal(h.armed, true)
+  assert.equal(stepHold(h, step({ before: 64, after: 64.4 })), 64)
+})
+
+test('a walker already past the station is not pulled back', () => {
+  const h = newHold()
+  assert.equal(stepHold(h, step({ before: 70, after: 70.5 })), 70.5)
+})
+
+// ── the ending ──
+test('the ending closes from the edges: clear at the start, the circle shrinking, black at the end', () => {
+  assert.equal(endingMask(0).opacity, 0)
+  assert.equal(endingBackground(1, 700, 400, 900), '#000')
+  let last = Infinity
+  for (let k = 0; k <= 1.001; k += 0.05) {
+    const m = endingMask(k)
+    assert.ok(m.outer <= last)
+    assert.ok(m.inner <= m.outer)
+    last = m.outer
+  }
+  // still some light at the centre well into the fade, none by the end
+  assert.ok(endingMask(0.8).outer > 0)
+  assert.equal(endingMask(0.8).core < 1, true)
+  assert.equal(endingMask(1).outer, 0)
+})
+
+test('the fade takes its time and lifts faster than it fell, from anywhere', () => {
+  assert.equal(stepEnding(0, true, 0), 0)
+  assert.ok(stepEnding(0, true, 1) < 0.2)
+  assert.equal(stepEnding(1, true, 1), 1)
+  assert.equal(stepEnding(0.4, false, 10), 0)
+})
+
+test('the closing words are the two decided lines', () => {
+  assert.deepEqual(CLOSING_LINES, ['There are many worlds unexplored.', 'One fewer than yesterday.'])
 })
