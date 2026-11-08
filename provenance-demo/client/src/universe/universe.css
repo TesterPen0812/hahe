@@ -200,16 +200,70 @@
 
 /* hand control */
 .uv-handbtn {
-  min-height: 0; font: inherit; font-size: 13px; font-weight: 500; color: var(--muted);
-  padding: 6px 12px; border-radius: 999px; background: transparent; border: 1px solid rgba(255, 255, 255, 0.16);
-  margin-left: 6px; cursor: pointer; transition: color .2s, background .2s, border-color .2s;
+  min-height: 0; font: inherit; font-size: 11px; font-weight: 500; color: var(--muted); opacity: .6;
+  padding: 3px 9px; border-radius: 999px; background: transparent; border: 1px solid rgba(255, 255, 255, 0.12);
+  margin-left: 6px; cursor: pointer; transition: color .2s, background .2s, border-color .2s, opacity .2s;
 }
+.uv-handbtn:hover, .uv-handbtn.on, .uv-handbtn.error, .uv-handbtn.starting { opacity: 1; }
 .uv-handbtn:hover { color: var(--ink); background: rgba(255, 255, 255, 0.08); }
 .uv-handbtn.on { color: #7dffb3; border-color: rgba(125, 255, 179, 0.5); }
 .uv-handbtn.error { color: #ff9d8f; }
 .uv-hands {
-  position: absolute; left: 20px; bottom: 20px; z-index: 6; width: 240px; pointer-events: none;
+  position: absolute; left: 20px; bottom: 72px; z-index: 6; width: 240px; pointer-events: none;
 }
 .uv-hands .hp { border: 1px solid rgba(255, 255, 255, 0.14); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45); }
 .uv-hands p { margin: 6px 2px 0; font-size: 11px; line-height: 1.4; color: rgba(233, 236, 241, 0.7); }
-@media (max-width: 720px) { .uv-hands { width: 150px; left: 12px; bottom: 12px; } }
+@media (max-width: 720px) { .uv-hands { width: 150px; left: 12px; bottom: 66px; } }
+
+/* ── story stops: 1 today · 2 Q-Day · 3 live ─────────────────────────── */
+.uv-stops {
+  position: absolute; top: 108px; opacity: .75; left: 20px; z-index: 6; display: flex; gap: 6px; align-items: center;
+}
+.uv-stops button {
+  width: 22px; height: 22px; min-height: 0; min-width: 0; padding: 0; box-sizing: border-box; border-radius: 50%; cursor: pointer;
+  font: 600 10px/20px -apple-system, ui-sans-serif, sans-serif; color: rgba(233, 236, 241, 0.55);
+  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: background .3s, color .3s, border-color .3s;
+}
+.uv-stops button.past { color: rgba(233, 236, 241, 0.8); }
+.uv-stops button.on { color: #04110c; background: rgba(141, 255, 191, 0.85); border-color: transparent; }
+.uv-keyhint {
+  margin-left: 6px; font-size: 11px; color: rgba(233, 236, 241, 0.6); white-space: nowrap;
+  transition: opacity 1.2s;
+}
+.uv-keyhint.gone { opacity: 0; }
+
+/* the 3D live frame is the stage; the panel keeps a compact note */
+.uv-arrival-compact { grid-template-columns: 56px 1fr; padding: 8px; }
+.uv-arrival-compact img { width: 56px; height: 56px; border-radius: 8px; }
+.uv-feed > summary { cursor: pointer; list-style: none; }
+.uv-feed > summary::-webkit-details-marker { display: none; }
+.uv-feed > summary::after { content: "show feed"; margin-left: auto; color: var(--muted); text-decoration: underline; }
+.uv-feed[open] > summary::after { content: "hide"; }
+
+/* The landscape picker leaves the demo timeline and its shared state intact. */
+.uv-story[hidden] { display: none; }
+.uv-world-picker {
+  position: absolute; z-index: 7; bottom: 20px; left: 24px;
+  display: flex; align-items: center; gap: 10px; font-size: 12px;
+  padding: 7px 10px; border: 1px solid rgba(255,255,255,.18); border-radius: 12px;
+  background: rgba(4,8,12,.65); backdrop-filter: blur(12px);
+}
+.uv-world-picker label { color: #c0c8d2; }
+.uv-world-picker select, .uv-world-picker button {
+  font: inherit; color: #f0f3f6; border: 0; background: transparent; padding: 6px 4px; cursor: pointer;
+}
+.uv-world-picker select { max-width: 170px; }
+.uv-world-picker option { background: #10161c; }
+.uv-world-picker button { border-left: 1px solid rgba(255,255,255,.2); padding-left: 12px; }
+.uv-world-picker :focus-visible { outline: 2px solid #bce7df; outline-offset: 2px; border-radius: 4px; }
+.uv-explore-hint {
+  position: absolute; bottom: 22px; right: 24px; margin: 0;
+  color: rgba(240,245,248,.75); font-size: 12px; pointer-events: none;
+  text-shadow: 0 1px 8px #000;
+}
+@media (max-width: 720px) {
+  .uv-world-picker { left: 12px; bottom: 12px; right: 12px; justify-content: center; gap: 6px; }
+  .uv-explore-hint { bottom: 74px; right: 0; left: 0; text-align: center; font-size: 11px; }
+  .uv-in:not(.uv-showcase) .uv-panel { bottom: 76px; max-height: 53vh; }
+}

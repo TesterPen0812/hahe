@@ -1,7 +1,12 @@
 import { Vector2 } from 'three'
+import { greenMotion } from './greenMotion'
+import { prismHelpers, prismPlacement } from './prismMotion'
+import { curveStreamMotion, curveStreamPlacement, scenePathMotion, scenePathPlacement } from './scenePathMotion'
 import { curlField } from './curl'
 
 export const TRAIL_LENGTH = 16
+/** The glyph atlas the falling characters are drawn from (see glyphAtlas in worlds.ts). */
+export const GLYPH_COLUMNS = 8, GLYPH_ROWS = 4, GLYPH_COUNT = GLYPH_COLUMNS * GLYPH_ROWS
 /** Seconds a pointer wake stamp lingers. */
 export const WAKE_LIFE = 1.6
 
@@ -106,6 +111,7 @@ const fieldPlacement = /* glsl */ `
   uniform vec3 uAxis;
   attribute vec3 aBasePosition;
   attribute vec4 aHang;
+  attribute vec4 aPrism;
   attribute vec2 aStateUv;
   attribute vec3 aColor;
   attribute float aSize;
@@ -124,6 +130,11 @@ const fieldPlacement = /* glsl */ `
     uniform float uImpact;
     ${portalNoise}
   #endif
+
+  ${greenMotion}
+  ${prismHelpers}
+  ${scenePathMotion}
+  ${curveStreamMotion}
 
   float hash(float n) { return fract(sin(n) * 43758.5453); }
 
@@ -250,6 +261,11 @@ const fieldPlacement = /* glsl */ `
       p.x += sin(t * 0.25 + p.y * 0.4 + aSeed * 9.0) * 0.05;
       vFade = smoothstep(0.0, 0.2, slide) * (1.0 - smoothstep(0.75, 1.0, slide));
       vTwinkle = 0.75 + 0.35 * sin(t * (0.8 + aSeed) + aSeed * 60.0);
+    } else if (uMode > 14.5 && uMode < 15.5) {
+      applyGreenMotion(p, t, aHang);
+    ${prismPlacement}
+    ${scenePathPlacement}
+    ${curveStreamPlacement}
     } else if (uMode > 12.5) {
       if (aHang.w > 1.5) {
         // Cave walls: one grain in six trickles down its vein and starts again.
@@ -457,8 +473,10 @@ export const particleSimulationFragment = /* glsl */ `
 export const fieldVertex = /* glsl */ `
   ${fieldPlacement}
   ${particleState}
+  uniform float uGlyphShare;      // share of this layer's falling beads drawn as characters
   varying vec2 vLocal;
   varying float vFocus;
+  varying float vGlyph;           // glyph atlas cell, or -1 for a round bead
   void main() {
     vec3 p, velocity;
     float glow = 0.0;
@@ -499,12 +517,30 @@ export const fieldVertex = /* glsl */ `
     vec2 normal = vec2(-direction.y, direction.x);
     vec2 extent = vec2(halfLength + radius, radius);
     vec2 center = screenHead - direction * halfLength;
+    // Some falling beads are drawn as characters instead: upright, unstretched, carried by the
+    // same motion and light. Blurred ones stay round, so the glyphs live in the focused band.
+    // Each one changes character now and then, slowly and out of step with its neighbours.
+    vGlyph = -1.0;
+    bool falls = (uMode > 10.5 && uMode < 12.5) || (uMode > 12.5 && uMode < 14.5 && (aHang.w > 1.5 ? aHang.x > 0.0 : aHang.w > 0.5));
+    if (falls && fract(aSeed * 53.17 + 0.37) < uGlyphShare && vFocus > 0.12) {
+      float rate = 0.08 + fract(aSeed * 7.77) * 0.35;
+      float tick = floor(uTime * rate + aSeed * 31.0);
+      vGlyph = floor(hash(aSeed * 97.31 + tick * 1.618) * ${GLYPH_COUNT}.0);
+      radius = clamp(sharp * 3.2, 5.5 * uPixelRatio, 11.0 * uPixelRatio);
+      halfLength = 0.0;
+      direction = vec2(1.0, 0.0);
+      normal = vec2(0.0, 1.0);
+      extent = vec2(radius);
+      center = screenHead;
+      energy = max(energy, 0.35) * 1.8;
+    }
     vec2 screen = center + direction * position.x * extent.x + normal * position.y * extent.y;
     vLocal = position.xy * extent / radius;
     vStrokeLength = halfLength / radius;
     vStrokeDirection = direction;
     float twinkle = pow(max(sin(uTime * (2.0 + aSeed * 7.0) + aSeed * 100.0), 0.0), 24.0) * step(0.8, fract(aSeed * 13.7));
-    vColor = mix(aColor, vec3(max(aColor.r, max(aColor.g, aColor.b))), clamp(glow * 0.4, 0.0, 1.0));
+    vec3 color = prismColor(aColor, uMode, aHang, aPrism, uTime);
+    vColor = mix(color, vec3(max(color.r, max(color.g, color.b))), clamp(glow * 0.4, 0.0, 1.0));
     vEnergy = energy * smoothstep(0.05, 0.8, vDist) * (1.0 + twinkle * 5.0);
     gl_Position = vec4(screen / halfResolution * clipHead.w, clipHead.z, clipHead.w);
   }
@@ -512,11 +548,23 @@ export const fieldVertex = /* glsl */ `
 
 export const fieldFragment = /* glsl */ `
   uniform float uFogFar, uOpacity, uMode;
+  uniform sampler2D uGlyphs;
   varying vec3 vColor;
-  varying float vDist, vTwinkle, vFade, vEnergy, vFocus;
+  varying float vDist, vTwinkle, vFade, vEnergy, vFocus, vGlyph;
   varying vec2 vLocal, vStrokeDirection;
   varying float vStrokeLength;
   void main() {
+    if (vGlyph > -0.5) {
+      // A character from the atlas (${GLYPH_COLUMNS} × ${GLYPH_ROWS} cells, row 0 at the top).
+      vec2 cell = vec2(mod(vGlyph, ${GLYPH_COLUMNS}.0), floor(vGlyph / ${GLYPH_COLUMNS}.0));
+      vec2 uv = vLocal * 0.5 + 0.5;
+      float ink = texture2D(uGlyphs, vec2((cell.x + uv.x) / ${GLYPH_COLUMNS}.0, 1.0 - (cell.y + 1.0 - uv.y) / ${GLYPH_ROWS}.0)).r;
+      if (ink < 0.02) discard;
+      vec3 glyphColor = vColor * vTwinkle * vEnergy * exp(-vDist * 2.0 / uFogFar);
+      float glyphOpacity = (uMode > 6.5 && uMode < 7.5) ? 1.0 : uOpacity;
+      gl_FragColor = vec4(glyphColor, ink * 0.8 * glyphOpacity * vFade);
+      return;
+    }
     float along = max(abs(vLocal.x) - vStrokeLength, 0.0);
     float rr = along * along + vLocal.y * vLocal.y;
     if (rr > 1.0) discard;

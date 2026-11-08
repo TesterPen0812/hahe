@@ -10,11 +10,27 @@ import {
   universeScene, type SceneUniforms, type UniverseDef,
 } from './worlds'
 import { buildMeadow, qdayGate } from './scenery'
-import { buildGallery, type Gallery, type GalleryPhoto } from './gallery'
+import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from './gallery'
+import { LiveFrame, PHONE_HOST, type Arrival } from './liveFrame'
 import { Fluid } from './fluid'
+import { buildGreenWorld } from './greenWorld'
+import { buildPrismWorld } from './prismWorld'
+import { curveStream } from './scenePath'
 import { ParticleSimulation } from './particles'
 import { POINTER_REACH, WAKE_INTERVAL, dragDistance, dragVelocity, releasedVelocity, wheelDistance } from './input'
 import { driveVelocity, type HandControl } from '../gesture/handControl'
+
+export type WorldView = 'journey' | 'foliage' | 'prism'
+
+interface Showcase {
+  scene: THREE.Scene
+  path: THREE.Curve<THREE.Vector3>
+  length: number
+  ground: (x: number, z: number) => number
+  u: SceneUniforms
+  distance: number
+  desired: number
+}
 
 export type Phase = 'trunk' | 'fork' | 'branch' | 'inside'
 export interface EngineState {
@@ -23,6 +39,8 @@ export interface EngineState {
   hovered: number | null    // portal under the pointer / keyboard focus at the fork
   qday: boolean             // camera is past the Q-Day gate
   started: boolean          // the visitor has moved off the start
+  stop: number              // the story stop reached, or being glided to (0 today, 1 Q-Day gate, 2 live frame)
+  gliding: boolean          // the autopilot is walking to that stop
 }
 export interface EngineCallbacks {
   onState: (s: EngineState) => void
@@ -32,6 +50,18 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2'
 
 /** The worlds behind the gate. For now there is one door: into the world that went hybrid. */
 export const ACTIVE_UNIVERSES = UNIVERSES.filter(u => u.id === 'hybrid')
+
+// The two-minute story, one key press per stop: today's start, just through the Q-Day gate (it
+// freezes there while the seals change), and inside our world in front of the live frame.
+export const STOP_COUNT = 3
+const STOP_START = 6
+const STOP_PAST_GATE = 1.5     // how far past the gate the walk holds
+const STOP_INSIDE = 14         // how far into our world the visitor stands
+const LIVE_AHEAD = 8         // the live frame stands this far beyond that
+// Glide times: today to the gate is a walk past the photos; the gate to the frame a rush through the door.
+const GLIDE_TO_GATE = 12
+const GLIDE_TO_FRAME = 5.5
+const GLIDE_BACK = 3.5
 
 const EYE = 1.15
 const FOV = 50
@@ -65,12 +95,20 @@ export class UniverseEngine {
   private home = new THREE.Scene()
   private homeU = sceneUniforms()
   private universes: Universe[] = []
+  private worldView: WorldView = 'journey'
+  private showcases = new Map<WorldView, Showcase>()
+  private journeyDesired = 0
+  private journeyTarget: { seg: number; d: number } | null = null
+
+  private get showcase() { return this.showcases.get(this.worldView) }
   private trunk = new THREE.CatmullRomCurve3([v2(0, 8), v2(1.4, -6), v2(-1.6, -20), v2(1.2, -34), v2(-0.6, -46), v2(0, -58)], false, 'centripetal')
   private L0: number
   private gateD: number
   private gateCurtain: ReturnType<typeof cloud>
   private homePath: THREE.Points
-  private gallery: Gallery | null = null
+  private galleries: Gallery[] = []
+  private live: LiveFrame | null = null
+  private liveWorld = -1
   private fluid: Fluid
   private particles = new Map<THREE.Object3D, { simulation: ParticleSimulation; time: number }>()
   private fluidLast = new THREE.Vector2(-1, -1)
@@ -86,6 +124,10 @@ export class UniverseEngine {
   private selected: number | null = null
   private hovered: number | null = null
   private keyboardDoor: number | null = null
+  // autopilot: an eased walk to the next story stop
+  private glide: { index: number; from: number; to: number; t0: number; dur: number } | null = null
+  private glideClock = 0
+  private handLatch = false // a hand hold that already counted as "next" doesn't also drive
   private qdayAt = -1
   private flash = 0
   private flashColor = new THREE.Color(1, 1, 1)
@@ -133,6 +175,8 @@ export class UniverseEngine {
     this.lowPower = Math.min(window.innerWidth, window.innerHeight) < 700 || (navigator.hardwareConcurrency ?? 8) <= 4
     this.reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false
     this.canvas.className = 'uv-canvas'
+    this.canvas.tabIndex = 0
+    this.canvas.setAttribute('aria-label', 'Interactive world. Scroll, drag, or use W and S to travel.')
     host.appendChild(this.canvas)
 
     this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' })
@@ -178,9 +222,137 @@ export class UniverseEngine {
     else this.labels.delete(id)
   }
 
+  /** The story stops along the walk, as distances on the route. */
+  private stops() {
+    const inside = this.universes[0] ? this.L0 + this.universes[0].len + STOP_INSIDE : this.L0
+    return [STOP_START, this.gateD + STOP_PAST_GATE, inside]
+  }
+
+  /** The stop the visitor is standing at (autopilot idle), or null between stops. */
+  private heldStop(): number | null {
+    if (this.glide) return null
+    const r = this.desiredRoute
+    const i = this.stops().findIndex(x => Math.abs(r - x) < 0.8)
+    return i < 0 ? null : i
+  }
+
+  /** The last stop at or behind the visitor. */
+  private stopIndex() {
+    if (this.glide) return this.glide.index
+    const r = this.desiredRoute
+    let i = 0
+    this.stops().forEach((x, k) => { if (r >= x - 0.8) i = k })
+    return i
+  }
+
+  /** Walk on to the next stop of the story. */
+  next() {
+    if (this.showcase) return
+    const r = this.desiredRoute
+    // a second press while already walking to the next stop doesn't skip it
+    if (this.glide && this.glide.to > r) return
+    const held = this.heldStop()
+    const i = held !== null ? held + 1 : this.stops().findIndex(x => x > r + 0.8)
+    if (i >= 0 && i < STOP_COUNT) this.goStop(i)
+  }
+
+  /** Walk back to the previous stop. */
+  prev() {
+    if (this.showcase) return
+    const r = this.desiredRoute
+    const stops = this.stops()
+    let i = -1
+    stops.forEach((x, k) => { if (x < r - 0.8) i = k })
+    this.goStop(Math.max(0, i))
+  }
+
+  /** A held right-hand spread at a stop is "next"; it then doesn't also drive until released. */
+  handNext() {
+    if (this.showcase) return
+    const held = this.heldStop()
+    if (held === null || held >= STOP_COUNT - 1) return
+    this.handLatch = true
+    this.goStop(held + 1)
+  }
+  handRelease() { this.handLatch = false }
+
+  private goStop(index: number) {
+    const to = this.stops()[index]
+    const from = this.desiredRoute
+    const dist = to - from
+    if (Math.abs(dist) < 0.05) { this.glide = null; return }
+    const stops = this.stops()
+    let dur = GLIDE_BACK * Math.min(1, Math.abs(dist) / (stops[1] - stops[0]))
+    if (dist > 0) {
+      dur = index === 1 ? GLIDE_TO_GATE * dist / (stops[1] - stops[0]) : GLIDE_TO_FRAME * dist / (stops[2] - stops[1])
+    }
+    this.target = null
+    this.v = 0
+    this.glide = { index, from, to, t0: this.glideClock, dur: Math.max(1.2, dur) }
+  }
+
+  /** Hang the live frame's next photo: it flies in once the visitor is inside our world. */
+  showArrival(a: Arrival) { this.live?.arrive(a) }
+
+  /** The server's verdicts after Q-Day, by photo id, for the gallery captions. */
+  setVerdicts(v: Map<string, SealVerdict>) { this.galleries.forEach(g => g.setVerdicts(v)) }
+
+  /** Select a landscape without advancing or rewinding the shared story. */
+  setWorld(view: WorldView) {
+    if (view === this.worldView) return
+    const outgoing = this.showcase
+    if (outgoing) outgoing.desired = this.desiredRoute
+    else { this.journeyDesired = this.desiredRoute; this.journeyTarget = this.target }
+    // Release persistent GPU state when leaving a scene; only visible worlds need it.
+    this.particles.forEach(entry => entry.simulation.dispose())
+    this.particles.clear()
+    if (view !== 'journey' && !this.showcases.has(view)) {
+      const u = sceneUniforms()
+      const scene = view === 'foliage' ? buildGreenWorld(u, this.lowPower) : buildPrismWorld(u, this.lowPower)
+      this.showcases.set(view, { ...scene, u, distance: 0, desired: 0 })
+    }
+    this.onBlur()
+    this.worldView = view
+    this.glide = null
+    this.desiredRoute = this.showcase?.desired ?? this.journeyDesired
+    this.target = this.showcase ? null : this.journeyTarget
+    this.trail.length = 0
+    this.fluid.clear()
+    this.look.set(0, 0); this.ndc.set(0, 0)
+    this.pointerSpeed = 0; this.pointerPresence = 0; this.pointerIdle = 0; this.idleBlend = 0
+    this.hovered = null; this.keyboardDoor = null; this.flash = 0; this.zoom = 0
+    this.canvas.style.cursor = ''
+    for (const u of this.allUniforms()) u.uPulse.value.w = -99
+    this.resize()
+    if (this.showcase) this.placeShowcaseCamera(1)
+    else { this.placeCamera(1); this.updatePreviewCameras() }
+    this.updateLabels()
+    this.canvas.focus({ preventScroll: true })
+  }
+
+  restartWorld() {
+    if (!this.showcase) return
+    this.desiredRoute = 0; this.v = 0
+    this.canvas.focus({ preventScroll: true })
+  }
+
+  private allUniforms() {
+    return [this.homeU, ...this.universes.map(x => x.u), ...[...this.showcases.values()].map(x => x.u)]
+  }
+
+  private activeCamera() {
+    const inside = this.insideIndex()
+    return !this.showcase && inside >= 0 ? this.universes[inside].cam : this.camera
+  }
+
+  private activeWorldIndex() {
+    return this.worldView === 'foliage' ? -2 : this.worldView === 'prism' ? -3 : this.insideIndex()
+  }
+
   /** Walk into a universe. */
   choose(branch: number) {
-    if (!this.universes[branch]) return
+    if (this.showcase || !this.universes[branch]) return
+    this.glide = null
     if (!this.pastGate()) {
       this.target = { seg: -1, d: this.L0 }
       this.selected = branch
@@ -200,26 +372,34 @@ export class UniverseEngine {
   /** Let the presenter's hands (webcam) walk the timeline; null hands control back to scroll. */
   setHands(c: HandControl | null) { this.hands = c }
 
-  /** Hang real photos from the feed along the path to our door; Q-Day's wave tests their seals. */
+  /**
+   * Hang real photos from the feed along the walk: the first half on today's side of the gate,
+   * the rest on the path to our door, where they're in view while the walk holds at the gate.
+   * Q-Day's wave tests their seals.
+   */
   setGallery(photos: GalleryPhoto[]) {
-    if (this.gallery) { this.home.remove(this.gallery.group); this.gallery.dispose(); this.gallery = null }
+    for (const g of this.galleries) { this.home.remove(g.group); g.dispose() }
+    this.galleries = []
     if (!photos.length || !this.universes[0]) return
-    this.gallery = buildGallery(photos, this.universes[0].curve)
-    this.home.add(this.gallery.group)
+    const half = Math.ceil(photos.length / 2)
+    const today = photos.slice(0, half), after = photos.slice(half)
+    this.galleries.push(buildGallery(today, this.trunk, 13 / this.L0, (this.gateD - 5) / this.L0))
+    if (after.length) this.galleries.push(buildGallery(after, this.universes[0].curve, 0.15, 0.72, today.length))
+    for (const g of this.galleries) this.home.add(g.group)
   }
 
   /** Walk back to the fork. */
-  back() { this.target = { seg: -1, d: this.L0 } }
+  back() { this.glide = null; this.target = { seg: -1, d: this.L0 } }
 
   /** Walk back to today, before Q-Day. */
-  rewind() { this.selected = null; this.target = { seg: -1, d: 5 } }
+  rewind() { this.glide = null; this.selected = null; this.target = { seg: -1, d: STOP_START } }
 
   dispose() {
     this.disposed = true
     cancelAnimationFrame(this.raf)
     this.resizeObserver.disconnect()
     this.unbind()
-    const scenes = [this.home, ...this.universes.map(u => u.scene)]
+    const scenes = [this.home, ...this.universes.map(u => u.scene), ...[...this.showcases.values()].map(u => u.scene)]
     for (const s of scenes) {
       s.traverse(o => {
         const m = o as THREE.Mesh
@@ -229,7 +409,8 @@ export class UniverseEngine {
         else mat?.dispose()
       })
     }
-    this.gallery?.dispose()
+    this.galleries.forEach(g => g.dispose())
+    this.live?.dispose()
     this.universes.forEach(u => u.rt.dispose())
     this.fluid.dispose()
     this.particles.forEach(p => p.simulation.dispose())
@@ -242,7 +423,20 @@ export class UniverseEngine {
   // ── scene construction ───────────────────────────────────────────────────
 
   private buildHome() {
-    buildMeadow(this.home, this.homeU, this.lowPower)
+    buildMeadow(this.home, this.homeU, this.lowPower, this.trunkX())
+  }
+
+  /** The walk's sideways position at a given depth: the trunk, then straight on to the door. */
+  private trunkX() {
+    const samples = Array.from({ length: 241 }, (_, i) => this.trunk.getPointAt(i / 240))
+    return (z: number) => {
+      if (z >= samples[0].z) return samples[0].x
+      for (let i = 1; i < samples.length; i++) {
+        const a = samples[i - 1], b = samples[i]
+        if (z >= b.z) return THREE.MathUtils.lerp(a.x, b.x, (z - a.z) / (b.z - a.z || -1))
+      }
+      return samples[samples.length - 1].x
+    }
   }
 
   private buildUniverses() {
@@ -289,13 +483,31 @@ export class UniverseEngine {
       wall.visible = false
       this.home.add(wall)
       const u = sceneUniforms()
+      const scene = universeScene(def, u, this.lowPower)
+      if (def.id === 'hybrid') this.buildLiveFrame(scene, i)
       this.universes.push({
         def, u, rt, door, curve, base, open: 0, presence: 0, rtScale: RT_SCALE, wall,
         len: curve.getLength(),
-        scene: universeScene(def, u, this.lowPower),
+        scene,
         cam: new THREE.PerspectiveCamera(FOV, 1, 0.05, 900),
       })
     })
+  }
+
+  /** The live frame stands on our world's path, a little left of centre so the side panel doesn't hide it. */
+  private buildLiveFrame(scene: THREE.Scene, world: number) {
+    const L = HYBRID_PATH.getLength()
+    const f = (STOP_INSIDE + LIVE_AHEAD) / L
+    const at = HYBRID_PATH.getPointAt(f)
+    const tan = HYBRID_PATH.getTangentAt(f).setY(0).normalize()
+    at.addScaledVector(new THREE.Vector3(-tan.z, 0, tan.x), -2)
+    at.y = hybridHeight(at.x, at.z) + EYE + 0.1
+    const toward = HYBRID_PATH.getPointAt(STOP_INSIDE / L)
+    const ahead = HYBRID_PATH.getPointAt(Math.min(1, (STOP_INSIDE + LIVE_AHEAD + 22) / L))
+    ahead.y = at.y + 1.4
+    this.live = new LiveFrame(at, toward, ahead, PHONE_HOST, status => this.celebrate(status))
+    this.liveWorld = world
+    scene.add(this.live.group)
   }
 
   private buildGate() {
@@ -313,10 +525,14 @@ export class UniverseEngine {
     const gate = this.trunk.getPointAt(this.gateD / this.L0)
     const tan = this.trunk.getTangentAt(this.gateD / this.L0)
     const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize()
-    const dens = this.lowPower ? 70 : 140
+    // The walk itself is the landscapes' white stream: fine grains flowing toward the door, in the
+    // particle simulation, so the pointer stirs the path like everything else.
+    const walk = new THREE.CurvePath<THREE.Vector3>()
+    walk.add(this.trunk)
+    const door = this.universes[0]
+    if (door) walk.add(door.curve)
+    this.home.add(curveStream(this.homeU, walk, { lowPower: this.lowPower, ground: homeHeight, fog: 130 }))
     const path = glowingPath(this.homeU, [
-      { curve: this.trunk, branch: 0, density: dens },
-      ...this.universes.map((u, i) => ({ curve: u.curve, branch: i + 1, density: dens })),
       // the Q-Day threshold line across the path
       { curve: new THREE.LineCurve3(gate.clone().addScaledVector(side, -5.6), gate.clone().addScaledVector(side, 5.6)), branch: 0, density: 60 },
     ], [0, 1, 2].map(i => (this.universes[i] ?? this.universes[0]).def.tint) as [RGB, RGB, RGB], 9, 130, homeHeight)
@@ -330,24 +546,41 @@ export class UniverseEngine {
   private onWheel = (e: WheelEvent) => {
     e.preventDefault()
     this.target = null
+    this.glide = null
     this.v = 0
     this.desiredRoute += wheelDistance(e.deltaY, e.deltaMode, this.canvas.clientHeight)
   }
   private onKeyDown = (e: KeyboardEvent) => {
-    if ((e.target as HTMLElement | null)?.closest?.('input, textarea, select, button, a, [contenteditable="true"]')) return
+    const el = e.target as HTMLElement | null
+    if (el?.closest?.('input, textarea, select, [contenteditable="true"]') || e.metaKey || e.ctrlKey || e.altKey) return
     const k = e.key.toLowerCase()
-    if (['w', 's', 'arrowup', 'arrowdown'].includes(k)) { this.keys.add(k); this.target = null; e.preventDefault() }
-    if (this.atFork() || this.seg >= 0) {
+    const code = e.code
+    const doors = this.universes.length > 1 && (this.atFork() || this.seg >= 0)
+    // The story: space, → and a clicker's PageDown walk on; ← and PageUp walk back. Works even
+    // with a button focused (after "Fake one"), so a clicker never re-presses it. Matched on the
+    // physical key too, since some remotes and automation send an empty `key`.
+    const is = (key: string, phys: string) => k === key || code === phys
+    const fwd = is(' ', 'Space') || is('pagedown', 'PageDown') || (is('arrowright', 'ArrowRight') && !doors)
+    const back = is('pageup', 'PageUp') || (is('arrowleft', 'ArrowLeft') && !doors)
+    if (!this.showcase && (fwd || back)) {
+      e.preventDefault()
+      if (el?.closest?.('button, a')) el.blur()
+      if (!e.repeat) { if (fwd) this.next(); else this.prev() }
+      return
+    }
+    if (el?.closest?.('button, a')) return
+    if (['w', 's', 'arrowup', 'arrowdown'].includes(k)) { this.keys.add(k); this.target = null; this.glide = null; e.preventDefault() }
+    if (!this.showcase && (this.atFork() || this.seg >= 0)) {
       const n = Number(k)
       if (n >= 1 && n <= this.universes.length) this.choose(n - 1)
-      if (k === 'arrowleft') this.keyboardDoor = Math.max(0, (this.keyboardDoor ?? 0) - 1)
-      if (k === 'arrowright') this.keyboardDoor = Math.min(this.universes.length - 1, (this.keyboardDoor ?? 0) + 1)
+      if (doors && k === 'arrowleft') this.keyboardDoor = Math.max(0, (this.keyboardDoor ?? 0) - 1)
+      if (doors && k === 'arrowright') this.keyboardDoor = Math.min(this.universes.length - 1, (this.keyboardDoor ?? 0) + 1)
       if (k === 'enter') {
         const door = this.hovered ?? this.keyboardDoor ?? (this.universes.length === 1 ? 0 : null)
         if (door !== null) { this.choose(door); e.preventDefault() }
       }
     }
-    if (k === 'escape' && this.seg >= 0) this.back()
+    if (!this.showcase && k === 'escape' && this.seg >= 0) this.back()
   }
   private onKeyUp = (e: KeyboardEvent) => { this.keys.delete(e.key.toLowerCase()) }
   private onPointerMove = (e: PointerEvent) => { this.updatePointer(e, true) }
@@ -380,6 +613,7 @@ export class UniverseEngine {
     if (e.button !== 0 || !e.isPrimary) return
     this.onPointerMove(e)
     this.target = null
+    this.glide = null
     this.v = 0
     this.down = { id: e.pointerId, x: e.clientX, y: e.clientY, lastY: e.clientY, lastAt: performance.now(), door: this.pickDoor() }
     this.canvas.setPointerCapture(e.pointerId)
@@ -393,8 +627,8 @@ export class UniverseEngine {
     this.down = null
     if (this.canvas.hasPointerCapture(e.pointerId)) this.canvas.releasePointerCapture(e.pointerId)
     if (moved > 6) return
-    const world = this.insideIndex()
-    const cam = world >= 0 ? this.universes[world].cam : this.camera
+    const world = this.activeWorldIndex()
+    const cam = this.activeCamera()
     this.pulsePending = this.reducedMotion ? null : {
       ray: this.pointerRay(this.ndc), origin: cam.position.clone(), world,
       time: (performance.now() - this.startedAt) / 1000,
@@ -444,16 +678,52 @@ export class UniverseEngine {
   private atFork() { return this.seg < 0 && this.d >= this.L0 - 0.6 }
   private insideIndex() { return this.seg >= 0 && this.d >= this.universes[this.seg].len - 0.08 ? this.seg : -1 }
 
-  private travel(dt: number, t: number) {
+  private travelShowcase(dt: number) {
+    const world = this.showcase!
+    const fwd = this.keys.has('w') || this.keys.has('arrowup')
+    const bwd = this.keys.has('s') || this.keys.has('arrowdown')
+    if (fwd || bwd) this.v = THREE.MathUtils.clamp(this.v + (fwd ? 16 : -16) * dt, -9, 9)
+    const step = !this.down && Math.abs(this.v) >= 0.01 ? this.v * dt : 0
+    this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + step, 0, Math.max(0, world.length - 2))
+    if (!this.down && !fwd && !bwd) this.v *= Math.exp(-dt * 3.2)
+    world.distance += (this.desiredRoute - world.distance) * (1 - Math.exp(-4 * dt))
+  }
+
+  private placeShowcaseCamera(blend: number) {
+    const world = this.showcase!
+    const at = (distance: number) => world.path.getPointAt(THREE.MathUtils.clamp(distance / world.length, 0, 1))
+    const pos = at(world.distance)
+    pos.y = world.ground(pos.x, pos.z) + EYE
+    const ahead = at(Math.min(world.length, world.distance + 6))
+    ahead.y = world.ground(ahead.x, ahead.z) + EYE + 0.3
+    ahead.sub(pos)
+    ahead.x += this.look.x * 0.36; ahead.y += this.look.y * 0.216
+    this.gaze.lerp(ahead, blend)
+    this.camera.position.copy(pos)
+    this.camera.lookAt(pos.clone().add(this.gaze))
+    this.camera.updateMatrixWorld()
+  }
+
+  private travel(dt: number, t: number, realDt = dt) {
     const before = this.route()
     const fwd = this.keys.has('w') || this.keys.has('arrowup')
     const bwd = this.keys.has('s') || this.keys.has('arrowdown')
 
-    // A pinch-zoom in the air (webcam): two fingers spread to go forward, three to go back, fist stops.
-    const hand = this.hands ? driveVelocity(this.hands, this.v, dt) : null
-    if (hand?.active) this.target = null
+    // Hands (webcam): the open left palm arms, the right hand's spread walks on, a pinch walks back,
+    // a fist stops. A hold that already counted as "next" at a stop doesn't also drive.
+    const hand = this.hands && !this.handLatch ? driveVelocity(this.hands, this.v, dt) : null
+    if (hand?.active) { this.target = null; this.glide = null }
 
-    if (this.target) {
+    // The autopilot keeps wall-clock time, so a stop takes as long on a slow frame rate as a fast one.
+    this.glideClock += realDt
+    if (this.glide) {
+      const g = this.glide
+      const k = Math.min(1, (this.glideClock - g.t0) / g.dur)
+      // ease in and out, so the walk starts and settles gently
+      this.desiredRoute = g.from + (g.to - g.from) * (0.5 - 0.5 * Math.cos(Math.PI * k))
+      this.v = 0
+      if (k >= 1) this.glide = null
+    } else if (this.target) {
       const tg = this.target
       if (this.seg < 0 && tg.seg >= 0) this.selected = tg.seg
       const goal = this.seg >= 0 && tg.seg !== this.seg ? this.L0 : (tg.seg < 0 ? tg.d : this.L0 + tg.d)
@@ -468,7 +738,7 @@ export class UniverseEngine {
     }
 
     const destination = this.universes[this.seg >= 0 ? this.seg : this.selected ?? 0]
-    const travelStep = !this.down && Math.abs(this.v) >= 0.01 ? this.v * dt : 0
+    const travelStep = !this.down && !this.glide && Math.abs(this.v) >= 0.01 ? this.v * dt : 0
     this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + travelStep, 0, this.L0 + destination.len + 22)
     if (!this.target && !this.down && !fwd && !bwd && !hand?.active) this.v *= Math.exp(-dt * 3.2)
     let r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
@@ -593,15 +863,21 @@ export class UniverseEngine {
     const now = performance.now()
     this.adapt(now - this.lastFrame)
     const dt = Math.min((now - this.lastFrame) / 1000, 1 / 20)
+    const realDt = Math.min((now - this.lastFrame) / 1000, 0.25)
     this.lastFrame = now
     const t = (now - this.startedAt) / 1000
 
     this.updatePointerMotion(dt, t)
-    this.travel(dt, t)
-    this.placeCamera(1 - Math.exp(-dt * 3))
-    this.updatePreviewCameras()
-    this.updateDoors(dt, t)
-    this.emitState()
+    if (this.showcase) {
+      this.travelShowcase(dt)
+      this.placeShowcaseCamera(1 - Math.exp(-dt * 3))
+    } else {
+      this.travel(dt, t, realDt)
+      this.placeCamera(1 - Math.exp(-dt * 3))
+      this.updatePreviewCameras()
+      this.updateDoors(dt, t)
+      this.emitState()
+    }
     this.updateUniforms(t, dt)
     this.updateLabels()
     this.stirFluid(dt)
@@ -663,7 +939,7 @@ export class UniverseEngine {
 
   /** Only the currently visible rectangle is actionable; discarded shader pixels never hit. */
   private pickDoor(): number | null {
-    if (!this.pointerIn || !this.pastGate() || this.insideIndex() >= 0) return null
+    if (this.showcase || !this.pointerIn || !this.pastGate() || this.insideIndex() >= 0) return null
     this.raycaster.setFromCamera(this.ndc, this.camera)
     const hits = this.raycaster.intersectObjects(this.universes.map(u => u.door.content), false)
     for (const hit of hits) {
@@ -706,7 +982,9 @@ export class UniverseEngine {
     })
     this.hovered = this.pickDoor() ?? (past && this.insideIndex() < 0 ? this.keyboardDoor : null)
     this.canvas.style.cursor = this.hovered !== null ? 'pointer' : ''
-    if (this.gallery) this.gallery.update(t, this.qdayAt, this.trunk.getPointAt(this.gateD / this.L0))
+    const gate = this.trunk.getPointAt(this.gateD / this.L0)
+    for (const g of this.galleries) g.update(t, this.qdayAt, gate)
+    this.live?.update(t, this.liveWorld >= 0 && this.insideIndex() === this.liveWorld)
     const gains = this.homePath.material as THREE.ShaderMaterial
     const g = gains.uniforms.uBranchGain.value as THREE.Vector3
     const sel = this.seg >= 0 ? this.seg : this.hovered
@@ -720,16 +998,17 @@ export class UniverseEngine {
   private updateUniforms(t: number, dt: number) {
     const inside = this.insideIndex()
     const pr = this.renderer.getPixelRatio()
-    const all = [this.homeU, ...this.universes.map(u => u.u)]
+    const all = this.allUniforms()
     for (const u of all) u.uTime.value = t
     this.homeU.uPixelRatio.value = pr
+    this.showcases.forEach(s => { s.u.uPixelRatio.value = pr })
     this.universes.forEach((u, i) => { u.u.uPixelRatio.value = i === inside ? pr : pr * u.rtScale })
     this.updateLens(inside, dt)
 
     // The pointer stirs whichever world the camera is in: its live ray, its wake and clicks.
     const now = performance.now()
-    const active = inside >= 0 ? this.universes[inside].u : this.homeU
-    const cam = inside >= 0 ? this.universes[inside].cam : this.camera
+    const active = this.showcase?.u ?? (inside >= 0 ? this.universes[inside].u : this.homeU)
+    const cam = this.activeCamera()
     const tanFov = Math.tan(THREE.MathUtils.degToRad(cam.fov * 0.5))
     this.pointerDrag.set(this.pointerVelocity.x * cam.aspect, this.pointerVelocity.y, 0).multiplyScalar(tanFov).applyQuaternion(cam.quaternion)
     const direction = this.pointerRay()
@@ -762,7 +1041,7 @@ export class UniverseEngine {
     // A click (press without drag) sends a ring of light out from the pointer.
     if (this.pulsePending) {
       const pulse = this.pulsePending
-      if (pulse.world === inside) {
+      if (pulse.world === this.activeWorldIndex()) {
         active.uPulse.value.set(pulse.ray.x, pulse.ray.y, pulse.ray.z, pulse.time)
         active.uPulseFrom.value.copy(pulse.origin)
       }
@@ -770,7 +1049,7 @@ export class UniverseEngine {
     }
 
     // Q-Day lands with a cold violet flash and a jolt of zoom.
-    if (this.qdayAt >= 0 && this.flashedQday !== this.qdayAt) {
+    if (!this.showcase && this.qdayAt >= 0 && this.flashedQday !== this.qdayAt) {
       this.flashedQday = this.qdayAt
       this.flash = Math.max(this.flash, this.reducedMotion ? 0.12 : 0.3)
       this.flashColor.setRGB(0.62, 0.55, 1.0)
@@ -780,7 +1059,7 @@ export class UniverseEngine {
     this.zoom = Math.max(0, this.zoom - dt * 1.6)
 
     // The eye adapts: a crossing over-exposes for a moment, then settles.
-    const want = (inside >= 0 ? 1.05 : 0.95) + this.flash * 1.2
+    const want = (this.showcase ? 1 : inside >= 0 ? 1.05 : 0.95) + this.flash * 1.2
     this.exposure += (want - this.exposure) * Math.min(1, dt * (want > this.exposure ? 8 : 1.4))
     this.renderer.toneMappingExposure = this.exposure
 
@@ -794,7 +1073,7 @@ export class UniverseEngine {
       if (m?.uniforms?.uPixelRatio && !('uSizeScale' in m.uniforms)) m.uniforms.uPixelRatio.value = pr
       if (m?.uniforms?.uTime && !('uSizeScale' in m.uniforms)) m.uniforms.uTime.value = t
     }
-    for (const u of this.universes) {
+    for (const u of [...this.universes, ...this.showcases.values()]) {
       for (const s of u.scene.children) {
         const m = (s as THREE.Points).material as THREE.ShaderMaterial | undefined
         if (m?.uniforms?.uPixelRatio && !('uSizeScale' in m.uniforms)) m.uniforms.uPixelRatio.value = pr
@@ -806,6 +1085,7 @@ export class UniverseEngine {
   /** Focus the lens on what the visitor is walking toward: the path ahead, then the door. */
   private tmpV = new THREE.Vector3()
   private updateLens(inside: number, dt: number) {
+    if (this.showcase) return
     const aperture = 0.0025
     const maxBlur = 48
     let focus = 8
@@ -830,8 +1110,7 @@ export class UniverseEngine {
 
   /** Direction of the ray from the active camera through the pointer, in that world's space. */
   private pointerRay(position = this.look) {
-    const inside = this.insideIndex()
-    const cam = inside >= 0 ? this.universes[inside].cam : this.camera
+    const cam = this.activeCamera()
     this.raycaster.setFromCamera(position, cam)
     return this.raycaster.ray.direction.clone()
   }
@@ -851,7 +1130,7 @@ export class UniverseEngine {
     for (const [id, el] of this.labels) {
       const s = spots[id]
       const p = s.p.clone().project(this.camera)
-      const visible = !inside && s.show && p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2
+      const visible = !this.showcase && !inside && s.show && p.z < 1 && Math.abs(p.x) < 1.2 && Math.abs(p.y) < 1.2
       el.style.opacity = visible ? '1' : '0'
       el.style.pointerEvents = visible ? 'auto' : 'none'
       // keep a label's centre far enough from the edges that its text stays on screen
@@ -892,7 +1171,9 @@ export class UniverseEngine {
       branch: this.seg >= 0 ? this.seg : null,
       hovered: this.hovered,
       qday: this.pastGate(),
-      started: this.route() > 8,
+      started: this.route() > 8 || this.glide !== null,
+      stop: this.stopIndex(),
+      gliding: this.glide !== null,
     }
     const key = JSON.stringify(s)
     if (key !== this.lastState) { this.lastState = key; this.cb.onState(s) }
@@ -909,7 +1190,11 @@ export class UniverseEngine {
 
   private render() {
     const inside = this.insideIndex()
-    if (inside >= 0) {
+    if (this.showcase) {
+      this.simulateParticles(this.showcase.scene, this.camera, true)
+      this.renderPass.scene = this.showcase.scene
+      this.renderPass.camera = this.camera
+    } else if (inside >= 0) {
       const u = this.universes[inside]
       this.simulateParticles(u.scene, u.cam, true)
       this.renderPass.scene = u.scene
@@ -968,7 +1253,7 @@ export class UniverseEngine {
     this.composer.setPixelRatio(pr)
     this.composer.setSize(w, h)
     const sizeScale = h / (2 * Math.tan(THREE.MathUtils.degToRad(fov) / 2))
-    for (const u of [this.homeU, ...this.universes.map(x => x.u)]) u.uSizeScale.value = sizeScale
+    for (const u of this.allUniforms()) u.uSizeScale.value = sizeScale
     this.finish.uniforms.uAspect.value = w / h
     this.finish.uniforms.uResolution.value.set(Math.floor(w * pr), Math.floor(h * pr))
     this.fluid.resize(w, h)

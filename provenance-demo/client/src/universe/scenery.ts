@@ -2,8 +2,10 @@
 // The look is deliberately spare: one colour family, soft out-of-focus light everywhere,
 // a cavern of hanging threads, and a single bright stream leading to the door.
 import * as THREE from 'three'
-import { fbm, rng } from './noise'
+import { rng } from './noise'
 import { cloud, homeHeight, particleField, sky, type RGB, type SceneUniforms } from './worlds'
+import { bulbMeadow } from './prismWorld'
+import { groundGrains } from './greenWorld'
 
 const MEADOW_FOG: RGB = [0.02, 0.035, 0.11]
 
@@ -11,7 +13,7 @@ const MEADOW_FOG: RGB = [0.02, 0.035, 0.11]
 const ceiling = (x: number) => 13 - 0.008 * x * x
 
 /** Night meadow inside a cavern of hanging light. */
-export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
+export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean, pathX: (z: number) => number) {
   const k = lowPower ? 0.45 : 1
   const fog = { fogColor: MEADOW_FOG }
 
@@ -22,35 +24,20 @@ export function buildMeadow(scene: THREE.Scene, u: SceneUniforms, lowPower: bool
     { glow: [0.03, 0.04, 0.1] },
   ))
 
-  // The ground: a deep field of navy and periwinkle grains that blur into bokeh near and far.
-  scene.add(particleField(u, {
-    count: Math.floor(130000 * k), x: [-60, 60], z: [-140, 16], height: homeHeight, mode: 0, seed: 1, fog: [18, 120], ...fog,
-    color: (r, x, z) => {
-      const patch = 0.6 + 0.55 * fbm(x * 0.05 + 4, z * 0.05, 3)
-      if (r() < 0.06) { const w = 0.7 + r() * 0.5; return [0.72 * w, 0.8 * w, 1.0 * w] }
-      const b = (0.45 + r() * 0.6) * patch
-      return [(0.16 + r() * 0.1) * b, (0.24 + r() * 0.12) * b, (0.72 + r() * 0.3) * b]
-    },
-    size: (r) => 0.06 + r() * r() * 0.12,
-    yJitter: (r) => r() * r() * 0.35,
+  // The ground, built like the landscapes: a dense meadow of bulbs (a stem and a round head of
+  // fine grains) that sway in a noise breeze, with colour bands travelling across them in Today's
+  // blues, over a fine textured floor. Same grain budget as the old bead field and clumps.
+  scene.add(bulbMeadow(u, {
+    bulbs: Math.floor(6000 * k), z: [14, -96], pathX, ground: homeHeight, spread: 11, lane: 0.8,
+    fog: [18, 120], seed: 3101, palette: 1, fogColor: MEADOW_FOG, name: 'today-bulb-meadow',
   }))
-
-  // Pale clumps scattered over the ground, like frosted shrubs catching the light.
-  const cr = rng(31), clumps = Math.floor(70 * k)
-  const cp: number[] = [], cc: number[] = [], cs: number[] = []
-  for (let c = 0; c < clumps; c++) {
-    const x0 = (cr() - 0.5) * 70, z = 10 - cr() * 110
-    const x = Math.abs(x0) < 2.5 ? x0 + Math.sign(x0 || 1) * 2.5 : x0 // keep the walk clear
-    const base = homeHeight(x, z), rad = 0.4 + cr() * 0.7, n = 90 + Math.floor(cr() * 120)
-    for (let i = 0; i < n; i++) {
-      const a = cr() * Math.PI * 2, rr = Math.sqrt(cr()) * rad, h = cr() * rad * 1.3
-      cp.push(x + Math.cos(a) * rr, base + h * (1 - rr / rad * 0.5), z + Math.sin(a) * rr)
-      const b = 0.35 + cr() * 0.45
-      cc.push(0.62 * b, 0.7 * b, 0.95 * b)
-      cs.push(0.035 + cr() * 0.035)
-    }
-  }
-  scene.add(cloud(u, new Float32Array(cp), new Float32Array(cc), new Float32Array(cs), 9, [8, 90], 32, 1, fog))
+  scene.add(groundGrains(u, Math.floor(25000 * k), {
+    z: [16, -140], pathX, ground: (x, z) => homeHeight(x, z) + 0.02, reach: 30, size: 0.02,
+    fog: [18, 120], fogColor: MEADOW_FOG, seed: 3201, name: 'today-ground-grains',
+    color: (b, tone, white) => white
+      ? [0.72 * b * 1.6, 0.8 * b * 1.6, 1.0 * b * 1.6]
+      : [b * (0.14 + tone * 0.3), b * (0.22 + tone * 0.4), b * (0.7 + tone * 0.35)],
+  }))
 
   // The cavern: thousands of strands hanging from an unseen roof, each dripping slow beads of light.
   const sr = rng(41), strands = Math.floor(2200 * k)

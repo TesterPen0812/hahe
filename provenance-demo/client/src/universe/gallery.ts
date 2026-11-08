@@ -1,23 +1,45 @@
-// The quantum world, shown with real photos: after the Q-Day gate the path to our door is lined
-// with photos from the live feed, each wearing its seal. When Q-Day's wave reaches a photo, the
-// classical seals (RSA-2048, Ed25519) crack and fall away. The ML-DSA-65 ring on our hybrid
-// photos flares and holds, which is the whole product in one picture.
+// Real photos from the live feed line the walk, before the Q-Day gate and after it, each wearing
+// its seal. Today every seal checks out. When Q-Day's wave reaches a photo, the classical seals
+// (RSA-2048, Ed25519) crack and fall away. The ML-DSA-65 ring on our hybrid photos flares and
+// holds. An old camera's photo that was logged before Q-Day keeps a small log-anchor ring: the
+// signed log still proves it, so it stays verified. The captions after Q-Day are the server's
+// verdict for that photo (setVerdicts), not a guess.
 import * as THREE from 'three'
 import { homeHeight } from './worlds'
 
 export type SealKind = 'legacy' | 'hybrid'
-export interface GalleryPhoto { url: string; kind: SealKind }
+export interface GalleryPhoto { id: string; url: string; kind: SealKind }
+/** What the verifier says about a photo after Q-Day. */
+export interface SealVerdict { status: 'green' | 'amber' | 'grey'; anchored: boolean }
 
 // Canvas layout: photo on top, then two caption rows (before / after Q-Day).
 const CW = 512, PHOTO_H = 384, ROW = 76, CH = PHOTO_H + ROW * 2
 // Plane layout, in world units.
 const PW = 2.7, PH = 2.5
 
-const CAPTIONS: Record<SealKind, [string, string, string, string]> = {
-  // before text, before colour, after text, after colour
-  legacy: ['Old camera · RSA-2048', '#c9d3ff', 'RSA-2048 cracked · key stolen', '#ff9d8f'],
-  hybrid: ['Our app · Ed25519 + ML-DSA-65', '#c9d3ff', 'ML-DSA-65 holds · still proven', '#8dffbf'],
+const BEFORE: Record<SealKind, string> = {
+  legacy: 'Old camera · RSA-2048 ✓',
+  hybrid: 'Our app · Ed25519 + ML-DSA-65 ✓',
 }
+const BEFORE_COLOUR = '#c9d3ff'
+
+/** The caption, caption colour and edge light after Q-Day, from the photo's real verdict. */
+function after(kind: SealKind, v: SealVerdict): { text: string; colour: string; edge: [number, number, number]; lost: number; anchor: number } {
+  if (kind === 'legacy') {
+    return v.status === 'green'
+      ? { text: 'RSA broken · logged before Q-Day ✓', colour: '#ffd27a', edge: [1.0, 0.78, 0.36], lost: 0, anchor: 1 }
+      : { text: 'RSA broken · no proof left', colour: '#ff9d8f', edge: [0.55, 0.5, 0.85], lost: 1, anchor: 0 }
+  }
+  if (v.status === 'green') return { text: 'ML-DSA-65 holds · still proven ✓', colour: '#8dffbf', edge: [0.35, 1.0, 0.65], lost: 0, anchor: 0 }
+  if (v.status === 'amber') return { text: 'ML-DSA-65 holds · edits logged', colour: '#ffd27a', edge: [1.0, 0.78, 0.36], lost: 0, anchor: 0 }
+  return { text: 'Not proven', colour: '#b9bdc8', edge: [0.55, 0.5, 0.85], lost: 1, anchor: 0 }
+}
+// Every photo in the gallery was logged before the gate is crossed, so until the server's verdict
+// arrives this is what it will say; setVerdicts() then draws exactly what the server returned.
+const PREDICTED: SealVerdict = { status: 'green', anchored: true }
+
+/** Speed of Q-Day's wave down the gallery, in world units per second (about 5 s end to end). */
+const WAVE_SPEED = 10
 
 const vertex = /* glsl */ `
   varying vec2 vUv;
@@ -37,6 +59,9 @@ const fragment = /* glsl */ `
   uniform float uCrack;    // seconds since Q-Day's wave reached this photo (< 0: not yet)
   uniform float uTime;
   uniform float uSeed;
+  uniform vec3 uAfter;     // edge light once Q-Day has passed this photo
+  uniform float uLost;     // 1: nothing proves this photo any more
+  uniform float uAnchor;   // 1: an old camera's photo the signed log still proves
   varying vec2 vUv;
   varying float vDist;
 
@@ -104,8 +129,8 @@ const fragment = /* glsl */ `
     float edge = exp(-max(dPhoto, 0.0) * 22.0) * step(0.0, dPhoto);
     vec3 green = vec3(0.35, 1.0, 0.65);
     vec3 cold = vec3(0.55, 0.5, 0.85);
-    float lost = (1.0 - uKind) * smoothstep(0.0, 1.0, since) * cracked;
-    vec3 edgeCol = mix(green, cold, lost) * (0.55 + 0.15 * sin(uTime * 1.2 + uSeed * 6.0));
+    float turned = smoothstep(0.0, 1.0, since) * cracked;
+    vec3 edgeCol = mix(green, uAfter, turned) * (0.55 + 0.15 * sin(uTime * 1.2 + uSeed * 6.0));
     col.rgb += edgeCol * edge * 0.6 * (1.0 - col.a);
     col.a = max(col.a, edge * 0.5);
 
@@ -113,8 +138,12 @@ const fragment = /* glsl */ `
     vec2 sp = p - vec2(0.86, -0.3);
     vec4 seal = vec4(0.0);
     if (uKind < 0.5) {
-      // Legacy camera: one classical ring. It cracks.
+      // Old camera: one classical ring. It cracks.
       seal = beadRing(sp, 0.2, 12.0, 0.034, mix(green, vec3(1.0, 0.55, 0.5), cracked), uCrack, uSeed);
+      // Logged before Q-Day: a small steady ring settles in its place, the signed log's proof.
+      float settle = smoothstep(0.9, 1.8, since) * cracked * uAnchor;
+      vec4 anchor = beadRing(sp, 0.11, 10.0, 0.024, vec3(1.0, 0.8, 0.4) * (0.9 + 0.2 * sin(uTime * 1.6)), -1.0, uSeed);
+      seal.rgb += anchor.rgb * settle; seal.a = max(seal.a, anchor.a * settle);
     } else {
       // Hybrid: classical inner ring (Ed25519) cracks; the post-quantum outer ring holds and flares.
       seal = beadRing(sp, 0.13, 8.0, 0.03, mix(green, vec3(1.0, 0.55, 0.5), cracked), uCrack, uSeed + 3.0);
@@ -131,9 +160,22 @@ const fragment = /* glsl */ `
 
     // fade with distance so far photos sit in the mist
     float fog = 1.0 - smoothstep(26.0, 48.0, vDist);
+    col.rgb *= 1.0 - 0.35 * uLost * turned;
     gl_FragColor = vec4(col.rgb, col.a * fog);
   }
 `
+
+/** Write one caption row, shrinking the type until it fits the frame. */
+function caption(ctx: CanvasRenderingContext2D, text: string, color: string, y: number) {
+  ctx.clearRect(0, y, CW, ROW)
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
+  let size = 30
+  do {
+    ctx.font = `500 ${size}px ui-sans-serif, system-ui, -apple-system, sans-serif`
+  } while (ctx.measureText(text).width > CW - 16 && --size > 18)
+  ctx.fillStyle = color
+  ctx.fillText(text, 8, y + ROW / 2)
+}
 
 /** Draw a photo (cover-cropped) and its two captions into one canvas texture. */
 function photoTexture(photo: GalleryPhoto, onReady: () => void) {
@@ -142,13 +184,6 @@ function photoTexture(photo: GalleryPhoto, onReady: () => void) {
   const ctx = canvas.getContext('2d')!
   const tex = new THREE.CanvasTexture(canvas)
   tex.colorSpace = THREE.SRGBColorSpace
-  const [before, bc, after, ac] = CAPTIONS[photo.kind]
-  const caption = (text: string, color: string, y: number) => {
-    ctx.font = '500 30px ui-sans-serif, system-ui, -apple-system, sans-serif'
-    ctx.textAlign = 'left'; ctx.textBaseline = 'middle'
-    ctx.fillStyle = color
-    ctx.fillText(text, 8, y + ROW / 2)
-  }
   const img = new Image()
   img.onload = () => {
     const s = Math.max(CW / img.width, PHOTO_H / img.height)
@@ -157,19 +192,20 @@ function photoTexture(photo: GalleryPhoto, onReady: () => void) {
     ctx.beginPath(); ctx.rect(0, 0, CW, PHOTO_H); ctx.clip()
     ctx.drawImage(img, (CW - w) / 2, (PHOTO_H - h) / 2, w, h)
     ctx.restore()
-    caption(before, bc, PHOTO_H)
-    caption(after, ac, PHOTO_H + ROW)
+    caption(ctx, BEFORE[photo.kind], BEFORE_COLOUR, PHOTO_H)
     tex.needsUpdate = true
     onReady()
   }
   img.src = photo.url
-  return tex
+  return { tex, ctx }
 }
 
 export interface Gallery {
   group: THREE.Group
   /** qdayAt: scene time Q-Day was crossed (< 0 when it hasn't been); origin: where it happened. */
   update(t: number, qdayAt: number, origin: THREE.Vector3): void
+  /** The server's verdicts after Q-Day, by photo id; captions and seals follow them. */
+  setVerdicts(verdicts: Map<string, SealVerdict>): void
   dispose(): void
 }
 
@@ -177,28 +213,41 @@ export interface Gallery {
  * Photos hung along a curve on alternating sides, each turned toward the visitor walking up it.
  * `from` / `to` are the fractions of the curve the gallery spans.
  */
-export function buildGallery(photos: GalleryPhoto[], curve: THREE.Curve<THREE.Vector3>, from = 0.12, to = 0.78): Gallery {
+export function buildGallery(photos: GalleryPhoto[], curve: THREE.Curve<THREE.Vector3>, from = 0.12, to = 0.78, seed = 0): Gallery {
   const group = new THREE.Group()
-  const frames: { mesh: THREE.Mesh; mat: THREE.ShaderMaterial; base: THREE.Vector3; seed: number }[] = []
+  type Frame = {
+    photo: GalleryPhoto; mesh: THREE.Mesh; mat: THREE.ShaderMaterial; base: THREE.Vector3; seed: number
+    ctx: CanvasRenderingContext2D; tex: THREE.CanvasTexture; ready: boolean; verdict: SealVerdict
+  }
+  const frames: Frame[] = []
   const n = photos.length
+  const paint = (fr: Frame) => {
+    const a = after(fr.photo.kind, fr.verdict)
+    const u = fr.mat.uniforms
+    ;(u.uAfter.value as THREE.Vector3).set(...a.edge)
+    u.uLost.value = a.lost
+    u.uAnchor.value = a.anchor
+    if (fr.ready) { caption(fr.ctx, a.text, a.colour, PHOTO_H + ROW); fr.tex.needsUpdate = true }
+  }
   photos.forEach((photo, i) => {
     const f = n === 1 ? (from + to) / 2 : from + (to - from) * (i / (n - 1))
     const on = curve.getPointAt(f)
     const tan = curve.getTangentAt(f).setY(0).normalize()
     const side = new THREE.Vector3(-tan.z, 0, tan.x)
-    const sgn = i % 2 === 0 ? -1 : 1
-    const off = 3.1 + (i % 3) * 0.45
+    const k = i + seed
+    const sgn = k % 2 === 0 ? -1 : 1
+    const off = 3.1 + (k % 3) * 0.45
     const pos = on.clone().addScaledVector(side, sgn * off)
-    pos.y = homeHeight(pos.x, pos.z) + 1.75 + ((i * 37) % 5) * 0.12
+    pos.y = homeHeight(pos.x, pos.z) + 1.75 + ((k * 37) % 5) * 0.12
     const mat = new THREE.ShaderMaterial({
       vertexShader: vertex, fragmentShader: fragment,
       uniforms: {
         uTex: { value: null }, uReady: { value: 0 }, uKind: { value: photo.kind === 'hybrid' ? 1 : 0 },
-        uCrack: { value: -1 }, uTime: { value: 0 }, uSeed: { value: i * 1.7 + 0.3 },
+        uCrack: { value: -1 }, uTime: { value: 0 }, uSeed: { value: k * 1.7 + 0.3 },
+        uAfter: { value: new THREE.Vector3() }, uLost: { value: 0 }, uAnchor: { value: 0 },
       },
       transparent: true, depthWrite: false,
     })
-    mat.uniforms.uTex.value = photoTexture(photo, () => { mat.uniforms.uReady.value = 1 })
     const mesh = new THREE.Mesh(new THREE.PlaneGeometry(PW, PH), mat)
     mesh.position.copy(pos)
     // face back down the path, turned a little toward its centre line
@@ -207,7 +256,13 @@ export function buildGallery(photos: GalleryPhoto[], curve: THREE.Curve<THREE.Ve
     mesh.lookAt(look)
     mesh.renderOrder = 3
     group.add(mesh)
-    frames.push({ mesh, mat, base: pos, seed: i * 1.7 })
+    let ready = () => {}
+    const drawn = photoTexture(photo, () => ready())
+    const fr: Frame = { photo, mesh, mat, base: pos, seed: k * 1.7, ctx: drawn.ctx, tex: drawn.tex, ready: false, verdict: PREDICTED }
+    ready = () => { fr.ready = true; mat.uniforms.uReady.value = 1; paint(fr) }
+    mat.uniforms.uTex.value = drawn.tex
+    paint(fr)
+    frames.push(fr)
   })
 
   return {
@@ -217,13 +272,21 @@ export function buildGallery(photos: GalleryPhoto[], curve: THREE.Curve<THREE.Ve
         const u = fr.mat.uniforms
         u.uTime.value = t
         fr.mesh.position.y = fr.base.y + Math.sin(t * 0.55 + fr.seed) * 0.05
-        // Q-Day's wave runs down the gallery ahead of the visitor: nearer photos are hit first.
-        u.uCrack.value = qdayAt < 0 ? -1 : t - (qdayAt + 0.35 + fr.base.distanceTo(origin) / 28)
+        // Q-Day's wave runs out from the gate: nearer photos are hit first.
+        u.uCrack.value = qdayAt < 0 ? -1 : t - (qdayAt + 0.35 + fr.base.distanceTo(origin) / WAVE_SPEED)
+      }
+    },
+    setVerdicts(verdicts) {
+      for (const fr of frames) {
+        const v = verdicts.get(fr.photo.id)
+        if (!v || (v.status === fr.verdict.status && v.anchored === fr.verdict.anchored)) continue
+        fr.verdict = v
+        paint(fr)
       }
     },
     dispose() {
       for (const fr of frames) {
-        ;(fr.mat.uniforms.uTex.value as THREE.Texture | null)?.dispose()
+        fr.tex.dispose()
         fr.mat.dispose(); fr.mesh.geometry.dispose()
       }
     },

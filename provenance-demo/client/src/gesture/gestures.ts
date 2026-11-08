@@ -1,18 +1,24 @@
 // The hand-gesture API for the whole app. One camera and one detection worker, shared: any page or
 // component can listen for gestures, and the camera runs while at least one of them wants it.
 //
+// The controls (handControl.ts): hold the LEFT hand up as an open palm to arm them; then the RIGHT
+// hand's thumb and index, spread wide and held, keep zooming in, pinched shut and held keep zooming
+// out. A fist stops, armed or not. Talking with your hands moves nothing while the left palm is down.
+//
 //   import { gestures, useHands, useGesture } from '../gesture/gestures'
 //
 //   // in a component: run the camera while `on` is true, and react to gestures
 //   const { status, control } = useHands(on)
-//   useGesture('zoomIn', () => next())           // once per spread of two fingers
-//   useGesture('zoomOut', () => previous())      // once per spread of three fingers
-//   useGesture('stop', () => pause())            // a fist held for ~0.2 s
-//   useGesture('pose', e => setBadge(e.pose))    // 'none' | 'two' | 'three' | 'fist'
+//   useGesture('armed', e => setArmed(e.armed))   // the open left palm armed / disarmed
+//   useGesture('zoomIn', () => next())             // once when a spread-wide hold starts
+//   useGesture('zoomOut', () => previous())        // once when a pinched-shut hold starts
+//   useGesture('release', e => settle(e.direction)) // that hold ended
+//   useGesture('stop', () => pause())              // a fist held for ~0.2 s
+//   useGesture('pose', e => setBadge(e.pose))      // 'none' | 'two' | 'three' | 'fist'
 //
 //   // outside React
 //   const release = await gestures.start()
-//   const off = gestures.on('zoom', e => scrollBy(0, e.spread * 400))   // continuous
+//   const off = gestures.on('zoom', e => scrollBy(0, (e.direction === 'in' ? 1 : -1) * e.speed * 20))  // streams while held
 //   off(); release()
 //
 // Listeners can subscribe before the camera starts and stay subscribed across restarts. The full
@@ -23,7 +29,7 @@ import {
   type GestureEvent, type GestureEventMap, type GestureFrame, type HandControlOptions,
 } from './handControl'
 
-export type { GestureEvent, GestureEventMap, GestureFrame, Handedness, Pose, Stroke } from './handControl'
+export type { GestureEvent, GestureEventMap, GestureFrame, Handedness, Hold, Pose } from './handControl'
 export type GestureStatus = 'off' | 'starting' | 'on' | 'error'
 
 export interface GestureSnapshot {

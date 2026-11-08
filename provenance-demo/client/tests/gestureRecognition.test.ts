@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { GestureTracker, type GestureEvent } from '../src/gesture/handControl.ts'
-import { classify, handFeatures, OneEuro, PoseFilter, type Pose } from '../src/gesture/recognizer.ts'
+import { driveVelocity, GestureTracker, type GestureEvent, type GestureFrame, type Handedness } from '../src/gesture/handControl.ts'
+import { classify, handFeatures, isOpenPalm, OneEuro, PoseFilter, type Pose } from '../src/gesture/recognizer.ts'
 import { legacyPose } from './legacyPose.ts'
 import { EXPECT, rng, sample, type Shape } from './syntheticHand.ts'
 
@@ -77,124 +77,195 @@ test('the One-Euro filter removes jitter but follows real movement', () => {
   assert.ok(1.5 - y < 0.12, `lags ${(1.5 - y).toFixed(3)} behind a fast spread`)
 })
 
-/** Drive a tracker with one hand of a fixed shape and angle, with the pinch opening as given. */
-function drive(t: GestureTracker, shape: Shape, opens: number[], seed = 9, turn = 30) {
-  const dt = 1 / 30
-  for (const open of opens) {
-    const x = sample(shape, rng(seed), turn, open)
-    t.update({ landmarks: [x.image], worldLandmarks: [x.world] }, dt)
+// ── the two-hand scheme: an open left palm arms, the right hand holds a zoom ──
+
+const DT = 1 / 30
+type Sample = ReturnType<typeof sample>
+/** Move a sample sideways in the camera image (its 3D world landmarks are hand-centred, so unchanged). */
+function shifted(x: Sample, dx: number): Sample {
+  return { ...x, image: x.image.map(p => ({ ...p, x: p.x + dx })) }
+}
+// In the unmirrored camera image the person's LEFT hand is on the image's right (larger x).
+const leftHand = (shape: Shape = 'open', seed = 4) => shifted(sample(shape, rng(seed), 30, 1, 1, undefined, true), 0.22)
+const rightHand = (shape: Shape, open: number, seed = 9) => shifted(sample(shape, rng(seed), 30, open), -0.22)
+
+interface Scene { left?: Shape | null; right?: [Shape, number] | null; labels?: (h: 'left' | 'right', i: number) => Handedness; swap?: boolean }
+
+/** Run n detections of a scene; integrates a walking velocity with driveVelocity as the engine does. */
+function run(t: GestureTracker, scene: Scene, n: number, sim = { v: 0 }) {
+  const frames: (GestureFrame & { v: number })[] = []
+  for (let i = 0; i < n; i++) {
+    const hands: { x: Sample; who: 'left' | 'right' }[] = []
+    if (scene.left) hands.push({ x: leftHand(scene.left), who: 'left' })
+    if (scene.right) hands.push({ x: rightHand(scene.right[0], scene.right[1]), who: 'right' })
+    if (scene.swap && i % 2) hands.reverse()
+    const f = t.update({
+      landmarks: hands.map(h => h.x.image), worldLandmarks: hands.map(h => h.x.world),
+      handedness: hands.map((h, k) => (scene.labels ? scene.labels(h.who, k) : h.who)) as ('left' | 'right')[],
+    }, DT)
+    // the engine renders faster than detections; four render frames per detection
+    for (let k = 0; k < 4; k++) {
+      const r = driveVelocity(t, sim.v, DT / 4)
+      sim.v = r.active ? r.v : sim.v * Math.exp(-(DT / 4) * 3.2)
+    }
+    frames.push({ ...f, v: sim.v })
   }
+  return frames
 }
 function record(t: GestureTracker) {
   const seen: { type: GestureEvent; e: unknown }[] = []
-  for (const type of ['pose', 'zoomIn', 'zoomOut', 'release', 'stop'] as const) t.events.on(type, e => seen.push({ type, e }))
+  for (const type of ['armed', 'pose', 'zoomIn', 'zoomOut', 'release', 'stop'] as const) t.events.on(type, e => seen.push({ type, e }))
   return seen
 }
-const ramp = (from: number, to: number, n: number) => Array.from({ length: n }, (_, i) => from + (to - from) * (i / (n - 1)))
-const hold = (v: number, n: number) => Array(n).fill(v)
+const count = (seen: { type: GestureEvent }[], type: GestureEvent) => seen.filter(s => s.type === type).length
 
-test('two fingers spreading fires one zoomIn and glides forward; closing only releases', () => {
+test('an open palm is told apart from a relaxed or curled hand', () => {
+  const r = rng(17)
+  let open = 0, falseArm = 0
+  for (let i = 0; i < 400; i++) {
+    if (isOpenPalm(handFeatures(sample('open', r, 45, 1, 1, undefined, true).world))) open++
+    for (const s of ['relaxed', 'none', 'two', 'fist'] as const) if (isOpenPalm(handFeatures(sample(s, r, 45, r(), 1, undefined, true).world))) falseArm++
+  }
+  assert.ok(open / 400 >= 0.97, `open palms recognised ${(open / 4).toFixed(1)}%`)
+  assert.ok(falseArm / 1600 <= 0.01, `other shapes taken for an open palm ${(falseArm / 16).toFixed(1)}%`)
+})
+
+test('without the left palm, a right-hand spread moves nothing', () => {
   const t = new GestureTracker()
   const seen = record(t)
-  drive(t, 'two', [...hold(0, 6), ...ramp(0, 1, 12), ...hold(1, 8)])
-  assert.ok(t.glide > 5, `glide ${t.glide.toFixed(1)}`)
-  assert.deepEqual(seen.filter(s => s.type === 'zoomIn').length, 1)
-  assert.equal(seen.filter(s => s.type === 'zoomOut').length, 0)
-  const glide = t.glide
-  drive(t, 'two', [...ramp(1, 0, 10), ...hold(0, 4)])
-  assert.equal(t.glide, glide, 'closing the fingers does not move')
-  assert.equal(seen.filter(s => s.type === 'release').length, 1)
-  assert.equal(seen.filter(s => s.type === 'zoomIn').length, 1)
+  const fs = run(t, { right: ['two', 1] }, 45)
+  assert.ok(fs.every(f => !f.armed && f.drive === 0 && f.v === 0))
+  assert.equal(count(seen, 'zoomIn'), 0)
 })
 
-test('three fingers spreading zooms out (backwards)', () => {
+test('left palm open + right spread wide and held: keeps walking forward for the whole hold', () => {
   const t = new GestureTracker()
   const seen = record(t)
-  drive(t, 'three', [...hold(0, 6), ...ramp(0, 1, 12), ...hold(1, 8)])
-  assert.ok(t.glide < -5, `glide ${t.glide.toFixed(1)}`)
-  assert.equal(seen.filter(s => s.type === 'zoomOut').length, 1)
+  run(t, { left: 'open', right: ['two', 0.5] }, 12) // arm, fingers half open (still)
+  const fs = run(t, { left: 'open', right: ['two', 1] }, 90)
+  const moving = fs.slice(10)
+  assert.ok(moving.every(f => f.armed && f.hold === 'in' && f.drive > 0.5 && f.v > 0), 'forward on every detection while held')
+  assert.ok(fs.at(-1)!.v > 10, `speed ${fs.at(-1)!.v.toFixed(1)}`)
+  assert.equal(count(seen, 'zoomIn'), 1, 'one hold, one zoomIn; no need to repeat the gesture')
+  assert.equal(count(seen, 'armed'), 1)
 })
 
-test('opening the hand out of a pinch does not read as a zoom', () => {
+test('left palm open + right pinched shut and held: keeps walking back', () => {
   const t = new GestureTracker()
-  drive(t, 'two', hold(0, 8))
-  drive(t, 'open', hold(1, 10))
-  assert.equal(t.glide, 0)
+  const seen = record(t)
+  run(t, { left: 'open', right: ['two', 0.5] }, 12)
+  const fs = run(t, { left: 'open', right: ['two', 0] }, 60)
+  assert.ok(fs.slice(10).every(f => f.hold === 'out' && f.drive < 0 && f.v < 0))
+  assert.equal(count(seen, 'zoomOut'), 1)
 })
 
-test('opening the hand gradually (over 200 ms) does not read as a zoom either', () => {
-  for (const frames of [4, 6, 9]) {
+test('three fingers spread and held also walks back', () => {
+  const t = new GestureTracker()
+  run(t, { left: 'open', right: ['three', 0.3] }, 12)
+  const fs = run(t, { left: 'open', right: ['three', 1] }, 45)
+  assert.ok(fs.slice(10).every(f => f.hold === 'out' && f.v < 0))
+})
+
+test('fingers half open is a dead zone: armed, but nothing moves', () => {
+  const t = new GestureTracker()
+  const fs = run(t, { left: 'open', right: ['two', 0.5] }, 60)
+  assert.ok(fs.at(-1)!.armed)
+  assert.ok(fs.every(f => f.drive === 0 && f.v === 0))
+})
+
+test('forming the pinch through the shut position does not jerk backwards', () => {
+  const t = new GestureTracker()
+  const seen = record(t)
+  run(t, { left: 'open' }, 10)
+  // the right hand arrives pinched shut and opens out within 0.13 s, then spreads wide
+  const fs = [...run(t, { left: 'open', right: ['two', 0] }, 4), ...run(t, { left: 'open', right: ['two', 0.5] }, 6), ...run(t, { left: 'open', right: ['two', 1] }, 30)]
+  assert.equal(count(seen, 'zoomOut'), 0)
+  assert.ok(fs.every(f => f.drive >= 0 && f.v >= 0), 'never moved backwards')
+  assert.ok(fs.at(-1)!.v > 0)
+})
+
+test('dropping the left palm stops the zoom within 0.3 s, and the walk eases to a halt', () => {
+  for (const after of [{ left: null }, { left: 'none' as Shape }]) {
     const t = new GestureTracker()
-    drive(t, 'two', hold(0, 8))
-    for (let i = 1; i <= frames; i++) {
-      const x = sample('two', rng(9), 30, 0, 1, { shape: 'open', open: 1, k: i / frames })
-      t.update({ landmarks: [x.image], worldLandmarks: [x.world] }, 1 / 30)
-    }
-    drive(t, 'open', hold(1, 6))
-    assert.ok(Math.abs(t.glide) < 1.5, `${frames} frames: glide ${t.glide.toFixed(2)}`)
+    const seen = record(t)
+    const sim = { v: 0 }
+    run(t, { left: 'open', right: ['two', 0.5] }, 12, sim)
+    run(t, { left: 'open', right: ['two', 1] }, 45, sim)
+    assert.ok(sim.v > 8)
+    const fs = run(t, { ...after, right: ['two', 1] }, 30, sim)
+    const stopAt = fs.findIndex(f => f.drive === 0)
+    assert.ok(stopAt >= 0 && stopAt * DT <= 0.3 + 1e-9, `${after.left ?? 'gone'}: drive stopped after ${(stopAt * DT).toFixed(2)} s`)
+    assert.ok(!fs.at(-1)!.armed)
+    assert.ok(Math.abs(fs.at(-1)!.v) < 0.05, `${after.left ?? 'gone'}: still moving at ${fs.at(-1)!.v.toFixed(2)}`)
+    assert.equal(count(seen, 'release'), 1)
   }
 })
 
-test('a held fist stops: it fires stop and clears the remaining glide', () => {
+test('a right-hand fist stops even when not armed', () => {
   const t = new GestureTracker()
   const seen = record(t)
-  drive(t, 'two', [...hold(0, 6), ...ramp(0, 1, 12)])
-  assert.ok(t.glide > 0)
-  drive(t, 'fist', hold(0, 10))
-  assert.equal(t.glide, 0)
-  assert.equal(seen.filter(s => s.type === 'stop').length, 1)
-  assert.equal(t.latest?.pose, 'fist')
+  const sim = { v: 9 } // already walking, e.g. from the scroll wheel
+  const fs = run(t, { right: ['fist', 0] }, 20, sim)
+  assert.equal(count(seen, 'stop'), 1)
+  assert.equal(fs.at(-1)!.pose, 'fist')
+  assert.ok(Math.abs(sim.v) < 0.5, `v ${sim.v.toFixed(2)}`)
 })
 
-/** Move a sample sideways in the camera image (its 3D world landmarks are hand-centred, so unchanged). */
-function shifted(x: ReturnType<typeof sample>, dx: number) {
-  return { ...x, image: x.image.map(p => ({ ...p, x: p.x + dx })) }
-}
-
-test('with two hands in view, the gesturing one is followed and the idle one does nothing', () => {
+test('the hands leave scrolling alone when they are not driving', () => {
   const t = new GestureTracker()
-  const seen = record(t)
-  const idle = shifted(sample('open', rng(4), 30, 1, 1, undefined, true), -0.22)
-  const opens = [...hold(0, 6), ...ramp(0, 1, 12), ...hold(1, 8)]
-  opens.forEach((open, i) => {
-    const busy = shifted(sample('two', rng(9), 30, open), 0.22)
-    // MediaPipe doesn't keep the order of hands between detections: swap it every other frame
-    const hands = i % 2 ? [busy, idle] : [idle, busy]
-    const f = t.update({ landmarks: hands.map(h => h.image), worldLandmarks: hands.map(h => h.world), handedness: hands.map(h => (h === idle ? 'left' : 'right')) }, 1 / 30)
-    if (i > 8) assert.equal(f.hands[f.active]?.hand, 'right', `frame ${i}: following the idle hand`)
-  })
-  assert.ok(t.glide > 5, `glide ${t.glide.toFixed(1)}`)
-  assert.equal(seen.filter(s => s.type === 'zoomIn').length, 1)
-  assert.equal(seen.filter(s => s.type === 'zoomOut').length, 0)
-  // the idle hand making the other pose while the first keeps its own doesn't take over
-  const before = t.glide
-  for (let i = 0; i < 10; i++) {
-    const busy = shifted(sample('two', rng(9), 30, 1), 0.22)
-    const other = shifted(sample('three', rng(4), 30, i / 9, 1, undefined, true), -0.22)
-    t.update({ landmarks: [other.image, busy.image], worldLandmarks: [other.world, busy.world] }, 1 / 30)
+  run(t, { left: 'open', right: ['two', 0.5] }, 20)
+  const r = driveVelocity(t, 6, DT)
+  assert.deepEqual(r, { v: 6, active: false })
+})
+
+test('swapped or repeated left/right labels still find the clutch by position', () => {
+  const labelings: ((h: 'left' | 'right', i: number) => Handedness)[] = [
+    h => (h === 'left' ? 'right' : 'left'), // swapped
+    () => 'right', // both "right"
+    () => 'left', // both "left"
+    () => null, // none
+  ]
+  for (const labels of labelings) {
+    const t = new GestureTracker()
+    run(t, { left: 'open', right: ['two', 0.5], labels, swap: true }, 12)
+    const fs = run(t, { left: 'open', right: ['two', 1], labels, swap: true }, 30)
+    const f = fs.at(-1)!
+    assert.ok(f.armed, 'armed')
+    assert.equal(f.hold, 'in')
+    assert.equal(f.hands[f.clutch].hand, 'left')
+    assert.ok(f.hands[f.clutch].points[0].x > f.hands[f.active].points[0].x)
   }
-  assert.equal(t.latest?.pose, 'two')
-  assert.equal(t.glide, before, 'the other hand spreading three fingers did not zoom out')
 })
 
-test('losing the hand for one or two detections mid-spread keeps the zoom whole', () => {
-  const opens = [...hold(0, 6), ...ramp(0, 1, 14), ...hold(1, 8)]
-  const steady = new GestureTracker()
-  drive(steady, 'two', opens)
+test('a relaxed or half-curled left hand does not arm', () => {
+  for (const left of ['relaxed', 'none', 'two'] as const) {
+    const t = new GestureTracker()
+    const fs = run(t, { left, right: ['two', 1] }, 45)
+    assert.ok(fs.every(f => !f.armed && f.drive === 0), `${left} armed`)
+  }
+})
+
+test('the right hand dropping out for a detection or two keeps the hold going', () => {
   for (const gap of [1, 2]) {
     const t = new GestureTracker()
     const seen = record(t)
-    const poses: string[] = []
-    opens.forEach((open, i) => {
-      if (i >= 12 && i < 12 + gap) {
-        poses.push(t.update({ landmarks: [], worldLandmarks: [] }, 1 / 30).pose)
-        return
-      }
-      const x = sample('two', rng(9), 30, open)
-      poses.push(t.update({ landmarks: [x.image], worldLandmarks: [x.world] }, 1 / 30).pose)
-    })
-    assert.ok(poses.slice(4).every(p => p === 'two'), `${gap} missing: ${poses.join(' ')}`)
-    assert.equal(seen.filter(s => s.type === 'zoomIn').length, 1, `${gap} missing: zoomIn count`)
-    assert.ok(t.glide > steady.glide * 0.75, `${gap} missing: glide ${t.glide.toFixed(1)} vs ${steady.glide.toFixed(1)} without`)
+    run(t, { left: 'open', right: ['two', 0.5] }, 12)
+    run(t, { left: 'open', right: ['two', 1] }, 20)
+    const missing = run(t, { left: 'open', right: null }, gap)
+    const after = run(t, { left: 'open', right: ['two', 1] }, 10)
+    assert.ok([...missing, ...after].every(f => f.hold === 'in' && f.drive > 0), `${gap} missing`)
+    assert.equal(count(seen, 'zoomIn'), 1, `${gap} missing: zoomIn count`)
+  }
+})
+
+test('talking with the right hand while unarmed moves nothing', () => {
+  // a mix of pinch-like shapes and openings, as hands make while talking
+  const t = new GestureTracker()
+  const r = rng(77)
+  const shapes: Shape[] = ['two', 'three', 'relaxed', 'open', 'none']
+  for (let i = 0; i < 300; i++) {
+    const s = shapes[Math.floor(r() * shapes.length)]
+    const fs = run(t, { left: r() < 0.5 ? 'relaxed' : null, right: [s, r()] }, 1 + Math.floor(r() * 6))
+    assert.ok(fs.every(f => f.drive === 0), `moved at step ${i}`)
   }
 })

@@ -8,6 +8,7 @@
 //   curl     0 = straight finger, 1 = fully curled into the palm (sum of the three joint bends)
 //   gap      thumb tip to the pinching fingertip(s), in palm lengths (wrist to middle knuckle)
 //   pose     two (thumb + index, others curled), three (thumb + index + middle), fist, or none
+//   open     an open palm facing the camera (isOpenPalm): the left hand's "armed" clutch
 //
 // Readings are smoothed with One-Euro filters and a pose has to persist for a few detections
 // before it counts, with wider thresholds for leaving a pose than for entering it, so a hand
@@ -38,6 +39,8 @@ export interface HandFeatures {
   gap3: number
   /** Index tip to the centre of the palm, in palm lengths (small in a fist, larger in a pinch). */
   indexToPalm: number
+  /** How squarely the palm (or the back of the hand) faces the camera: 1 facing, 0 edge-on. */
+  facing: number
 }
 
 const sub = (a: P3, b: P3): P3 => ({ x: a.x - b.x, y: a.y - b.y, z: a.z - b.z })
@@ -82,7 +85,28 @@ export function handFeatures(w: P3[]): HandFeatures {
     gap2: dist(w[THUMB_TIP], w[INDEX_TIP]) / palm,
     gap3: dist(w[THUMB_TIP], mid(w[INDEX_TIP], w[MIDDLE_TIP])) / palm,
     indexToPalm: dist(w[INDEX_TIP], centre) / palm,
+    facing: palmFacing(w),
   }
+}
+
+/** |z| of the palm's normal (wrist, index knuckle, little knuckle): 1 when it faces the camera. */
+function palmFacing(w: P3[]) {
+  const a = sub(w[5], w[WRIST]), b = sub(w[17], w[WRIST])
+  const n = { x: a.y * b.z - a.z * b.y, y: a.z * b.x - a.x * b.z, z: a.x * b.y - a.y * b.x }
+  return Math.abs(n.z) / Math.max(len(n), 1e-9)
+}
+
+// An open palm (the clutch that arms the other hand): every finger straight, palm towards the
+// camera. A relaxed hand (fingers loosely bent, mean curl 0.25+) or one held edge-on doesn't count.
+const OPEN_MEAN = [0.2, 0.27]   // mean curl of the four fingers at most this (enter, stay)
+const OPEN_MAX = [0.5, 0.6]     // and no single finger curled more than this
+const OPEN_FACING = [0.4, 0.28] // and the palm turned no more than ~66° (enter) / ~74° (stay) away
+
+/** Whether a hand is an open palm. `was` picks the looser "stay" thresholds. */
+export function isOpenPalm(f: HandFeatures, was = false): boolean {
+  const k = (pair: number[]) => pair[was ? 1 : 0]
+  const mean = (f.curl[0] + f.curl[1] + f.curl[2] + f.curl[3]) / 4
+  return mean <= k(OPEN_MEAN) && Math.max(...f.curl) <= k(OPEN_MAX) && f.facing >= k(OPEN_FACING)
 }
 
 // Pose thresholds. Each pair is (enter, stay): the second is looser, so a held pose survives noise.
@@ -152,6 +176,7 @@ export class FeatureSmoother {
   private gap2 = new OneEuro(1.6, 2.5)
   private gap3 = new OneEuro(1.6, 2.5)
   private reach = new OneEuro(2.5, 0.6)
+  private facing = new OneEuro(2.5, 0.6)
   smooth(f: HandFeatures, dt: number): HandFeatures {
     return {
       curl: f.curl.map((c, i) => this.curl[i].filter(c, dt)) as HandFeatures['curl'],
@@ -159,9 +184,10 @@ export class FeatureSmoother {
       gap2: this.gap2.filter(f.gap2, dt),
       gap3: this.gap3.filter(f.gap3, dt),
       indexToPalm: this.reach.filter(f.indexToPalm, dt),
+      facing: this.facing.filter(f.facing, dt),
     }
   }
-  reset() { [...this.curl, this.thumb, this.gap2, this.gap3, this.reach].forEach(f => f.reset()) }
+  reset() { [...this.curl, this.thumb, this.gap2, this.gap3, this.reach, this.facing].forEach(f => f.reset()) }
 }
 
 /** How long (seconds) a new pose must persist before it is reported. */

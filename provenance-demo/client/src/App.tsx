@@ -14,10 +14,10 @@ const UniversePage = lazy(() => import('./universe/UniversePage'))
 // Webcam hand tracking loads only on its own page.
 const GestureTestPage = lazy(() => import('./gesture/GestureTestPage'))
 
-/** The universe landing page draws its own chrome. */
+/** The universe landing page draws its own chrome; the phone's capture screen has none. */
 function Nav() {
   const { pathname } = useLocation()
-  if (pathname === '/') return null
+  if (pathname === '/' || pathname === '/capture') return null
   return (
     <nav className="nav">
       <NavLink to="/" end className="brand">Provenance</NavLink>

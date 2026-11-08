@@ -1,13 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ItemSummary, TrustList } from '@provenance-demo/shared'
 import { api } from '../lib/api'
 import type { AttackResult, RecoveryResult } from '../lib/attack'
 import { FeedCard } from '../components/FeedCard'
 import { Marker } from '../components/Marker'
 import type { UniverseDef } from './worlds'
-
-/** Where the phone opens the camera. Passkeys are bound to this exact domain. */
-const PHONE_HOST = 'tahas-macbook-pro.tailc3868a.ts.net'
+import { PHONE_HOST } from './liveFrame'
+import { describeArrival, type LiveFeed } from './liveFeed'
 
 /** In the universe where nobody signed, every photo is just a guess. */
 function unsigned(item: ItemSummary): ItemSummary {
@@ -25,52 +24,23 @@ type Forge =
   | { step: 'error'; message: string }
 
 /**
- * The live demo inside a world: the feed refreshes every two seconds, so a photo taken on the
- * phone lands here while the audience watches. In our world you can also try to forge one.
+ * The panel beside the live demo inside a world. The photo itself lands in the 3D live frame; this
+ * keeps a compact note of it, the forgery attempt, and (folded away) the world's feed.
  */
-export function LivePanel({ def, trust, onArrival }: {
-  def: UniverseDef
-  trust: TrustList | null
-  onArrival: (status: 'green' | 'amber' | 'grey') => void
-}) {
-  const [items, setItems] = useState<ItemSummary[] | null>(null)
-  const [error, setError] = useState('')
-  const [fresh, setFresh] = useState<Set<string>>(new Set())
-  const [arrival, setArrival] = useState<ItemSummary | null>(null)
+export function LivePanel({ def, trust, feed }: { def: UniverseDef; trust: TrustList | null; feed: LiveFeed }) {
   const [forge, setForge] = useState<Forge>({ step: 'idle' })
-  const seen = useRef<Set<string> | null>(null)
-  const arrivalRef = useRef(onArrival)
-  useEffect(() => { arrivalRef.current = onArrival })
+  const [dismissed, setDismissed] = useState<ItemSummary | null>(null)
+  const raw = feed.items
+  const items = raw && def.id === 'unsigned' ? raw.map(unsigned) : raw
 
+  // Show the latest arrival for a while; the card keeps its place at the top of the feed.
   useEffect(() => {
-    let alive = true
-    seen.current = null
-    const load = () => api.items({ naive: def.id === 'rsa' }).then(raw => {
-      if (!alive) return
-      const list = def.id === 'unsigned' ? raw.map(unsigned) : raw
-      if (seen.current) {
-        const added = list.filter(i => !seen.current!.has(i.id))
-        if (added.length) {
-          setFresh(new Set(added.map(i => i.id)))
-          setArrival(added[0])
-          arrivalRef.current(added[0].verification.status)
-        }
-      }
-      seen.current = new Set(list.map(i => i.id))
-      setItems(list)
-      setError('')
-    }).catch(e => alive && setError(String(e)))
-    load()
-    const t = setInterval(load, 2000)
-    return () => { alive = false; clearInterval(t) }
-  }, [def.id])
-
-  // The arrival banner fades after a while; the card keeps its place at the top of the feed.
-  useEffect(() => {
-    if (!arrival) return
-    const t = setTimeout(() => setArrival(null), 9000)
+    const a = feed.arrival
+    if (!a) return
+    const t = setTimeout(() => setDismissed(a), 12000)
     return () => clearTimeout(t)
-  }, [arrival])
+  }, [feed.arrival])
+  const arrival = feed.arrival !== dismissed ? feed.arrival : null
 
   const tryForgery = async () => {
     const wait = (ms: number) => new Promise(r => setTimeout(r, ms))
@@ -100,20 +70,12 @@ export function LivePanel({ def, trust, onArrival }: {
       </div>
 
       {arrival && (
-        <div className={`uv-arrival uv-arrival-${arrival.verification.status}`} role="status">
+        <div className={`uv-arrival uv-arrival-compact uv-arrival-${arrival.verification.status}`} role="status">
           <img src={arrival.imageUrl} alt="" />
           <div>
             <p className="uv-arrival-kicker">Just arrived</p>
             <Marker status={arrival.verification.status} label={arrival.verification.label} />
-            <p className="uv-arrival-note">
-              {arrival.verification.status === 'green'
-                ? 'Sealed on the phone with Face ID and a quantum-safe signature.'
-                : arrival.verification.status === 'amber'
-                  ? 'Edited, and every edit is in a signed log.'
-                  : arrival.manifest
-                    ? 'Signed with a key stolen after Q-Day. Rejected: it can’t be trusted.'
-                    : 'No proof attached. All we can do is guess.'}
-            </p>
+            <p className="uv-arrival-note">{describeArrival(arrival).note}</p>
           </div>
         </div>
       )}
@@ -124,7 +86,7 @@ export function LivePanel({ def, trust, onArrival }: {
           {forge.step === 'idle' && (
             <>
               <p>An attacker uses a quantum computer to steal an old camera’s RSA key, then signs a fake photo with it.</p>
-              <button type="button" className="uv-forge-btn" onClick={tryForgery}>Forge a photo</button>
+              <button type="button" className="uv-forge-btn" onClick={tryForgery}>Fake one with a stolen key</button>
             </>
           )}
           {forge.step === 'running' && <p className="uv-forge-line"><span className="uv-spin" aria-hidden /> {forge.line}</p>}
@@ -147,19 +109,19 @@ export function LivePanel({ def, trust, onArrival }: {
         </section>
       )}
 
-      {error && <p className="uv-empty">Can’t reach the server: {error}</p>}
-      {!error && !items && <p className="uv-empty">Loading this world’s feed…</p>}
+      {feed.error && <p className="uv-empty">Can’t reach the server: {feed.error}</p>}
+      {!feed.error && !items && <p className="uv-empty">Loading this world’s feed…</p>}
       {items && (
-        <>
-          <p className="uv-counts">
+        <details className="uv-feed">
+          <summary className="uv-counts">
             <span className="c-green">{counts.green} verified</span>
             <span className="c-amber">{counts.amber} edited</span>
             <span className="c-grey">{counts.grey} unknown</span>
-          </p>
+          </summary>
           <div className="uv-grid">
-            {items.slice(0, 9).map(i => <FeedCard key={i.id} item={i} trust={trust} isNew={fresh.has(i.id)} />)}
+            {items.slice(0, 9).map(i => <FeedCard key={i.id} item={i} trust={trust} isNew={feed.fresh.has(i.id)} />)}
           </div>
-        </>
+        </details>
       )}
 
     </>

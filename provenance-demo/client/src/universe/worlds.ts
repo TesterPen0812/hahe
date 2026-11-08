@@ -1,8 +1,10 @@
 import * as THREE from 'three'
 import { fbm, rng } from './noise'
 import { hangingCave } from './cave'
+import { groundGrains } from './greenWorld'
+import { curveStream } from './scenePath'
 import {
-  TRAIL_LENGTH, fieldFragment, fieldVertex, pathFragment, pathVertex,
+  GLYPH_COLUMNS, GLYPH_ROWS, TRAIL_LENGTH, fieldFragment, fieldVertex, pathFragment, pathVertex,
   portalFragment, portalVertex, skyFragment, skyVertex, sparkFragment, sparkVertex,
   starFragment, starVertex,
 } from './shaders'
@@ -64,6 +66,48 @@ export interface FieldStyle {
   axis?: THREE.Vector3
   /** Structural portal particles remain aligned with the aperture. */
   interaction?: number
+  /** Bulb meadow colours (mode 16): 0 prism, 1 Today. */
+  palette?: number
+  /** A path the grains flow along (mode 19), sampled into a texture. */
+  curve?: { texture: THREE.Texture; samples: number; length: number }
+}
+
+let noCurve: THREE.DataTexture | null = null
+/** One texel, so every field material has a valid curve sampler even when it doesn't flow. */
+function emptyCurve() {
+  if (!noCurve) {
+    noCurve = new THREE.DataTexture(new Float32Array(4), 1, 1, THREE.RGBAFormat, THREE.FloatType)
+    noCurve.needsUpdate = true
+  }
+  return noCurve
+}
+
+// Characters for the falling rain: digits, hex and the punctuation of code and keys. ASCII only.
+const GLYPHS = '01#%&*+=:;/\\<>{}ABCDEF$@^~|?![]9'
+// Share of each layer's falling beads drawn as characters, by motion mode: the hanging strands,
+// the Q-Day curtain, and the cave's drips and threads (the shader picks which beads fall).
+const GLYPH_SHARE: Record<number, number> = { 11: 0.24, 12: 0.14, 13: 0.3 }
+
+let atlas: THREE.Texture | null = null
+/** White characters on a transparent atlas, drawn once at runtime and shared by every layer. */
+function glyphAtlas() {
+  if (atlas) return atlas
+  const cell = 64
+  const canvas = document.createElement('canvas')
+  canvas.width = GLYPH_COLUMNS * cell
+  canvas.height = GLYPH_ROWS * cell
+  const g = canvas.getContext('2d')!
+  g.fillStyle = '#fff'
+  g.textAlign = 'center'
+  g.textBaseline = 'middle'
+  g.font = `700 ${Math.round(cell * 0.8)}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`
+  for (let i = 0; i < GLYPH_COLUMNS * GLYPH_ROWS; i++) {
+    g.fillText(GLYPHS[i % GLYPHS.length], (i % GLYPH_COLUMNS + 0.5) * cell, (Math.floor(i / GLYPH_COLUMNS) + 0.53) * cell)
+  }
+  atlas = new THREE.CanvasTexture(canvas)
+  atlas.minFilter = THREE.LinearMipmapLinearFilter
+  atlas.anisotropy = 4
+  return atlas
 }
 
 /** The material every particle cloud uses; `mode` picks its motion (see fieldVertex). */
@@ -84,6 +128,11 @@ export function fieldMaterial(u: SceneUniforms, mode: number, fog: [number, numb
       uFogColor: { value: new THREE.Color(...(style.fogColor ?? [0, 0, 0])) },
       uCenter: { value: style.center?.clone() ?? new THREE.Vector3() },
       uAxis: { value: style.axis?.clone() ?? new THREE.Vector3(1, 0, 0) },
+      uPalette: { value: style.palette ?? 0 },
+      uCurveTex: { value: style.curve?.texture ?? emptyCurve() },
+      uCurveInfo: { value: new THREE.Vector2(style.curve?.samples ?? 1, style.curve?.length ?? 1) },
+      uGlyphShare: { value: GLYPH_SHARE[mode] ?? 0 },
+      uGlyphs: { value: GLYPH_SHARE[mode] ? glyphAtlas() : null },
     },
     transparent: true,
     depthWrite: false,
@@ -110,6 +159,7 @@ export function cloud(
   g.setAttribute('aSize', new THREE.InstancedBufferAttribute(mode === 13 ? size : size.map(s => s * 0.5), 1))
   g.setAttribute('aSeed', new THREE.InstancedBufferAttribute(sd, 1))
   g.setAttribute('aHang', new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4))
+  g.setAttribute('aPrism', new THREE.InstancedBufferAttribute(new Float32Array(n * 4), 4))
   g.setAttribute('aStateUv', new THREE.InstancedBufferAttribute(stateUv, 2))
   const p = new THREE.Mesh(g, fieldMaterial(u, mode, fog, opacity, style))
   p.userData.particleCloud = true
@@ -498,8 +548,12 @@ export function universeScene(def: UniverseDef, u: SceneUniforms, lowPower: bool
     }))
   }
   const tint = def.tint
-  const walk = def.id === 'hybrid' ? HYBRID_PATH : pathCurve
-  scene.add(glowingPath(u, [{ curve: walk, branch: 1, density: lowPower ? 60 : 120 }], [tint, tint, tint], 31, 110, h))
+  if (def.id === 'hybrid') {
+    // Our world's walk is the landscapes' white stream, flowing on toward the light.
+    scene.add(curveStream(u, HYBRID_PATH, { lowPower, ground: hybridHeight, fog: 110 }))
+  } else {
+    scene.add(glowingPath(u, [{ curve: pathCurve, branch: 1, density: lowPower ? 60 : 120 }], [tint, tint, tint], 31, 110, h))
+  }
   return scene
 }
 
@@ -530,12 +584,15 @@ function buildHybrid(scene: THREE.Scene, u: SceneUniforms, lowPower: boolean) {
     { glow: [0.03, 0.12, 0.1], sun: new THREE.Vector3(0, 0, 1), body: 'moon' },
   ))
 
-  // The floor: dark, sparse grains so the beads and the path carry the light.
-  scene.add(particleField(u, {
-    count: Math.floor(90000 * k), x: [-40, 40], z: [-150, -1], height: hybridHeight, mode: 0, seed: 12, fog: [14, 120], ...fog,
-    color: (r) => { if (r() < 0.05) return [0.5, 1.0, 0.85]; const b = 0.35 + r() * 0.65; return [0.08 * b, 0.5 * b, 0.4 * b] },
-    size: (r) => 0.04 + r() * r() * 0.08,
-    yJitter: (r) => r() * r() * 0.2,
+  // The floor, built like the foliage tunnel's: fine noise-textured grains, densest along the
+  // path and lit by it, in our world's sea-green. Same budget as the old bead floor.
+  const hybridX = (z: number) => HYBRID_PATH.getPointAt(Math.min(1, Math.max(0, -z / 86))).x
+  scene.add(groundGrains(u, Math.floor(90000 * k), {
+    z: [-1, -110], pathX: hybridX, ground: (x, z) => hybridHeight(x, z) + 0.02, reach: 9, size: 0.018,
+    fog: [14, 120], fogColor: HYBRID_FOG, seed: 1201, name: 'hybrid-ground-grains',
+    color: (b, tone, white) => white
+      ? [0.5 * b * 1.8, 1.0 * b * 1.8, 0.85 * b * 1.8]
+      : [b * (0.04 + tone * 0.12), b * (0.3 + tone * 0.6), b * (0.24 + tone * 0.5)],
   }))
 
   const hanging = hangingCave({

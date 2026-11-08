@@ -1,35 +1,42 @@
 // Hand-gesture control from the laptop webcam. MediaPipe's Hand Landmarker (Apache-2.0) finds 21
 // points on each hand, entirely in the browser.
 //
-// A pinch-zoom in the air, one hand. How many fingers you use picks the direction:
+// Two hands. The LEFT hand is the clutch: hold it up as an open palm facing the camera to arm the
+// controls (it counts after ~0.2 s, and stays armed through ~0.3 s of the hand dropping out of view).
+// The RIGHT hand commands, in the thumb-and-index pose (middle, ring and little curled):
 //
-//   two fingers    thumb and index (middle, ring, little curled): spread them to zoom in, i.e.
-//                  walk forward
-//   three fingers  thumb, index and middle (ring and little curled): spread them to zoom out,
-//                  i.e. walk back
-//   fist           stop
+//   spread wide and hold     keep zooming in (walking forward); wider is faster
+//   pinched shut and hold    keep zooming out (walking back); tighter is faster
+//   in between               hold still
+//   three fingers spread     (thumb, index and middle) also zooms out, as before
+//   fist                     stop. This one works even when not armed, as a safety
 //
-// Only the spreading movement moves the scene; closing the fingers again is the reset, like
-// lifting them off a phone screen, so zooms repeat. Any other hand shape is ignored, so talking
-// with your hands doesn't move anything.
+// Nothing moves unless the left palm is open, so talking with your hands is safe. A zone has to
+// hold for ~0.2 s before it moves anything, so forming the pinch on the way into the pose doesn't
+// jerk the scene backwards. Lowering the left palm stops at once.
+//
+// Which hand is which: with two hands in view, the one on the person's left (the image's RIGHT side,
+// since the camera image isn't mirrored) is the clutch; MediaPipe's left/right labels flicker and
+// sometimes repeat, so they're only used when a single hand is visible.
 //
 // The poses come from recognizer.ts (3D joint angles, so they hold when the hand turns). This file
-// owns the camera, the detection worker, which hand to follow, and turning poses and pinch
-// movement into events. Most pages should use the shared `gestures` API (gestures.ts) rather than
-// starting a HandControl themselves.
+// owns the camera, the detection worker, the roles of the two hands, and turning poses into a
+// drive (−1 back … +1 forward) and events. Most pages should use the shared `gestures` API
+// (gestures.ts) rather than starting a HandControl themselves.
 //
 // Detection runs in a Web Worker (handWorker.ts) so the 3D scene keeps its frame rate. The model
 // and the WASM runtime are served from this app, not a CDN, so it works on venue wifi.
 import type { Detection, FromWorker, ToWorker } from './handWorker'
 import {
-  classify, FeatureSmoother, handFeatures, PoseFilter, poseGap, WRIST,
+  classify, FeatureSmoother, handFeatures, isOpenPalm, PoseFilter, WRIST,
   type HandFeatures, type P3, type Pose,
 } from './recognizer'
 
 export type { Pose } from './recognizer'
-export type Stroke = 'none' | 'in' | 'out' | 'reset'
 /** The person's own left or right hand (the camera image is not mirrored when it is detected). */
 export type Handedness = 'left' | 'right' | null
+/** Which way a hold is zooming. */
+export type Hold = 'none' | 'in' | 'out'
 
 export interface HandInfo {
   /** Image landmarks, 0–1 across the (unmirrored) camera frame. */
@@ -39,20 +46,31 @@ export interface HandInfo {
   /** This hand's pose on this detection alone (before debouncing). */
   pose: Pose
   features: HandFeatures
+  /** Which of the person's hands this is (by position when two are in view). */
   hand: Handedness
+  /** MediaPipe's own label, for debugging. */
+  label: Handedness
+  /** Whether it is an open palm right now. */
+  open: boolean
+  /** 'clutch' (the left, arming hand), 'command' (the right hand), or null. */
+  role: 'clutch' | 'command' | null
 }
 
 export interface GestureFrame {
   hands: HandInfo[]
-  /** The hand being followed, or -1. */
+  /** The commanding (right) hand, or -1. */
   active: number
-  /** The confirmed pose of the followed hand. */
+  /** The clutch (left) hand, or -1. */
+  clutch: number
+  /** Whether the open left palm has armed the controls. */
+  armed: boolean
+  /** The confirmed pose of the commanding hand. */
   pose: Pose
-  /** Pinch gap in palm lengths (smoothed), or null. */
+  /** The commanding hand's pinch gap in palm lengths (smoothed), or null. */
   gap: number | null
-  stroke: Stroke
-  /** Distance this detection's zoom adds to the walk, in scene units (+ forward). */
-  impulse: number
+  /** The zoom being held, and the drive it asks for: −1 full speed back … +1 full speed forward. */
+  hold: Hold
+  drive: number
   /** Detections per second, and how long the last one took. */
   fps: number
   ms: number
@@ -62,16 +80,18 @@ export interface GestureFrame {
 export interface GestureEventMap {
   /** Every detection, with the full state. */
   frame: GestureFrame
-  /** The confirmed pose changed. */
+  /** The commanding hand's confirmed pose changed. */
   pose: { pose: Pose; previous: Pose; hand: Handedness }
-  /** While a pinch is spreading: how much on this detection. `spread` is in palm lengths, + = in. */
-  zoom: { spread: number; impulse: number }
-  /** A spread finished (fingers stopped or closed). `amount` is its total, in palm lengths. */
-  zoomIn: { amount: number }
-  zoomOut: { amount: number }
-  /** The fingers are closing again: the reset half of a zoom, which moves nothing. */
-  release: Record<string, never>
-  /** A fist was held: stop. */
+  /** The open left palm armed (or stopped arming) the controls. */
+  armed: { armed: boolean }
+  /** On every detection while a zoom is held. `speed` is 0–1 of full speed. */
+  zoom: { direction: 'in' | 'out'; speed: number }
+  /** A hold started (once per hold; handy for paging through things). */
+  zoomIn: { speed: number }
+  zoomOut: { speed: number }
+  /** A hold ended (fingers back to the middle, pose dropped, fist, or disarmed). */
+  release: { direction: 'in' | 'out' }
+  /** A fist was held: stop. Works even when not armed. */
   stop: Record<string, never>
   /** A hand came into view, or the last one left. */
   handFound: { hand: Handedness }
@@ -81,7 +101,7 @@ export type GestureEvent = keyof GestureEventMap
 type Listener<K extends GestureEvent> = (e: GestureEventMap[K]) => void
 
 export interface HandControlOptions {
-  /** Multiplier on how far a zoom moves the scene. */
+  /** Multiplier on how fast a held zoom walks. */
   sensitivity?: number
   /** Detections per second; the scene shares the machine, so keep this modest. */
   rate?: number
@@ -89,13 +109,24 @@ export interface HandControlOptions {
   video?: HTMLVideoElement
 }
 
-const MAX_SPEED = 14  // the engine clamps walking speed to ±14
-const GAIN = 14       // scene units walked per palm length of spread (a full zoom ≈ 20)
-const MOVING = 0.5    // palm lengths per second before a gap change counts as a stroke
-const STROKE_END = 0.12 // seconds without spreading before a stroke counts as finished
-const MIN_STROKE = 0.18 // palm lengths: a smaller spread is not reported as zoomIn / zoomOut
-const SAME_HAND = 0.2 // wrist movement (frame widths) between detections that is still one hand
-const UNCURLING = -1.2 // ring/little curl per second: faster than this, the hand is opening up
+const MAX_SPEED = 14     // the engine clamps walking speed to ±14
+const SAME_HAND = 0.2    // wrist movement (frame widths) between detections that is still one hand
+const UNCURLING = -1.2   // ring/little curl per second: faster than this, the hand is changing shape
+const ARM_TIME = 0.2     // seconds of open palm before the controls arm
+const DISARM_CLOSED = 0.12 // seconds of a visible but closed left hand before disarming
+const DISARM_GONE = 0.3  // seconds of the left hand out of view before disarming
+const DWELL = 0.2        // seconds a zoom zone must hold before it moves anything
+// Zones on the pinch gap (palm lengths). Thumb-and-index: shut ≈ 0.05–0.2, half ≈ 0.6, wide ≈ 1.3.
+// Each pair is (enter, stay), so a hand at the edge of a zone doesn't flicker in and out.
+const WIDE = [0.8, 0.72]   // two fingers spread at least this: zoom in
+const SHUT = [0.3, 0.38]   // two fingers closed to at most this: zoom out
+const WIDE3 = [0.8, 0.72]  // three fingers spread at least this: zoom out
+const WIDE_FULL = 0.5      // full speed this far past the wide edge
+const SHUT_FULL = 0.2      // full speed this far below the shut edge
+const MIN_SPEED = 0.3      // a zone starts at this fraction of full speed
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x))
+const ramp = (x: number) => MIN_SPEED + (1 - MIN_SPEED) * clamp01(x)
 
 let loading: Promise<Worker> | null = null
 
@@ -144,50 +175,84 @@ export class GestureEmitter {
  */
 export class GestureTracker {
   sensitivity = 1
-  /** Distance still to glide from zooms, in scene units. driveVelocity() spends it. */
-  glide = 0
+  /** Whether the hands set the current walking velocity (driveVelocity brakes only that). */
+  driving = false
   latest: GestureFrame | null = null
   readonly events: GestureEmitter
+  // the commanding hand
   private wrist: { x: number; y: number } | null = null
   private smoother = new FeatureSmoother()
   private filter = new PoseFilter()
-  private gap: number | null = null
-  private gapPose: Pose = 'none'
-  private settle = 0
-  private stroke: 'in' | 'out' | null = null
-  private strokeAmount = 0
-  private strokeIdle = 0
-  private handsSeen = false
-  private lastStroke: Stroke = 'none'
   private lower: number | null = null
-  private missed = 0
   private steady = false
+  // the clutch
+  private clutchWrist: { x: number; y: number } | null = null
+  private clutchSmoother = new FeatureSmoother()
+  private armed = false
+  private wasOpen = false
+  private openFor = 0
+  private closedFor = 0
+  private goneFor = 0
+  // the hold
+  private hold: Hold = 'none'
+  private speed = 0
+  private candidate: Hold = 'none'
+  private dwell = 0
+  private handsSeen = false
 
   constructor(events = new GestureEmitter()) { this.events = events }
 
   /** Feed one detection. `dt` is seconds since the previous one. */
   update(d: Pick<Detection, 'landmarks' | 'worldLandmarks'> & { handedness?: Detection['handedness'] }, dt: number, fps = 0, ms = 0): GestureFrame {
-    const near = (p: P3[]) => this.wrist ? Math.hypot(p[WRIST].x - this.wrist.x, p[WRIST].y - this.wrist.y) : Infinity
-    const raw = d.landmarks.map((points, i) => {
-      const world = d.worldLandmarks[i]
-      const features = handFeatures(world)
-      return { points, world, features, hand: d.handedness?.[i] ?? null }
-    })
+    const raw = d.landmarks.map((points, i) => ({ points, world: d.worldLandmarks[i], features: handFeatures(d.worldLandmarks[i]), label: (d.handedness?.[i] ?? null) as Handedness }))
 
-    // Follow the hand we had; otherwise pick up any hand that is making a gesture. A hand missing
-    // for a detection or two keeps its pose for the filter's grace period rather than resetting.
-    let active = -1, best = SAME_HAND
-    raw.forEach((h, i) => { const n = near(h.points); if (n < best) { best = n; active = i } })
-    if (active < 0) {
-      const other = raw.findIndex(h => classify(h.features) !== 'none')
-      if (other >= 0) { active = other; this.smoother.reset(); this.filter.reset(); this.endStroke(); this.lower = null }
+    // Roles. Two hands: the one on the person's left (larger x in the unmirrored image) is the
+    // clutch, the other commands. One hand: its label decides, and only an open palm can be a clutch.
+    let command = -1, clutch = -1
+    const sides: Handedness[] = raw.map(h => h.label)
+    if (raw.length >= 2) {
+      const byX = raw.map((_, i) => i).sort((a, b) => raw[b].points[WRIST].x - raw[a].points[WRIST].x)
+      clutch = byX[0]; command = byX[1]
+      sides.fill(null); sides[clutch] = 'left'; sides[command] = 'right'
+    } else if (raw.length === 1) {
+      if (raw[0].label === 'left' && isOpenPalm(raw[0].features, this.armed)) clutch = 0
+      else command = 0
+      sides[0] = raw[0].label ?? (clutch === 0 ? 'left' : 'right')
     }
 
+    // ── the clutch: an open left palm arms the controls ──
+    let open = false
+    if (clutch >= 0) {
+      const w = raw[clutch].points[WRIST]
+      if (this.clutchWrist && Math.hypot(w.x - this.clutchWrist.x, w.y - this.clutchWrist.y) > SAME_HAND) this.clutchSmoother.reset()
+      this.clutchWrist = { x: w.x, y: w.y }
+      const f = this.clutchSmoother.smooth(raw[clutch].features, dt)
+      open = isOpenPalm(f, this.wasOpen)
+      this.goneFor = 0
+      if (open) { this.openFor += dt; this.closedFor = 0 } else { this.closedFor += dt; this.openFor = 0 }
+    } else {
+      this.goneFor += dt; this.openFor = 0
+      if (this.goneFor >= DISARM_GONE) { this.clutchSmoother.reset(); this.clutchWrist = null }
+    }
+    this.wasOpen = open
+    const wasArmed = this.armed
+    if (!this.armed && this.openFor >= ARM_TIME - 1e-9) this.armed = true
+    if (this.armed && (this.closedFor >= DISARM_CLOSED - 1e-9 || this.goneFor >= DISARM_GONE - 1e-9)) this.armed = false
+    if (this.armed !== wasArmed) this.events.emit('armed', { armed: this.armed })
+
+    // ── the commanding hand ──
+    if (command >= 0) {
+      const w = raw[command].points[WRIST]
+      if (this.wrist && Math.hypot(w.x - this.wrist.x, w.y - this.wrist.y) > SAME_HAND) {
+        this.smoother.reset(); this.filter.reset(); this.lower = null
+      }
+    }
     const hands: HandInfo[] = raw.map((h, i) => {
-      if (i !== active) return { ...h, pose: classify(h.features) }
+      const base = { ...h, hand: sides[i], open: i === clutch ? open : isOpenPalm(h.features), role: (i === clutch ? 'clutch' : i === command ? 'command' : null) as HandInfo['role'] }
+      if (i !== command) return { ...base, pose: classify(h.features) }
       const features = this.smoother.smooth(h.features, dt)
       let pose = classify(features, this.filter.pose)
-      // The smoothed reading lags a hand that is opening, so only trust the gap while the
+      // The smoothed reading lags a hand that is changing shape, so only trust the gap while the
       // unsmoothed reading agrees and the ring and little fingers aren't uncurling.
       const lower = Math.min(features.curl[2], features.curl[3])
       const uncurling = this.lower !== null && dt > 0 && (lower - this.lower) / dt < UNCURLING
@@ -195,80 +260,60 @@ export class GestureTracker {
       this.steady = !uncurling && classify(h.features, this.filter.pose) === pose
       // a hand cut off by the frame edge loses fingers and can look like a fist
       if (pose === 'fist' && !h.points.every(q => q.x > 0.02 && q.x < 0.98 && q.y > 0.02 && q.y < 0.98)) pose = 'none'
-      return { ...h, features, pose }
+      return { ...base, features, pose }
     })
 
     const previous = this.filter.pose
-    const pose = this.filter.update(active >= 0 ? hands[active].pose : 'none', dt)
-    const lead = active >= 0 ? hands[active] : null
+    const pose = this.filter.update(command >= 0 ? hands[command].pose : 'none', dt)
+    const lead = command >= 0 ? hands[command] : null
     if (pose !== previous) {
-      this.events.emit('pose', { pose, previous, hand: lead?.hand ?? null })
-      if (pose === 'fist') { this.glide = 0; this.events.emit('stop', {}) }
+      this.events.emit('pose', { pose, previous, hand: lead?.hand ?? 'right' })
+      if (pose === 'fist') this.events.emit('stop', {})
     }
 
-    let impulse = 0
-    let stroke: Stroke = 'none'
-    if ((pose === 'two' || pose === 'three') && lead && (lead.pose !== pose || !this.steady)) {
-      // The hand has already left the pose and we're in the grace period. Its gap now measures
-      // something else (an opening hand would read as a big spread), so measure nothing.
-      this.gap = null; this.settle = 0; this.endStroke(); this.missed = 0
-    } else if ((pose === 'two' || pose === 'three') && !lead) {
-      // The hand went missing for a detection or two, within the pose's grace period: keep the
-      // stroke and the gap, and measure the next change over the whole time it was gone.
-      this.missed += dt
-    } else if ((pose === 'two' || pose === 'three') && lead) {
-      const span = dt + this.missed
-      this.missed = 0
-      // switching between two and three fingers changes what the gap measures: start it fresh
-      if (pose !== this.gapPose) { this.gap = null; this.settle = 0; this.endStroke() }
-      const prev = this.gap
-      const gap = poseGap(lead.features, pose)
-      this.gap = gap; this.gapPose = pose
-      this.settle++
-      if (prev !== null && this.settle > 1 && span > 0) {
-        const rate = (gap - prev) / span
-        if (rate > MOVING) {
-          stroke = pose === 'two' ? 'in' : 'out'
-          impulse = (gap - prev) * GAIN * this.sensitivity * (pose === 'two' ? 1 : -1)
-          if (this.stroke !== stroke) { this.endStroke(); this.stroke = stroke }
-          this.strokeAmount += gap - prev
-          this.strokeIdle = 0
-          this.events.emit('zoom', { spread: (gap - prev) * (pose === 'two' ? 1 : -1), impulse })
-        } else {
-          if (rate < -MOVING) {
-            stroke = 'reset'
-            this.endStroke()
-            if (this.lastStroke !== 'reset') this.events.emit('release', {})
-          }
-          else if (this.stroke && (this.strokeIdle += dt) >= STROKE_END) this.endStroke()
-        }
+    // ── the hold ──
+    let zone: Hold = 'none'
+    let speed = 0
+    let gap: number | null = null
+    const pinching = pose === 'two' || pose === 'three'
+    if (this.armed && pinching && !lead) {
+      // the hand dropped out for a detection or two, within the pose's grace period: keep going
+      zone = this.hold; speed = this.speed
+    } else if (this.armed && pinching && lead && lead.pose === pose && this.steady) {
+      if (pose === 'two') {
+        gap = lead.features.gap2
+        const wide = WIDE[this.candidate === 'in' ? 1 : 0], shut = SHUT[this.candidate === 'out' ? 1 : 0]
+        if (gap >= wide) { zone = 'in'; speed = ramp((gap - WIDE[0]) / WIDE_FULL) }
+        else if (gap <= shut) { zone = 'out'; speed = ramp((SHUT[0] - gap) / SHUT_FULL) }
+      } else {
+        gap = lead.features.gap3
+        if (gap >= WIDE3[this.candidate === 'out' ? 1 : 0]) { zone = 'out'; speed = ramp((gap - WIDE3[0]) / WIDE_FULL) }
       }
-    } else {
-      this.endStroke()
-      this.gap = null; this.gapPose = pose; this.settle = 0; this.missed = 0
     }
+    if (zone !== this.candidate) { this.candidate = zone; this.dwell = 0 }
+    this.dwell += dt
+    const hold: Hold = zone === 'none' ? 'none' : zone === this.hold || this.dwell >= DWELL - 1e-9 ? zone : 'none'
+    if (hold !== this.hold) {
+      if (this.hold !== 'none') this.events.emit('release', { direction: this.hold })
+      if (hold === 'in') this.events.emit('zoomIn', { speed })
+      if (hold === 'out') this.events.emit('zoomOut', { speed })
+      this.hold = hold
+    }
+    this.speed = hold === 'none' ? 0 : speed
+    if (hold !== 'none') this.events.emit('zoom', { direction: hold, speed: this.speed })
+    const drive = hold === 'in' ? this.speed : hold === 'out' ? -this.speed : 0
 
     if (lead) this.wrist = { x: lead.points[WRIST].x, y: lead.points[WRIST].y }
     else if (pose === 'none') this.wrist = null
-    // a zoom against the current glide replaces it rather than cancelling it out
-    if (impulse !== 0) this.glide = Math.sign(impulse) === Math.sign(this.glide) || this.glide === 0 ? this.glide + impulse : impulse
 
     if (hands.length && !this.handsSeen) this.events.emit('handFound', { hand: hands[0].hand })
     if (!hands.length && this.handsSeen) this.events.emit('handLost', {})
     this.handsSeen = hands.length > 0
 
-    this.lastStroke = stroke
-    const frame: GestureFrame = { hands, active, pose, gap: this.gap, stroke, impulse, fps, ms }
+    const frame: GestureFrame = { hands, active: command, clutch, armed: this.armed, pose, gap, hold, drive, fps, ms }
     this.latest = frame
     this.events.emit('frame', frame)
     return frame
-  }
-
-  private endStroke() {
-    if (this.stroke && this.strokeAmount >= MIN_STROKE) {
-      this.events.emit(this.stroke === 'in' ? 'zoomIn' : 'zoomOut', { amount: this.strokeAmount })
-    }
-    this.stroke = null; this.strokeAmount = 0; this.strokeIdle = 0
   }
 }
 
@@ -322,8 +367,8 @@ export class HandControl {
     return c
   }
 
-  get glide() { return this.tracker.glide }
-  set glide(v: number) { this.tracker.glide = v }
+  get driving() { return this.tracker.driving }
+  set driving(v: boolean) { this.tracker.driving = v }
   get latest() { return this.tracker.latest }
   get sensitivity() { return this.tracker.sensitivity }
   setSensitivity(x: number) { this.tracker.sensitivity = x }
@@ -379,20 +424,26 @@ export class HandControl {
 }
 
 /**
- * Drive a walking velocity from the hands, once per rendered frame. A fist brakes hard; otherwise
- * the walk glides through the distance the zooms asked for, easing to a speed that shrinks as the
- * remaining distance does. Returns the new velocity and whether the hands are driving it (so the
- * caller skips its own coasting).
+ * Drive a walking velocity from the hands, once per rendered frame. A held zoom eases the walk
+ * towards its speed; when the hold ends (or the left palm drops) the walk the hands started eases
+ * to a stop rather than coasting on. A fist brakes hard. Returns the new velocity and whether the
+ * hands are driving it (so the caller skips its own coasting); scrolling and keys are left alone
+ * whenever the hands aren't moving the scene.
  */
-export function driveVelocity(c: { glide: number; latest: GestureFrame | null }, v: number, dt: number): { v: number; active: boolean } {
-  if (c.latest?.pose === 'fist') return { v: v * Math.exp(-dt * 10), active: true }
-  if (Math.abs(c.glide) < 0.05) { c.glide = 0; return { v, active: false } }
-  const want = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, c.glide * 2.2))
-  const nv = v + (want - v) * Math.min(1, dt * 5)
-  // spend the glide only with movement in its direction; stop once it's used up
-  const step = Math.sign(nv) === Math.sign(c.glide) ? nv * dt : 0
-  c.glide = Math.abs(step) >= Math.abs(c.glide) ? 0 : c.glide - step
-  return { v: nv, active: true }
+export function driveVelocity(c: { latest: GestureFrame | null; driving: boolean; sensitivity: number }, v: number, dt: number): { v: number; active: boolean } {
+  const f = c.latest
+  if (f?.pose === 'fist') { c.driving = false; return { v: v * Math.exp(-dt * 10), active: true } }
+  if (f && f.drive !== 0) {
+    const want = Math.max(-MAX_SPEED, Math.min(MAX_SPEED, f.drive * MAX_SPEED * c.sensitivity))
+    c.driving = true
+    return { v: v + (want - v) * Math.min(1, dt * 4), active: true }
+  }
+  if (c.driving) {
+    const nv = v * Math.exp(-dt * 8)
+    if (Math.abs(nv) < 0.05) { c.driving = false; return { v: 0, active: true } }
+    return { v: nv, active: true }
+  }
+  return { v, active: false }
 }
 
 /** The bones to draw between landmarks, for previews. */

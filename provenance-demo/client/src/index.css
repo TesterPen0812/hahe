@@ -119,3 +119,15 @@ button.danger { background: var(--red); border-color: var(--red); color: white; 
 .harness .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0; }
 .harness pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--panel); border: 1px solid var(--line); padding: 14px; border-radius: 8px; font: 14px/1.6 var(--mono); }
 .uv-loading { position: fixed; inset: 0; background: #020308; }
+
+/* the phone during the demo: one screen, one button */
+.shot { min-height: 100dvh; display: flex; flex-direction: column; gap: 16px; padding: max(16px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom)); max-width: 560px; margin: 0 auto; box-sizing: border-box; }
+.shot-frame { flex: 1; min-height: 0; display: grid; place-items: center; border-radius: 18px; border: 1px solid var(--line); background: var(--panel); overflow: hidden; }
+.shot-frame img { width: 100%; height: 100%; object-fit: cover; }
+.shot-empty { font-family: var(--serif); font-size: 28px; color: var(--muted); margin: 0; }
+.shot-status { min-height: 56px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; text-align: center; }
+.shot-status p { margin: 0; color: var(--muted); }
+.shot-error { color: var(--red) !important; overflow-wrap: anywhere; }
+.shot-btn { min-height: 76px; font-size: 22px; }
+.shot-ready .shot-btn { background: var(--green); border-color: var(--green); color: #06120c; }
+.shot-done .shot-frame { border-color: var(--green); box-shadow: 0 0 0 2px color-mix(in srgb, var(--green) 40%, transparent); }

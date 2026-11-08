@@ -1,3 +1,6 @@
+// The phone during the demo: one screen, one big button. Nobody in the audience sees it, so it
+// carries only what the person holding it needs: take the photo, approve with Face ID, see it sent.
+// (Face ID needs its own tap: WebAuthn won't start from the camera's file callback.)
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import type { ItemSummary } from '@provenance-demo/shared'
@@ -8,6 +11,17 @@ import { Marker } from '../components/Marker'
 import { PasskeySetupError } from '../lib/passkeySession'
 
 type Phase = 'idle' | 'preparing' | 'ready' | 'sealing' | 'uploading' | 'done' | 'error'
+
+const BUTTON: Record<Phase, string> = {
+  idle: 'Take photo',
+  preparing: 'Sealing…',
+  ready: 'Seal with Face ID',
+  sealing: 'Face ID…',
+  uploading: 'Sending…',
+  done: 'Take another',
+  error: 'Try again',
+}
+const BUSY: Phase[] = ['preparing', 'sealing', 'uploading']
 
 export default function CapturePage() {
   const input = useRef<HTMLInputElement>(null)
@@ -30,6 +44,7 @@ export default function CapturePage() {
     e.target.value = ''
     if (!file) return
     const motion = stopMotion.current?.() ?? []
+    if (preview) URL.revokeObjectURL(preview)
     setPreview(URL.createObjectURL(file))
     setPhase('preparing')
     try {
@@ -56,42 +71,32 @@ export default function CapturePage() {
   }
 
   return (
-    <main className="page capture">
-      <p className="kicker">Capture</p>
-      <h1>Take a sealed photo</h1>
+    <main className={`shot shot-${phase}`}>
       <input ref={input} type="file" accept="image/*" capture="environment" hidden onChange={e => void onFile(e)} />
 
-      {preview && <img className="capture-preview" src={preview} alt="Your photo" />}
-
-      {prepared && phase !== 'idle' && (
-        <dl className="capture-facts">
-          <dt>Fingerprint (SHA-256)</dt><dd className="mono">{prepared.claim.contentHash}</dd>
-          <dt>Visual fingerprint</dt><dd className="mono">{prepared.claim.dHash}</dd>
-          <dt>Device seals</dt><dd>Ed25519 + ML-DSA-65 ✓</dd>
-          <dt>Motion samples</dt><dd>{prepared.claim.motion.length}</dd>
-        </dl>
-      )}
-
-      {phase === 'preparing' && <p className="status">Fingerprinting and sealing with the device keys…</p>}
-      {phase === 'sealing' && <p className="status">Approve with Face ID…</p>}
-      {phase === 'uploading' && <p className="status">Sending to the feed…</p>}
-      {phase === 'error' && <p className="status error" role="alert">{error}{needsSetup && <>. <Link to="/setup">Go to Setup</Link>.</>}</p>}
-
-      {phase === 'done' && result && (
-        <div className="capture-done">
-          <Marker status={result.verification.status} label={result.verification.label} />
-          <p>Sent to the feed. <Link to={`/item/${result.id}`}>See its seals</Link></p>
-        </div>
-      )}
-
-      <div className="capture-actions">
-        {phase === 'ready'
-          ? <button className="primary big" onClick={() => void seal()}>Seal with Face ID</button>
-          : <button className="primary big" disabled={phase === 'preparing' || phase === 'sealing' || phase === 'uploading'}
-              onClick={() => void takePhoto()}>{phase === 'done' ? 'Take another' : 'Take photo'}</button>}
+      <div className="shot-frame">
+        {preview
+          ? <img src={preview} alt="Your photo" />
+          : <p className="shot-empty">Provenance</p>}
       </div>
-      <p className="muted small">Photo already in your library? <Link to="/upload">Upload it</Link> (it won’t carry a seal).</p>
-      <p className="muted small">First time on this phone? <Link to="/setup">Set it up</Link>.</p>
+
+      <div className="shot-status" role="status">
+        {phase === 'done' && result && <>
+          <Marker status={result.verification.status} label={result.verification.label} />
+          <p>On the big screen now.</p>
+        </>}
+        {phase === 'error' && <p className="shot-error" role="alert">
+          {error}{needsSetup && <> · <Link to="/setup">Set up this phone</Link></>}
+        </p>}
+      </div>
+
+      <button
+        className="primary big shot-btn"
+        disabled={BUSY.includes(phase)}
+        onClick={() => void (phase === 'ready' ? seal() : takePhoto())}
+      >
+        {BUTTON[phase]}
+      </button>
     </main>
   )
 }
