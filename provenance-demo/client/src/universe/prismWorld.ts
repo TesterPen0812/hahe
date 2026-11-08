@@ -182,7 +182,7 @@ function planet(u: SceneUniforms) {
       uCell: { value: 1.25 },
       uRingN: { value: new THREE.Vector3(0, Math.cos(tilt), Math.sin(tilt)) },
       uRingE2: { value: new THREE.Vector3(0, -Math.sin(tilt), Math.cos(tilt)) },
-      uLight: { value: new THREE.Vector3(-0.62, 0.32, 0.72).normalize() },
+      uLight: { value: new THREE.Vector3(-0.55, 0.3, 0.78).normalize() },
       uGlyphs: { value: glyphAtlas() },
     },
     vertexShader: /* glsl */ `
@@ -237,8 +237,10 @@ function planet(u: SceneUniforms) {
           float lon = atan(dot(n, uRingE2), n.x) + uTime * 0.035;
           float bands = 0.72 + 0.28 * sin(lat * 11.0 + 1.4 * sin(lon * 2.0 + lat * 4.0));
           float rim = pow(1.0 - max(dot(n, fwd), 0.0), 3.0);
-          // the night side stays faintly there, lit by the ring and the stars
-          v = (0.3 + 0.7 * smoothstep(-0.35, 0.8, dot(n, uLight))) * bands + rim * 0.45;
+          // every cell of the disc keeps a character, so the silhouette is always a whole sphere:
+          // the night side in light marks (: +), the day side in heavy ones (# & @)
+          float day = smoothstep(-0.3, 0.75, dot(n, uLight));
+          v = 0.36 + 0.58 * day * bands + rim * 0.22;
           tint = mix(vec3(0.6, 0.6, 1.0), vec3(0.93, 0.95, 1.0), lit);
         }
         float facing = dot(fwd, uRingN);
@@ -246,13 +248,13 @@ function planet(u: SceneUniforms) {
           float t = -(c.x * dot(right, uRingN) + c.y * dot(up, uRingN)) / facing;
           vec3 h = c.x * right + c.y * up + t * fwd;
           float d = length(h) / R;
-          if (d > 1.25 && d < 2.4 && t > front) {
-            float band = 0.5 + 0.5 * sin(d * 38.0) * sin(d * 11.0 + 1.0);
-            band *= smoothstep(1.25, 1.33, d) * (1.0 - smoothstep(2.25, 2.4, d));
+          if (d > 1.4 && d < 2.15 && t > front) {
+            float band = 0.62 + 0.38 * sin(d * 34.0) * sin(d * 9.0 + 1.0);
+            band *= smoothstep(1.4, 1.48, d) * (1.0 - smoothstep(2.0, 2.15, d));
             // the planet's shadow across the ring
             float along = dot(h, uLight);
             float shade = along < 0.0 && length(h - uLight * along) < R ? 0.25 : 1.0;
-            float ring = band * 0.85 * shade;
+            float ring = band * 0.5 * shade;
             if (ring > v * 0.6) { v = ring; tint = vec3(0.82, 0.78, 1.0); }
           }
         }
