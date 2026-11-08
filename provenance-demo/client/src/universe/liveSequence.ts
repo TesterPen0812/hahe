@@ -6,9 +6,12 @@ import type { ForgeryArrival, LiveArrival, LiveSequence, LiveSequenceOptions } f
 
 export function createLiveSequence(o: LiveSequenceOptions): LiveSequence {
   const group = new THREE.Group()
-  const { position, tangent } = o.path.at(o.start)
-  const ahead = position.clone().addScaledVector(tangent, 6)
-  const toward = position.clone().addScaledVector(tangent, -6)
+  // The frame stands a few steps beyond its station (where the visitor stops), at eye height.
+  const view = o.path.at(o.start).position
+  const { position } = o.path.at(o.start + 6)
+  position.y += 1.35
+  const toward = view.clone()
+  const ahead = o.path.at(o.start + 28).position.setY(position.y + 1.4)
   let last: LiveArrival | null = null
   const frame = new LiveFrame(position, toward, ahead, o.host, () => { if (last) o.onLand?.(0, last) })
   group.add(frame.group)

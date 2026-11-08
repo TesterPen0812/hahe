@@ -213,7 +213,10 @@ export interface Gallery {
  * Photos hung along a curve on alternating sides, each turned toward the visitor walking up it.
  * `from` / `to` are the fractions of the curve the gallery spans.
  */
-export function buildGallery(photos: GalleryPhoto[], curve: THREE.Curve<THREE.Vector3>, from = 0.12, to = 0.78, seed = 0): Gallery {
+export function buildGallery(
+  photos: GalleryPhoto[], curve: THREE.Curve<THREE.Vector3>, from = 0.12, to = 0.78, seed = 0,
+  ground: (x: number, z: number) => number = homeHeight,
+): Gallery {
   const group = new THREE.Group()
   type Frame = {
     photo: GalleryPhoto; mesh: THREE.Mesh; mat: THREE.ShaderMaterial; base: THREE.Vector3; seed: number
@@ -238,7 +241,7 @@ export function buildGallery(photos: GalleryPhoto[], curve: THREE.Curve<THREE.Ve
     const sgn = k % 2 === 0 ? -1 : 1
     const off = 3.1 + (k % 3) * 0.45
     const pos = on.clone().addScaledVector(side, sgn * off)
-    pos.y = homeHeight(pos.x, pos.z) + 1.75 + ((k * 37) % 5) * 0.12
+    pos.y = ground(pos.x, pos.z) + 1.75 + ((k * 37) % 5) * 0.12
     const mat = new THREE.ShaderMaterial({
       vertexShader: vertex, fragmentShader: fragment,
       uniforms: {
