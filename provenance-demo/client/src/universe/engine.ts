@@ -86,8 +86,7 @@ const LIVE_AFTER = 13      // the first live frame stands this far past the last
 const LIVE_SPACING = 11
 const BREAK_AFTER = 11
 const END_AFTER = 11        // the end card's zone must clear the break stop (walk.ts CARD_ZONE.short)
-const FORGERY_PAST_END = 4.5 // the forgery hangs this far past the end stop: from the break it is as large
-                             // as the blue world's frames were from there
+const WALK_PAST_END = 7.5    // the walk goes on this far past the end stop, then the tunnel is dark
 const PQ_TAIL = 3          // the walk ends this far before the tunnel path's end
 const DOOR_TINTS: DoorTints = { door1: [0.55, 0.75, 1.0], door2: [1.0, 0.38, 0.22] }
 // The character crossing at door 2 (walk.ts `crossing`): the blue world's characters turn the green of
@@ -369,7 +368,7 @@ export class UniverseEngine implements WalkControls {
     this.live.arrive(a)
   }
 
-  /** The toy-RSA fake has been judged: it hangs ahead of the break and end stops, apart from the photos. */
+  /** The toy-RSA fake has been judged: it hangs just ahead of the break stop, apart from the photos. */
   showForgery(f: ForgeryArrival) {
     this.live.showForgery(f)
     this.goToBreak()
@@ -808,9 +807,10 @@ export class UniverseEngine implements WalkControls {
     const brk = Math.min(lastLive + BREAK_AFTER, s2 + last - 4)
     const end = Math.max(brk + 4, Math.min(brk + END_AFTER, s2 + last))
     this.stations = live
-    // the forgery hangs where the end stop looks at it: ahead of the camera at the break (B there
-    // shows it fly in) and at the end, never behind either
-    this.live.setForgeryAt(end - s2 + FORGERY_PAST_END)
+    // the forgery hangs just ahead of the break stop, as far as a photo from its viewer, so B lands it
+    // right in front of the camera (hung past the end stop it sat round a bend, far and small); walking on
+    // to the end passes it, and it steps aside like the photos
+    this.live.setForgeryAt(brk - s2 + LIVE_VIEW)
     this.stopList = [s0 + ENTRANCE_STOP, s1 + TODAY_AT, s2 + QDAY_AT, ...live, brk, end]
     this.zones = [
       cardZone(s1 + TODAY_AT, 'today', CARD_ZONE.long),
@@ -820,7 +820,7 @@ export class UniverseEngine implements WalkControls {
       cardZone(end, 'end', CARD_ZONE.short),
     ]
     // the walk ends a little past the forgery: the rest of the tunnel is dark
-    this.maxRoute = Math.min(s2 + last, end + FORGERY_PAST_END + 3)
+    this.maxRoute = Math.min(s2 + last, end + WALK_PAST_END)
     this.warp = new Warp(this.zones, this.maxRoute + 1)
     if (going !== null) this.goStop(this.stopIndexOf(going))
   }

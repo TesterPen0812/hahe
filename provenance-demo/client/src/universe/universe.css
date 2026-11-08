@@ -209,32 +209,31 @@
 .uv-forge dd.live::after { content: ""; display: inline-block; width: 0.55em; height: 1.05em; margin-left: 0.5em; vertical-align: -0.18em; background: currentColor; animation: uv-blink .9s steps(1) infinite; }
 @keyframes uv-type { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0 0 0 0) } }
 
-/* the verdict: either side of the forged frame (never over it), until it is put away. The middle column
-   is the frame's width; the frame scales with the viewport height. */
+/* the verdict: two short lines in the story's voice, centred above the forged frame (never over it, and
+   clear of the log and readout in the bottom corners), until put away. They arrive with the story's glitch. */
 .uv-verdict {
-  --frame: 52vh;
-  position: absolute; inset: 0; z-index: 8; pointer-events: none;
-  display: grid; grid-template-columns: 1fr var(--frame) 1fr; align-items: center;
-  padding: 0 4vw 6vh; box-sizing: border-box;
-  animation: uv-verdict .9s cubic-bezier(.2, .8, .2, 1) .15s both;
+  position: absolute; left: 50%; top: max(4vh, 28px); z-index: 8; transform: translateX(-50%);
+  width: max-content; max-width: calc(100vw - 48px); padding: 0.9em 1.6em; box-sizing: border-box;
+  text-align: center; cursor: pointer;
+  animation: uv-verdict .7s cubic-bezier(.2, .8, .2, 1) .1s both;
+}
+/* a soft dimming behind the lines, so they never sit straight on the scene */
+.uv-verdict::before {
+  content: ""; position: absolute; inset: -40% -18%; z-index: -1; pointer-events: none;
+  background: radial-gradient(closest-side, rgba(2, 3, 8, 0.6), rgba(2, 3, 8, 0.22) 65%, transparent);
 }
 .uv-verdict p {
-  position: relative; margin: 0; display: grid; gap: 14px; pointer-events: auto; cursor: pointer;
-  font: 340 clamp(44px, 5.6vw, 96px)/1 var(--display); letter-spacing: -0.025em; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
+  margin: 0; font: 300 clamp(22px, 2.2vw, 38px)/1.3 var(--story); letter-spacing: -0.02em;
+  color: rgba(246, 243, 236, 0.86); text-wrap: balance;
+  animation: uv-glitch .46s .1s backwards;
 }
-.uv-verdict p:first-child { grid-column: 1; justify-items: end; text-align: right; }
-.uv-verdict p:last-child { grid-column: 3; justify-items: start; text-align: left; }
-/* a soft dimming behind each word, so it never sits straight on the meadow */
-.uv-verdict p::before {
-  content: ""; position: absolute; inset: -60% -28%; z-index: -1;
-  background: radial-gradient(closest-side, rgba(2, 3, 8, 0.66), rgba(2, 3, 8, 0.25) 65%, transparent);
-}
-.uv-verdict span { font: 500 clamp(13px, 1.05vw, 17px)/1 var(--mono); letter-spacing: 0.26em; margin-right: -0.26em; text-transform: uppercase; color: rgba(242, 240, 234, 0.8); }
+.uv-verdict p + p { animation-delay: .55s; }
+.uv-verdict b { font-weight: 400; }
 .uv-verdict .bad { color: var(--fail); }
 .uv-verdict .good { color: var(--ok); }
 @keyframes uv-verdict {
-  from { opacity: 0; filter: blur(10px); transform: translateY(8px) }
-  to { opacity: 1; filter: blur(0); transform: none }
+  from { opacity: 0; filter: blur(8px) }
+  to { opacity: 1; filter: blur(0) }
 }
 @keyframes uv-row { from { opacity: 0; transform: translateY(6px) } to { opacity: 1; transform: none } }
 
@@ -291,10 +290,8 @@
   .uv-log.forging { opacity: 0; transform: translateY(10px); pointer-events: none; animation: none; }
   .uv-tools { top: 18px; bottom: auto; right: 16px; }
   .uv-tools-panel { top: 22px; bottom: auto; width: min(292px, calc(100vw - 32px)); }
-  /* On a phone the frame fills the middle: the two words sit side by side below it. */
-  .uv-verdict { grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; padding: 66vh 16px 0; }
-  .uv-verdict p, .uv-verdict p:first-child, .uv-verdict p:last-child { grid-column: auto; justify-items: center; text-align: center; font-size: clamp(34px, 10vw, 48px); gap: 10px; }
-  .uv-verdict span { font-size: 12px; }
+  /* On a phone the verdict lines are smaller, still above the frame. */
+  .uv-verdict p { font-size: clamp(19px, 5.4vw, 26px); }
   /* "Post-Quantum Day · 2035" → two whole lines: the dot becomes the break. */
   .uv-card h2 { font-size: clamp(38px, 11vw, 64px); }
   .uv-card h2 .sep { display: block; height: 0; overflow: hidden; }
@@ -302,7 +299,7 @@
 @media (prefers-reduced-motion: reduce) {
   .uv-log, .uv-forge .row, .uv-tools-panel { animation: none; }
   .uv-log li, .uv-log footer { transition: none; }
-  .uv-log li.in, .uv-log li.in::before, .uv-forge .row::before, .uv-verdict { animation: none; }
+  .uv-log li.in, .uv-log li.in::before, .uv-forge .row::before, .uv-verdict, .uv-verdict p { animation: none; }
   .uv-forge .row { animation: none; }
   .uv-card-text { transform: none; }
   .uv-card.in h2, .uv-card.in p { animation: none; }
