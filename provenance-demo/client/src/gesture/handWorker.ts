@@ -15,6 +15,8 @@ export interface Detection {
   t: number
   landmarks: { x: number; y: number; z: number }[][]
   worldLandmarks: { x: number; y: number; z: number }[][]
+  /** The person's own hand. MediaPipe labels assume a mirrored selfie image; ours isn't, so swap. */
+  handedness: ('left' | 'right')[]
   ms: number
 }
 
@@ -56,6 +58,7 @@ self.onmessage = async (e: MessageEvent<ToWorker>) => {
     const ms = performance.now() - a
     bitmap.close()
     const plain = (hs: { x: number; y: number; z: number }[][]) => hs.map(h => h.map(p => ({ x: p.x, y: p.y, z: p.z })))
-    post({ type: 'result', t: msg.t, landmarks: plain(r.landmarks), worldLandmarks: plain(r.worldLandmarks), ms })
+    const handedness = r.handedness.map(c => (c[0]?.categoryName === 'Left' ? 'right' : 'left') as 'left' | 'right')
+    post({ type: 'result', t: msg.t, landmarks: plain(r.landmarks), worldLandmarks: plain(r.worldLandmarks), handedness, ms })
   }
 }

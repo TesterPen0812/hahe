@@ -5,7 +5,7 @@ import { api } from '../lib/api'
 import { useWorld } from '../lib/world'
 import { LivePanel } from './LivePanel'
 import { ACTIVE_UNIVERSES as UNIVERSES, UniverseEngine, type EngineState, type LabelId } from './engine'
-import { HandControl } from '../gesture/handControl'
+import { useHands } from '../gesture/gestures'
 import HandPreview from '../gesture/HandPreview'
 import '../gesture/gesture.css'
 import './universe.css'
@@ -34,36 +34,23 @@ export default function UniversePage() {
 
   useEffect(() => { api.trust().then(setTrust).catch(() => {}) }, [])
 
-  // Hand control: the presenter walks the timeline by stretching their hands at the webcam.
-  const [hands, setHands] = useState<HandControl | null>(null)
-  const [handStatus, setHandStatus] = useState<'off' | 'starting' | 'on' | 'error'>('off')
-  const handsRef = useRef<HandControl | null>(null)
-  const toggleHands = useCallback(async () => {
-    if (handsRef.current) {
-      handsRef.current.stop(); handsRef.current = null
-      engine.current?.setHands(null); setHands(null); setHandStatus('off')
-      return
-    }
-    if (handStatus === 'starting') return
-    setHandStatus('starting')
-    try {
-      const c = await HandControl.start()
-      handsRef.current = c
-      engine.current?.setHands(c); setHands(c); setHandStatus('on')
-    } catch (err) {
-      console.error(err)
-      setHandStatus('error')
-    }
-  }, [handStatus])
+  // Hand control: the presenter walks the timeline with a pinch-zoom in the air at the webcam.
+  const [handsOn, setHandsOn] = useState(false)
+  const shared = useHands(handsOn)
+  const handStatus = handsOn ? shared.status : 'off'
+  const hands = handsOn ? shared.control : null
+  const toggleHands = useCallback(() => setHandsOn(on => !on), [])
+  useEffect(() => { engine.current?.setHands(hands) }, [hands])
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement | null)?.closest?.('input, textarea')) return
-      if (e.key.toLowerCase() === 'h' && !e.metaKey && !e.ctrlKey) void toggleHands()
+      if (e.key.toLowerCase() === 'h' && !e.metaKey && !e.ctrlKey) toggleHands()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleHands])
-  useEffect(() => () => { handsRef.current?.stop(); handsRef.current = null }, [])
+  const handsRef = useRef(hands)
+  useEffect(() => { handsRef.current = hands })
 
   useEffect(() => {
     if (failed || !host.current) return
@@ -128,8 +115,8 @@ export default function UniversePage() {
           <Link to="/capture">Capture</Link>
           <Link to="/attack">Attacker</Link>
           <Link to="/split">Split</Link>
-          <button type="button" className={`uv-handbtn ${handStatus}`} onClick={() => void toggleHands()} aria-pressed={handStatus === 'on'}>
-            {handStatus === 'starting' ? 'Starting camera…' : handStatus === 'on' ? 'Hands on' : handStatus === 'error' ? 'Camera blocked' : 'Hand control'}
+          <button type="button" className={`uv-handbtn ${handStatus}`} onClick={toggleHands} aria-pressed={handsOn}>
+            {!handsOn ? 'Hand control' : handStatus === 'error' ? 'Camera blocked' : handStatus === 'on' ? 'Hands on' : 'Starting camera…'}
           </button>
         </nav>
       </header>
