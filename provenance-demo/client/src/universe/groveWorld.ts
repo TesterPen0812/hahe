@@ -17,8 +17,9 @@ const smooth = THREE.MathUtils.smoothstep
 
 /** How long the grove's path runs and how it wanders. */
 export interface GroveShape { length: number; amplitude: number; turns: number }
-/** As long as the tunnel it replaces (PQ_TUNNEL), wandering like the amber grove's path. */
-export const PQ_GROVE: GroveShape = { length: 140, amplitude: 1.6, turns: 3 }
+/** As long as the tunnel it replaces (PQ_TUNNEL). The amber grove's path stretched, not redrawn: its
+ *  sideways swing (-1.1) and its bends per unit of walk (0.65 turns over 28). */
+export const PQ_GROVE: GroveShape = { length: 140, amplitude: -1.1, turns: 3.25 }
 
 /** Trees stand this far along the walk, either side of the path's start and end. */
 const BEHIND = 10
