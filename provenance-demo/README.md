@@ -1,19 +1,90 @@
 # Provenance demo
 
-Workspace for shared verification code, a server, and a browser client.
-The client and API include a capture/feed flow, world-aware verification, a
-passkey test harness, and a simulated Q-Day attacker. See [client/README.md](client/README.md)
-for the attacker route shapes and verification commands.
+Photos sealed at capture on an iPhone, then re-checked on a laptop. A guided 3D walk takes them from today into a simulated Post-Quantum Day, where RSA and elliptic curves have been broken: photos with a hybrid seal (Ed25519 + ML-DSA-65) stay green, and photos that relied on old maths lose their proof.
+
+
+## Run it yourself
+
+You need Node 22 and npm. To use the phone, you also need an iPhone on Safari and [Tailscale](https://tailscale.com/) on both devices, because passkeys and the camera need HTTPS. `scripts/seed-real.ts` needs macOS.
+
+From this folder:
+
+```sh
+npm install
+npx tsx scripts/gen-authorities.ts   # demo keys, written to server/keys/ (gitignored)
+npx tsx scripts/gen-toy-camera.ts    # the small RSA key the demo breaks live
+npx tsx scripts/seed-feed.ts --reset # sample photos; or see "Your own photos" below
+```
+
+Create `server/.env` with your machine's Tailscale name. Passkeys are bound to this exact name, so don't rename the machine afterwards.
+
+```sh
+PORT=3001
+RP_ID=your-machine.your-tailnet.ts.net
+ORIGIN=https://your-machine.your-tailnet.ts.net
+```
+
+Also set `PHONE_HOST` in `client/src/universe/liveFrame.ts` to the same name.
+
+Start the API and the site in two terminals, then share the site with your phone from a third:
+
+```sh
+npm run dev:server        # API on 3001
+npm run dev:client        # site on 127.0.0.1:5173
+tailscale serve --bg 5173
+```
+
+- **Laptop:** open `http://127.0.0.1:5173/` and go fullscreen.
+- **Phone:** open `https://<your-host>/setup` once to register a passkey, then `https://<your-host>/capture` to take photos.
+
+Use the Capture page's own camera. A photo taken in the Camera app and uploaded has no seal, so it shows grey.
+
+Open the laptop page on one device only: loading it resets the world to today.
+
+### The walk
+
+| Key | Action |
+|---|---|
+| Scroll, or hold W / Up | Walk; stops when you let go |
+| Double-Space, PageDown | Next stop |
+| Double-Left, PageUp | Previous stop |
+| 1 to 8 | Jump to a stop |
+| B | Break the key and forge a photo (after door 2) |
+
+The stops are: entrance, Today, photo station, door 2, Post-Quantum Day, the break, the end, and the closing dark. The walk waits at the photo station until a photo lands; hold forward for about 2 seconds to pass without one. To land a test photo without a phone, open `/?rehearse` and press L.
+
+### Your own photos
+
+`npx tsx scripts/seed-real.ts <folder> --reset` replaces the whole feed. It **deletes** the current items, log, devices and uploads, and keeps passkeys. Name each file for what it should become:
+
+| File name | Today | After Post-Quantum Day |
+|---|---|---|
+| `signed-*` | Green | Green |
+| `standard-logged*` | Green | Green, logged before the break |
+| `standard-unlogged*` | Green | Grey |
+| `edited-original*` + `edited-final*` | Amber | Amber |
+| `unsigned-*` | Grey | Grey |
+
+These seals come from a simulated phone. Only photos taken on the Capture page have a real device key and Face ID behind them.
+
+### Checks
+
+```sh
+npx tsc -p tsconfig.json --noEmit
+npm run build -w client
+npx tsx --tsconfig client/tsconfig.app.json --test client/tests/*.test.ts
+```
+
+The live key break is real factoring of a deliberately small 96-bit RSA key, standing in for what a quantum computer would do to a full-size one. The rest of the attack is simulated for the demo.
 
 ## Real iPhone passkey test
 
 From this directory, run `npm run dev:server` (127.0.0.1:3001) and
 `npm run dev:client -- --port 5173 --strictPort` (127.0.0.1:5173).
 The API loads `server/.env`; configure `PORT`, `RP_ID`, and `ORIGIN` there.
-For this demo the RP ID is `tahas-macbook-pro.tailc3868a.ts.net` and origin is
-`https://tahas-macbook-pro.tailc3868a.ts.net`. Taha runs `tailscale serve 5173` separately.
+See "Run it yourself" above for the values.
 
-1. Open `https://tahas-macbook-pro.tailc3868a.ts.net/passkey-test` in Safari on the iPhone (`/` also shows the harness).
+1. Open `https://<your-host>/passkey-test` in Safari on the iPhone (`/` also shows the harness).
 2. Tap **Register** and approve the passkey creation prompt on the physical phone.
 3. Tap **Sign test hash** and approve the passkey prompt again.
 4. Confirm the on-page Sign result and server `[passkeys] SIGN` log both show
@@ -52,7 +123,7 @@ The regression test uses a software authenticator and isolated in-memory SQLite.
 Its success does not establish an iPhone or Face ID result.
 For the detached demo server, inspect `server/data/server.log` with
 `tail -f server/data/server.log`. Check tunnel routing with
-`curl --fail https://tahas-macbook-pro.tailc3868a.ts.net/api/health`.
+`curl --fail https://<your-host>/api/health`.
 
 ## Setup
 
@@ -70,17 +141,5 @@ Capture checks registration before offering **Seal with Face ID**. A missing
 server registration shows a link back to Setup. The check runs during preparation
 so the Face ID call remains directly on the final tap in Safari.
 
-1. Run `npm install` from this directory to initialize the three npm workspaces.
-2. Configure the passkey settings in `server/.env` as described above; `.env.example` lists the broader planned demo settings.
-3. Implement the remaining shared modules, server routes, and client screens in the supplied files.
-
 `server/keys/` and `server/data/` (including uploads) are local, gitignored directories.
-Recreate them in a fresh checkout before adding keys or data.
-
-## Demo-day checklist
-
-- [ ] Implement and run `scripts/gen-authorities.ts` to generate demo authority keys.
-- [ ] Implement and run `scripts/seed-feed.ts` to seed Mara's green, amber, and grey feed items.
-- [ ] Check RP_ID and ORIGIN against the demo host.
-- [ ] Verify setup, capture, feed, item, upload, and editor flows.
-- [ ] Check detection provider configuration and unavailable-provider handling.
+The commands in "Run it yourself" create them in a fresh checkout.
