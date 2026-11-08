@@ -21,7 +21,7 @@ import { ParticleSimulation } from './particles'
 import { POINTER_REACH, WAKE_INTERVAL, dragDistance, dragVelocity, releasedVelocity, wheelDistance } from './input'
 import { driveVelocity, type HandControl } from '../gesture/handControl'
 import { doorCaption, type DoorCaption } from './doorCaption'
-import { StopHold, Warp, cardAt, glideSeconds, slowFactor, type Zone } from './walk'
+import { CARD_ZONE, Warp, cardAt, cardZone, glideSeconds, slowFactor, type Zone } from './walk'
 import type {
   DoorId, DoorTints, ForgeryArrival, LiveArrival, Region, WalkControls, WalkState,
 } from './contract'
@@ -60,27 +60,28 @@ export type LabelId = 'today' | 'qday' | 'u0' | 'u1' | 'u2' | 'door1' | 'door2'
 // ── The walk ────────────────────────────────────────────────────────────────
 // Green Foliage tunnel → door 1 → the blue world (today) → door 2 "Q-Day · 2035" → the Prism.
 // Stops, one press each (Space / → / PageDown on, ← / PageUp back, or the hand's "next"):
-//   0 tunnel start · 1 blue arrival (card 'today') · 2 just inside the Prism (card 'qday'; the
-//   hold: wheel, drag, keys and hands stop here for 3 s, or until "next") · 3… each live photo
-//   station, then the waiting frame · then a break (card 'break', the forgery hangs just past it)
-//   and the end (card 'end').
+//   0 tunnel start · 1 blue arrival (card 'today') · 2 inside the Prism (card 'qday') · 3… each
+//   live photo station, then the waiting frame · then a break (card 'break', the forgery hangs
+//   ahead of it) and the end (card 'end').
+// Each card's slow zone lies just before its stop (walk.ts), so the text passes as the camera
+// slows into the stop and is gone when it arrives. Nothing holds the walk; it is all position.
 // Glides keep an even pace through the warped route (walk.ts, GLIDE_PACE 6.5), so they ease to
-// 25 % in every slow zone. Glide times (scratch calculation over this route): tunnel → today 10.0 s,
-// today → Q-Day 12.2 s, Q-Day → first live photo 6.2 s, photo → photo about 3.2 s, last photo →
-// break 3.6 s, break → end 3.8 s: about 36 s of walking with one live photo, leaving the rest of
-// two minutes for talking. Walking back runs at twice the pace.
-// Slow zones (centre ± full-slow / back-to-speed, in route units): the four card stops 1.5 / 4, so a
-// card comes up fast as its stop is reached; each live station 1.2 / 4.
+// 25 % in every slow zone. Glide times with one live photo (walk.test.ts): tunnel → today 10.2 s,
+// today → Q-Day 11.3 s, Q-Day → live photo 2.9 s, photo → break 5.4 s, break → end 4.4 s, each
+// card past half strength for about 3 s of it. Walking back runs at twice the pace.
+// Slow zones (centre ± full-slow / back-to-speed, in route units): today and Q-Day 1.6 / 4.1, break
+// and end 2.2 / 4.5 (their glides are short), each ending a quarter unit before its stop; each live
+// station 1.2 / 4, centred on it (a photo is something to look at, not text).
 export const STOP_COUNT = 6 // with one live station; EngineState.stopCount is authoritative
 const TUNNEL_STOP = 4
 const DOOR1_AT = 46        // door 1 on the tunnel's path (48 long)
 const TODAY_AT = 10        // blue arrival, after door 1
 const DOOR2_BEFORE_END = 9 // door 2 stands this far before the blue path's end
-const QDAY_AT = 7          // the freeze, just inside the Prism
+const QDAY_AT = 11         // inside the Prism, once the character crossing has resolved
 const LIVE_START = 30      // first live frame station on the Prism path (its middle)
 const LIVE_SPACING = 8
-const BREAK_AFTER = 9
-const END_AFTER = 9
+const BREAK_AFTER = 11
+const END_AFTER = 11
 const PRISM_TAIL = 3       // the walk ends this far before the Prism path's end
 const DOOR_TINTS: DoorTints = { door1: [0.55, 0.75, 1.0], door2: [1.0, 0.38, 0.22] }
 // The character crossing at door 2: full within ASCII_FULL route units of the door, gone by ASCII_REACH.
@@ -167,7 +168,7 @@ export class UniverseEngine implements WalkControls {
   private fluidLast = new THREE.Vector2(-1, -1)
 
   // the walk's stops, zones and warped route; rebuilt when the live stations change
-  private walkKey = ''
+  private walkCount = -1
   private stopList: number[] = []
   private zones: Zone[] = []
   private warp: Warp | null = null
@@ -181,7 +182,6 @@ export class UniverseEngine implements WalkControls {
   private keys = new Set<string>()
   private hands: HandControl | null = null
   private target: number | null = TUNNEL_STOP
-  private hold = new StopHold()  // the Q-Day stop holds continuous travel for a moment
   private hovered: number | null = null
   // autopilot: an eased walk to a story stop, through the warped route
   private glide: { index: number; key: string; from: number; to: number; t0: number; dur: number } | null = null
@@ -329,7 +329,6 @@ export class UniverseEngine implements WalkControls {
     const to = this.stopList[index]
     const from = this.desiredRoute
     if (to === undefined || !this.warp) return
-    if (index > 2) this.hold.release()
     if (Math.abs(to - from) < 0.05) { this.glide = null; return }
     const w0 = this.warp.at(from), w1 = this.warp.at(to)
     // walking back is a quick rewind, not the story told again
@@ -350,9 +349,21 @@ export class UniverseEngine implements WalkControls {
     this.live.arrive(a)
   }
 
-  /** The toy-RSA fake has been judged: it hangs just past the break stop, apart from the photos. */
+  /** The toy-RSA fake has been judged: it hangs ahead of the break and end stops, apart from the photos. */
   showForgery(f: ForgeryArrival) {
     this.live.showForgery(f)
+    this.goToBreak()
+  }
+
+  /** B: glide to the break stop, where the forgery flies in ahead, unless already there (or walking there). */
+  goToBreak() {
+    if (this.showcase) return
+    const i = this.stopIndexOf('break')
+    const at = this.stopList[i]
+    if (at === undefined) return
+    if (this.glide?.key === 'break') return
+    if (Math.abs(this.desiredRoute - at) < 1 && !this.glide) return
+    this.goStop(i)
   }
 
   /** How many live frames (photos and the waiting one) fit before the break and end cards. */
@@ -482,7 +493,7 @@ export class UniverseEngine implements WalkControls {
     const gate = blue.door!.s
     this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, { ground: blue.ground }) })
     // the first prints hang well ahead of the Q-Day stop, so none is cut off at the screen's edge there
-    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, 15 / prism.len, (LIVE_START - 4) / prism.len, 1, { ground: prism.ground }) })
+    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, (QDAY_AT + 6) / prism.len, (LIVE_START - 3) / prism.len, 1, { ground: prism.ground }) })
     for (const g of this.galleries) this.stages[g.stage].scene.add(g.gallery.group)
   }
 
@@ -567,12 +578,16 @@ export class UniverseEngine implements WalkControls {
 
     // The live photos stand in the middle of the Prism's path.
     const p = this.stages[2]
+    p.path.getPointAt(0, this.prismOrigin)
+    // one sample, reused: the sequence reads it at once and keeps nothing
+    const sample = { position: new THREE.Vector3(), tangent: new THREE.Vector3() }
     this.live = createLiveSequence({
       path: {
         at: d => {
-          const position = this.pointAt(2, d)
+          const position = this.pointAt(2, d, sample.position)
           position.y = p.ground(position.x, position.z)
-          return { position, tangent: this.tangentAt(2, d) }
+          this.tangentAt(2, d, sample.tangent)
+          return sample
         },
         ground: p.ground,
       },
@@ -692,17 +707,19 @@ export class UniverseEngine implements WalkControls {
 
   // ── paths ────────────────────────────────────────────────────────────────
 
+  private tanTmp = new THREE.Vector3()
+  private prismOrigin = new THREE.Vector3()
   /** A point on world j's walk at distance s, continuing straight past either end. */
   private pointAt(j: number, s: number, out = new THREE.Vector3()) {
     const st = this.stages[j]
-    if (s < 0) return st.path.getPointAt(0, out).addScaledVector(this.tangentAt(j, 0), s).setY(0)
-    if (s > st.len) return st.path.getPointAt(1, out).addScaledVector(this.tangentAt(j, st.len), s - st.len).setY(0)
+    if (s < 0) return st.path.getPointAt(0, out).addScaledVector(this.tangentAt(j, 0, this.tanTmp), s).setY(0)
+    if (s > st.len) return st.path.getPointAt(1, out).addScaledVector(this.tangentAt(j, st.len, this.tanTmp), s - st.len).setY(0)
     return st.path.getPointAt(s / st.len, out).setY(0)
   }
 
-  private tangentAt(j: number, s: number) {
+  private tangentAt(j: number, s: number, out = new THREE.Vector3()) {
     const st = this.stages[j]
-    return st.path.getTangentAt(THREE.MathUtils.clamp(s / st.len, 0, 1)).setY(0).normalize()
+    return st.path.getTangentAt(THREE.MathUtils.clamp(s / st.len, 0, 1), out).setY(0).normalize()
   }
 
   /** Smoothed ground height under the walk, so the eye never steps (and meets the doors exactly). */
@@ -742,10 +759,11 @@ export class UniverseEngine implements WalkControls {
   /** Rebuild the stops, slow zones and warped route whenever the live stations change. */
   private refreshWalk() {
     const prism = this.stages[2]
+    // only the photo count changes the stations: compare it, not the list, every frame
+    const count = this.live.photoCount()
+    if (count === this.walkCount && this.warp) return
+    this.walkCount = count
     const stations = this.live.photoStations()
-    const key = stations.join(',')
-    if (key === this.walkKey && this.warp) return
-    this.walkKey = key
     // a glide under way keeps going to the same stop (the same photo, the break or the end)
     const going = this.glide?.key ?? null
     const [s0, s1, s2] = this.stages.map(s => s.start)
@@ -755,15 +773,16 @@ export class UniverseEngine implements WalkControls {
     const brk = Math.min(lastLive + BREAK_AFTER, s2 + last - 4)
     const end = Math.max(brk + 4, Math.min(brk + END_AFTER, s2 + last))
     this.stations = live
-    // the forgery hangs where the break stop looks at it, so B at the break card shows it fly in
-    this.live.setForgeryAt(brk - s2 + LIVE_VIEW)
+    // the forgery hangs where the end stop looks at it: ahead of the camera at the break (B there
+    // shows it fly in) and at the end, never behind either
+    this.live.setForgeryAt(end - s2 + LIVE_VIEW)
     this.stopList = [s0 + TUNNEL_STOP, s1 + TODAY_AT, s2 + QDAY_AT, ...live, brk, end]
     this.zones = [
-      { at: s1 + TODAY_AT, inner: 1.5, outer: 4, card: 'today' },
-      { at: s2 + QDAY_AT, inner: 1.5, outer: 4, card: 'qday' },
+      cardZone(s1 + TODAY_AT, 'today', CARD_ZONE.long),
+      cardZone(s2 + QDAY_AT, 'qday', CARD_ZONE.long),
       ...live.map(at => ({ at, inner: 1.2, outer: 4 })),
-      { at: brk, inner: 1.5, outer: 4, card: 'break' as const },
-      { at: end, inner: 1.5, outer: 4, card: 'end' as const },
+      cardZone(brk, 'break', CARD_ZONE.short),
+      cardZone(end, 'end', CARD_ZONE.short),
     ]
     this.maxRoute = Math.max(end, s2 + last)
     this.warp = new Warp(this.zones, this.maxRoute + 1)
@@ -966,10 +985,6 @@ export class UniverseEngine implements WalkControls {
 
     const travelStep = !this.down && !this.glide && Math.abs(this.v) >= 0.01 ? this.v * dt * this.slow() : 0
     this.desiredRoute = THREE.MathUtils.clamp(this.desiredRoute + travelStep, 0, this.maxRoute)
-    // The Q-Day hold: continuous travel stops just inside the Prism while its card is up (3 s from
-    // arrival), then goes on by itself. "Next" lets go at once; walking back arms it again.
-    const held = this.hold.step(this.stopList[2], before, this.desiredRoute, this.r, this.glideClock, this.glide !== null)
-    if (held !== this.desiredRoute) { this.desiredRoute = held; this.v = Math.min(0, this.v) }
     if (this.target === null && !this.down && !fwd && !bwd && !hand?.active) this.v *= Math.exp(-dt * 3.2)
     this.r = before + (this.desiredRoute - before) * (1 - Math.exp(-4 * dt))
     if (this.r < 0) { this.r = 0; this.v = Math.max(0, this.v) }
@@ -1189,7 +1204,7 @@ export class UniverseEngine implements WalkControls {
     this.canvas.style.cursor = this.hovered !== null ? 'pointer' : ''
     for (const g of this.galleries) {
       const q = this.stages[g.stage].region === 'qday'
-      g.gallery.update(t, q ? this.qdayAt : -1, q ? this.stages[g.stage].path.getPointAt(0) : this.camera.position)
+      g.gallery.update(t, q ? this.qdayAt : -1, q ? this.prismOrigin : this.camera.position, g.stage === this.active ? this.camera.position : null)
     }
     const prism = this.stages[2]
     this.live.update(t, this.active === 2 ? this.camera : prism.cam)
@@ -1362,7 +1377,7 @@ export class UniverseEngine implements WalkControls {
     const walk: WalkState = {
       region: st.region,
       // quantised so the page re-renders a few dozen times across a fade, not every frame
-      card: card ? { id: card.id, strength: Math.round(card.strength * 50) / 50 } : null,
+      card: card ? { id: card.id, strength: Math.round(card.strength * 50) / 50, progress: Math.round((card.progress ?? 0.5) * 50) / 50 } : null,
       liveIndex: i < 0 ? null : i,
       forgeryLanded: this.live.forgeryLanded(),
     }

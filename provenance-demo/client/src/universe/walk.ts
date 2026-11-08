@@ -1,8 +1,13 @@
 // The walk's pacing, as pure maths on the route (one distance along tunnel → blue world → Prism).
 //
-// Slow zones: around each story card and each live photo, every way of travelling (wheel, drag,
-// keys, hands and the autopilot's glides) runs at SLOW of its normal speed, easing down and back
-// up again. A zone is a bump: full slow within `inner` of its centre, back to full speed at `outer`.
+// Slow zones: in each story card's zone and round each live photo, every way of travelling (wheel,
+// drag, keys, hands and the autopilot's glides) runs at SLOW of its normal speed, easing down and
+// back up again. A zone is a bump: full slow within `inner` of its centre, back to full speed at
+// `outer`.
+//
+// A card's zone sits just BEFORE its stop, so the text and the slowness are one thing on the route:
+// gliding to a stop passes through the text and arrives with it gone, and scrolling past fast moves
+// both together. Nothing here keeps time; it is all position.
 import type { CardId, CardState } from './contract'
 
 export const SLOW = 0.25
@@ -26,13 +31,26 @@ export function slowFactor(r: number, zones: readonly Zone[]) {
   return 1 - (1 - SLOW) * b
 }
 
-/** The card the route is in (the strongest one), with strength 0..1. */
+/** Where a card's zone ends, short of its stop, so a camera parked at the stop sees no text. */
+export const CARD_GAP = 0.25
+/** Zone sizes, tuned so a Space glide spends about 3 s with the card past half strength (see tests):
+ *  the long glides to today and Q-Day run faster through the warp than the short ones to break and end. */
+export const CARD_ZONE = { long: { inner: 1.6, outer: 4.1 }, short: { inner: 2.2, outer: 4.5 } } as const
+
+/** A card's slow zone, ending CARD_GAP before its stop. */
+export function cardZone(stop: number, card: CardId, size: { inner: number; outer: number }): Zone {
+  return { at: stop - CARD_GAP - size.outer, inner: size.inner, outer: size.outer, card }
+}
+
+/** The card the route is in (the strongest one), with strength 0..1 and progress through its zone. */
 export function cardAt(r: number, zones: readonly Zone[]): CardState | null {
   let best: CardState | null = null
   for (const z of zones) {
     if (!z.card) continue
     const strength = bump(r, z)
-    if (strength > 0.001 && (!best || strength > best.strength)) best = { id: z.card, strength }
+    if (strength > 0.001 && (!best || strength > best.strength)) {
+      best = { id: z.card, strength, progress: Math.max(0, Math.min(1, (r - z.at + z.outer) / (2 * z.outer))) }
+    }
   }
   return best
 }
@@ -79,33 +97,4 @@ export class Warp {
 export const GLIDE_PACE = 6.5
 export function glideSeconds(dw: number) {
   return Math.max(1.2, Math.min(16, Math.abs(dw) / GLIDE_PACE))
-}
-
-/** How long the Q-Day stop holds continuous travel once the camera arrives (card in, held, out). */
-export const HOLD_SECONDS = 3.0
-
-/**
- * A stop that holds continuous travel (wheel, drag, held keys, hands) for a moment once the camera
- * arrives, then lets go by itself. "Next" lets go at once; walking back past it arms it again.
- */
-export class StopHold {
-  held = true
-  private arrived: number | null = null
-  readonly seconds: number
-  constructor(seconds = HOLD_SECONDS) { this.seconds = seconds }
-
-  release() { this.held = false }
-
-  /**
-   * Where travel may go this frame. `at` the stop, `before` the camera's route distance last frame,
-   * `desired` where input wants to go, `camera` where the camera stands now, `now` in seconds.
-   */
-  step(at: number, before: number, desired: number, camera: number, now: number, gliding: boolean) {
-    if (desired < at - 1) { this.held = true; this.arrived = null }
-    if (!this.held) return desired
-    if (this.arrived === null && Math.abs(camera - at) < 0.3) this.arrived = now
-    if (this.arrived !== null && now - this.arrived >= this.seconds) { this.held = false; return desired }
-    if (!gliding && before <= at + 0.05 && desired > at) return at
-    return desired
-  }
 }

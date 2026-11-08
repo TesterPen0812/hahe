@@ -2,8 +2,9 @@
 // waiting: viewfinder corners breathing, one word, LIVE. A new phone photo flies in from further
 // down the path into that frame, its seal draws itself on ring by ring, then its label appears; the
 // waiting frame steps one along. The toy-RSA forgery gets a frame of its own, hung apart from the
-// phone photos just past the break stop (the scene says where): its RSA ring whole (the signature
-// really is valid), its post-quantum slot an empty dotted ring, and REJECTED when the server greys it.
+// phone photos ahead of the break and end stops (the scene says where): its RSA ring whole (the
+// signature really is valid), its post-quantum slot an empty dotted ring, and REJECTED when the
+// server greys it. Only the latest forgery hangs; a new one replaces it.
 //
 // Frames stand on the path itself, so as the visitor walks up to one and on past it, it steps
 // aside. Frames further on than the next one sit back, dimmer, until it's their turn.
@@ -27,15 +28,19 @@ interface Slot {
   /** Scene time the flight started; null until it can be seen. */
   flewAt: number | null
   landed: boolean
+  /** Its image never loaded: it still flies, empty (a forgery shows REJECTED). */
+  failed: boolean
 }
 
 /** The sequence as the scene drives it: stops come from the phone photos only, never the forgery. */
 export interface LiveFrames extends LiveSequence {
   /** Path distances where each phone photo, then the waiting frame, is best viewed. */
   photoStations(): number[]
-  /** Path distance where the forgery's frame hangs (the scene puts it just past the break stop). */
+  /** Phone photos hung so far (the stations are this many plus the waiting frame). */
+  photoCount(): number
+  /** Path distance where the forgery's frame hangs (the scene puts it ahead of the end stop). */
   setForgeryAt(distance: number): void
-  /** The forgery's frame has flown in and landed. */
+  /** The latest forgery's frame has flown in and landed (false again while a new one flies). */
   forgeryLanded(): boolean
 }
 
@@ -56,17 +61,20 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
   const cam = new THREE.Vector3(), rest = new THREE.Vector3(), from = new THREE.Vector3(), look = new THREE.Vector3()
   /** A slot's place on the path: phone photos by their order, the forgery where the scene hangs it. */
   const distanceOf = (i: number) => i < 0 ? forgeryAt : o.start + i * o.spacing
-  const photos = () => slots.filter(s => !s.forgery)
+  /** Phone photos, in order: slot index i of the path is photos[i]. Kept in step with `slots`. */
+  const photoSlots: Slot[] = []
 
+  // place() fills these and returns them; callers use them at once (no per-frame allocation)
+  const spot = { pos: new THREE.Vector3(), facing: new THREE.Vector3(), side: new THREE.Vector3() }
   const place = (i: number, height: number, at = o.path.at(distanceOf(i))) => {
-    const facing = at.tangent.clone().setY(0).normalize().negate()
-    const pos = at.position.clone()
+    const facing = spot.facing.copy(at.tangent).setY(0).normalize().negate()
+    const pos = spot.pos.copy(at.position)
     pos.y = o.path.ground(pos.x, pos.z) + height / 2 + 0.3
-    const side = new THREE.Vector3(facing.z, 0, -facing.x).multiplyScalar(i % 2 === 0 ? 1 : -1)
-    return { pos, facing, side }
+    spot.side.set(facing.z, 0, -facing.x).multiplyScalar(i % 2 === 0 ? 1 : -1)
+    return spot
   }
   /** Slot index on the path: phone photos count up from 0; the forgery is -1. */
-  const indexOf = (s: Slot) => s.forgery ? -1 : photos().indexOf(s)
+  const indexOf = (s: Slot) => s.forgery ? -1 : photoSlots.indexOf(s)
 
   /** Put a card at slot i, stepping aside as the camera reaches it. Returns how close the visitor is. */
   const pose = (card: PhotoCard, i: number, cam: THREE.Vector3, out: THREE.Vector3) => {
@@ -79,7 +87,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
     card.mesh.lookAt(look.copy(out).add(facing))
     card.mesh.rotateY(aside * 0.5 * (i % 2 === 0 ? -1 : 1))
     // the frame you're walking to is bright; further ones wait, dimmer
-    const queued = 1 - 0.5 * smooth(ahead, LIVE_VIEW + o.spacing * 0.45, LIVE_VIEW + o.spacing * 1.05)
+    const queued = i < 0 ? 1 : 1 - 0.5 * smooth(ahead, LIVE_VIEW + o.spacing * 0.45, LIVE_VIEW + o.spacing * 1.05)
     return { ahead, aside, queued, rest: out }
   }
 
@@ -93,18 +101,34 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
       known.card.lost = a.status === 'grey' && !known.forgery ? 1 : 0
       return
     }
+    if (forgery) {
+      // only the latest forgery hangs: the one before it goes
+      for (let k = slots.length - 1; k >= 0; k--) {
+        if (!slots[k].forgery) continue
+        group.remove(slots[k].card.mesh)
+        slots[k].card.dispose()
+        slots.splice(k, 1)
+      }
+    }
     const card = new PhotoCard({ width: CARD_W, aspect: PORTRAIT, seed: slots.length * 0.61 + 0.2, fog: [40, 70] })
     card.alpha = 0
     card.captionOn = 0
     card.setParts(a.parts, { draw: true, at: 1e6 })   // not drawn until it lands
     card.setLabel(labelFor(a, forgery))
     group.add(card.mesh)
-    const slot: Slot = { card, arrival: a, forgery, ready: false, flewAt: null, landed: false }
+    const slot: Slot = { card, arrival: a, forgery, ready: false, flewAt: null, landed: false, failed: false }
     slots.push(slot)
-    void card.setPhoto(a.url).then(() => {
+    if (!forgery) photoSlots.push(slot)
+    card.setPhoto(a.url).then(() => {
+      if (!slots.includes(slot)) return
       // the label is drawn for the card's final shape
       card.setLabel(labelFor(slot.arrival, forgery))
       card.showPhoto(true)
+      slot.ready = true
+    }, () => {
+      // an image that never loads still flies in, empty, so the story (and forgeryLanded) goes on
+      if (!slots.includes(slot)) return
+      slot.failed = true
       slot.ready = true
     })
   }
@@ -113,10 +137,11 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
     group,
     arrive: a => add(a, false),
     showForgery: (f: ForgeryArrival) => add(f, true),
-    stations: () => [...photos().map((_, i) => o.start + i * o.spacing - LIVE_VIEW), o.start + photos().length * o.spacing - LIVE_VIEW],
-    photoStations: () => Array.from({ length: photos().length + 1 }, (_, i) => o.start + i * o.spacing - LIVE_VIEW),
+    stations: () => Array.from({ length: photoSlots.length + 1 }, (_, i) => o.start + i * o.spacing - LIVE_VIEW),
+    photoStations: () => Array.from({ length: photoSlots.length + 1 }, (_, i) => o.start + i * o.spacing - LIVE_VIEW),
+    photoCount: () => photoSlots.length,
     setForgeryAt: d => { forgeryAt = d },
-    forgeryLanded: () => slots.some(s => s.forgery && s.landed),
+    forgeryLanded: () => slots.find(s => s.forgery)?.landed ?? false,
     update(t, camera) {
       const dt = Math.min(0.1, Math.max(0, t - last)); last = t; now = t
       camera.getWorldPosition(cam)
@@ -132,7 +157,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
           if (s.flewAt === null) {
             if (!s.ready || flying || cam.distanceTo(p.rest) > 34 || p.ahead < -2.5) { card.alpha = 0; continue }
             s.flewAt = t
-            if (!s.forgery) { waitingFrom = waitingAt; waitingAt = photos().length; waitingMoved = t + FLIGHT * 0.55 }
+            if (!s.forgery) { waitingFrom = waitingAt; waitingAt = photoSlots.length; waitingMoved = t + FLIGHT * 0.55 }
           }
           flying = true
           const k = (t - s.flewAt) / FLIGHT
@@ -158,7 +183,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
         const since = t - card.drawStart
         card.captionOn = smooth(since, 0.9, 1.6)
         // REJECTED is the server's verdict (grey), never merely that this is the forgery
-        card.reject = s.forgery && s.arrival.status === 'grey' ? smooth(since, 1.1, 1.9) : 0
+        card.reject = s.forgery && (s.arrival.status === 'grey' || s.failed) ? smooth(since, 1.1, 1.9) : 0
       }
       // the waiting frame: out of its old slot, in at the next
       waiting.update(t, dt)
@@ -171,6 +196,7 @@ export function createLiveSequence(o: LiveSequenceOptions): LiveFrames {
     reset() {
       for (const s of slots) { group.remove(s.card.mesh); s.card.dispose() }
       slots.length = 0
+      photoSlots.length = 0
       waitingAt = waitingFrom = 0; waitingMoved = -100
     },
     dispose() {

@@ -49,8 +49,9 @@ function after(kind: SealKind, v: SealVerdict): { parts: SealPart[]; label: Labe
 
 export interface Gallery {
   group: THREE.Group
-  /** qdayAt: scene time Q-Day was crossed (< 0 when it hasn't been); origin: where it happened. */
-  update(t: number, qdayAt: number, origin: THREE.Vector3): void
+  /** qdayAt: scene time Q-Day was crossed (< 0 when it hasn't been); origin: where it happened;
+   *  camera: the visitor's eye when they walk this gallery's world (prints fade as they come alongside). */
+  update(t: number, qdayAt: number, origin: THREE.Vector3, camera?: THREE.Vector3 | null): void
   /** The server's verdicts after Q-Day, by photo id; labels and seals follow them. */
   setVerdicts(verdicts: Map<string, SealVerdict>): void
   dispose(): void
@@ -66,7 +67,7 @@ export function buildGallery(
   const group = new THREE.Group()
   const ground = opts.ground ?? homeHeight
   const lift = opts.lift ?? 1.85
-  type Frame = { photo: GalleryPhoto; card: PhotoCard; base: THREE.Vector3; seed: number; verdict: SealVerdict; hit: number | null; lost: number }
+  type Frame = { photo: GalleryPhoto; card: PhotoCard; base: THREE.Vector3; tan: THREE.Vector3; seed: number; verdict: SealVerdict; hit: number | null; lost: number }
   const frames: Frame[] = []
   const n = photos.length
   photos.forEach((photo, i) => {
@@ -92,7 +93,7 @@ export function buildGallery(
     card.mesh.renderOrder = 3
     group.add(card.mesh)
     void card.setPhoto(photo.url).then(() => card.showPhoto(true))
-    frames.push({ photo, card, base: pos, seed: k * 1.7, verdict: PREDICTED, hit: null, lost: 0 })
+    frames.push({ photo, card, base: pos, tan, seed: k * 1.7, verdict: PREDICTED, hit: null, lost: 0 })
   })
 
   const apply = (fr: Frame, at: number) => {
@@ -104,10 +105,15 @@ export function buildGallery(
   let last = 0
   return {
     group,
-    update(t, qdayAt, origin) {
+    update(t, qdayAt, origin, camera) {
       const dt = Math.min(0.1, Math.max(0, t - last)); last = t
       for (const fr of frames) {
         fr.card.update(t, dt)
+        // a print fades as the visitor comes alongside it, rather than hanging half off the screen's edge
+        if (camera) {
+          const ahead = (fr.base.x - camera.x) * fr.tan.x + (fr.base.z - camera.z) * fr.tan.z
+          fr.card.alpha = THREE.MathUtils.smoothstep(ahead, 2.5, 6)
+        } else fr.card.alpha = 1
         fr.card.mesh.position.y = fr.base.y + Math.sin(t * 0.5 + fr.seed) * 0.04
         if (qdayAt < 0) {
           if (fr.hit !== null) {
