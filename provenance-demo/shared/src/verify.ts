@@ -16,6 +16,7 @@ import { verifyPasskeyAssertion } from './passkey.js';
 import { verifyLegacySignature } from './legacy.js';
 import { judgeHybrid, makePolicy, type Policy, type VerifyOptions } from './policy.js';
 import { checkpointValid } from './loghead.js';
+import { ALG_NAMES } from './manifest.js';
 import type {
   Check, HybridManifest, LegacyManifest, LogEntry, Manifest, PresenceLevel, TrustLabel, TrustList,
   VerificationResult, WorldState,
@@ -196,19 +197,21 @@ async function checkLegacy(
     reason: camera ? `${camera.name} is on the trust list of classical cameras.` : `Camera "${claim.cameraId}" is not on the trust list.`,
   });
 
-  // 3. One RSA-PSS-2048 signature over the claim. Classical only: after Q-Day it
-  //    counts only if the item was logged before Q-Day.
+  // 3. One RSA signature over the claim (RSA-PSS-2048, or the demo's toy RSA-96).
+  //    Classical only: after Q-Day it counts only if the item was logged before Q-Day.
   const valid = !!camera && await verifyLegacySignature(manifest, camera);
-  const counts = policy.counts('rsa-pss-2048');
+  const alg = camera?.alg ?? 'rsa-pss-2048';
+  const algName = ALG_NAMES[alg];
+  const counts = policy.counts(alg);
   const brokenSinceQDay = !counts;
   const reason = !camera ? 'Cannot check the signature of an untrusted camera.'
     : manifest.signature?.alg !== camera.alg ? `Signature is labelled "${String(manifest.signature?.alg)}", but this camera signs with ${camera.alg}.`
       : !valid ? 'Camera signature is invalid.'
-        : !counts ? 'Classical signature only; forgeable since Q-Day (RSA-PSS-2048), and not anchored in the log before Q-Day.'
-          : policy.anchored && policy.brokenNow('rsa-pss-2048')
-            ? 'Capture claim is signed by the camera (RSA-PSS-2048, classical only), anchored in the log before Q-Day.'
-            : 'Capture claim is signed by the camera (RSA-PSS-2048, classical only).';
-  add({ name: 'Camera signature', pass: valid && counts, reason, alg: 'rsa-pss-2048', brokenSinceQDay });
+        : !counts ? `Classical signature only; forgeable since Q-Day (${algName}), and not anchored in the log before Q-Day.`
+          : policy.anchored && policy.brokenNow(alg)
+            ? `Capture claim is signed by the camera (${algName}, classical only), anchored in the log before Q-Day.`
+            : `Capture claim is signed by the camera (${algName}, classical only).`;
+  add({ name: 'Camera signature', pass: valid && counts, reason, alg, brokenSinceQDay });
 
   // 4. Logged.
   addLogCheck(add, log, policy);

@@ -3,7 +3,7 @@
 import type { Alg, WorldMode, WorldState } from './manifest.js';
 
 /** What a large quantum computer breaks: everything built on factoring or discrete logs. */
-export const QUANTUM_BROKEN_ALGS: readonly Alg[] = ['rsa-pss-2048', 'ed25519', 'es256'];
+export const QUANTUM_BROKEN_ALGS: readonly Alg[] = ['rsa-pss-2048', 'ed25519', 'es256', 'rsa-toy-96'];
 
 export const DEFAULT_Q_DAY_HEADLINE_YEAR = 2035;
 

@@ -1,4 +1,5 @@
 // DEMO SIMULATION — stands in for Shor's algorithm on a quantum computer.
+// The real live break (toy 96-bit RSA, factored in the browser) needs no route here; see client/src/lib/toyRsa.ts.
 import { Router, type Response } from 'express';
 import { attackError, forgeHybrid, forgeLegacy, recoverKey, requireQDay, resetDemo } from '../attack.js';
 

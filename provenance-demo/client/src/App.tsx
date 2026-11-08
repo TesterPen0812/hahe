@@ -13,6 +13,8 @@ import UploadPage from './pages/UploadPage'
 const UniversePage = lazy(() => import('./universe/UniversePage'))
 // Webcam hand tracking loads only on its own page.
 const GestureTestPage = lazy(() => import('./gesture/GestureTestPage'))
+// DEV-only harness for the live toy-RSA break; unlinked.
+const ToyRsaTestPage = lazy(() => import('./pages/ToyRsaTestPage'))
 
 /** The universe landing page draws its own chrome; the phone's capture screen has none. */
 function Nav() {
@@ -45,6 +47,7 @@ export default function App() {
         <Route path="/split" element={<SplitScreenPage />} />
         <Route path="/passkey-test" element={<PasskeyTestPage />} />
         <Route path="/gesture" element={<Suspense fallback={null}><GestureTestPage /></Suspense>} />
+        {import.meta.env.DEV && <Route path="/toy-rsa" element={<Suspense fallback={null}><ToyRsaTestPage /></Suspense>} />}
       </Routes>
     </BrowserRouter>
   )
