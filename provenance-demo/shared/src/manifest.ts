@@ -5,13 +5,15 @@
 // ---------- Signatures and keys ----------
 
 // Every signature says which algorithm made it.
-export type Alg = 'ed25519' | 'ml-dsa-65' | 'rsa-pss-2048' | 'es256';
+// 'rsa-toy-96' is a deliberately breakable 96-bit key for the live demo only (see toyRsa.ts).
+export type Alg = 'ed25519' | 'ml-dsa-65' | 'rsa-pss-2048' | 'es256' | 'rsa-toy-96';
 
 export const ALG_NAMES: Record<Alg, string> = {
   'ed25519': 'Ed25519',
   'ml-dsa-65': 'ML-DSA-65',
   'rsa-pss-2048': 'RSA-PSS-2048',
   'es256': 'ES256',
+  'rsa-toy-96': 'Toy RSA-96 (demo only)',
 };
 
 export interface LabelledSignature {
@@ -109,7 +111,7 @@ export interface LegacyClaim {
 export interface LegacyManifest {
   kind: 'legacy';
   claim: LegacyClaim;
-  signature: LabelledSignature; // alg 'rsa-pss-2048', over the claim
+  signature: LabelledSignature; // the camera's alg ('rsa-pss-2048' or the demo's 'rsa-toy-96'), over the claim
 }
 
 export type Manifest = HybridManifest | LegacyManifest;
@@ -126,9 +128,12 @@ export interface TrustedAuthority {
 export interface LegacyCamera {
   id: string;            // e.g. "legacy-cam-1"
   name: string;          // e.g. "Classic Camera Co. RSA camera"
-  alg: 'rsa-pss-2048';
-  publicKey: string;     // SPKI DER, base64url
+  alg: LegacyAlg;
+  publicKey: string;     // rsa-pss-2048: SPKI DER; rsa-toy-96: the modulus n. Both base64url.
 }
+
+/** Classical camera algorithms. rsa-toy-96 exists only so the demo can break one live. */
+export type LegacyAlg = 'rsa-pss-2048' | 'rsa-toy-96';
 
 // The transparency log's own signing key: ML-DSA-65 only, so log anchors stay quantum-safe.
 export interface TrustedLog {
@@ -175,7 +180,7 @@ export interface WorldState {
   // REAL timestamp (ISO) when the presenter flipped to Q-Day; null in "today".
   // "Logged before Q-Day" always compares log timestamps against this, never against headlineYear.
   qDayAt: string | null;
-  brokenAlgorithms: Alg[];   // [] today; rsa-pss-2048, ed25519, es256 in q-day. ml-dsa-65 is never broken.
+  brokenAlgorithms: Alg[];   // [] today; rsa-pss-2048, ed25519, es256 (and the demo's rsa-toy-96) in q-day. ml-dsa-65 is never broken.
   headlineYear: number;      // story year for the UI only (e.g. 2035). Never used in verification.
 }
 

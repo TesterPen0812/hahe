@@ -29,8 +29,8 @@ const q1 = await get(); // a separate request: "visible on the next GET"
 const qAt = q1.qDayAt ? Date.parse(q1.qDayAt) : NaN;
 check('q-day visible on next GET', q1.mode === 'q-day', q1.mode);
 check('qDayAt is the real flip time (now)', qAt >= before - 1000 && qAt <= Date.now() + 1000, q1.qDayAt);
-check('broken = rsa-pss-2048, ed25519, es256',
-  [...q1.brokenAlgorithms].sort().join() === 'ed25519,es256,rsa-pss-2048' && !q1.brokenAlgorithms.includes('ml-dsa-65'), q1.brokenAlgorithms);
+check('broken = rsa-pss-2048, ed25519, es256, rsa-toy-96',
+  [...q1.brokenAlgorithms].sort().join() === 'ed25519,es256,rsa-pss-2048,rsa-toy-96' && !q1.brokenAlgorithms.includes('ml-dsa-65'), q1.brokenAlgorithms);
 check('headlineYear is story-only (not the real year)', q1.headlineYear !== new Date().getUTCFullYear(), q1.headlineYear);
 
 await new Promise((r) => setTimeout(r, 50));

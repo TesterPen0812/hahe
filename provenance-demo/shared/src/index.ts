@@ -4,6 +4,7 @@ export * from './hybrid.js';
 export * from './certs.js';
 export * from './passkey.js';
 export * from './rsa.js';
+export * from './toyRsa.js';
 export * from './legacy.js';
 export * from './loghead.js';
 export * from './dhash.js';
