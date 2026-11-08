@@ -1,10 +1,12 @@
 // Hooks and small helpers behind the stage components (kept apart so fast refresh works).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { runToyBreak, type ToyBreakOptions, type ToyBreakResult, type ToyBreakStage } from '../lib/toyRsa'
-import type { CardId, CardState, DoorTints } from './contract'
-import { closedGate, stepVerdictGate, type VerdictGateState } from './stageData'
+import type { CardId, CardState, DoorTints, Region } from './contract'
+import { closedGate, closePanels, noPanels, panelsUp, stepVerdictGate, syncPanels, type Panel, type PanelsState, type VerdictGateState } from './stageData'
 
 export interface ForgeRun {
+  /** Which run this is: a new B run is a new id, so its panels open again. */
+  id: number
   phase: 'running' | 'done' | 'error'
   n?: bigint
   bits?: number
@@ -17,6 +19,8 @@ export interface ForgeRun {
   /** What was signed: a doctored copy of the live photo (true) or the drawn fallback (false). */
   altered?: boolean
   uploaded?: boolean
+  /** The forgery's item in the feed, once uploaded. */
+  itemId?: string
   result?: ToyBreakResult
   error?: string
 }
@@ -30,35 +34,37 @@ export function useForge(onDone: (r: ToyBreakResult) => void) {
   const abort = useRef<AbortController | null>(null)
   const done = useRef(onDone)
   useEffect(() => { done.current = onDone })
+  const runs = useRef(0)
 
   const start = useCallback((opts: ToyBreakOptions = {}) => {
     abort.current?.abort()
     const ctl = new AbortController()
     abort.current = ctl
-    setRun({ phase: 'running', steps: 0, ms: 0 })
+    const id = ++runs.current
+    setRun({ id, phase: 'running', steps: 0, ms: 0 })
     const on = (s: ToyBreakStage) => {
       if (ctl.signal.aborted) return
       setRun(r => {
-        const b: ForgeRun = r ?? { phase: 'running', steps: 0, ms: 0 }
+        const b: ForgeRun = r ?? { id, phase: 'running', steps: 0, ms: 0 }
         switch (s.stage) {
           case 'target': return { ...b, n: s.n, bits: s.bits }
           case 'factoring': return { ...b, steps: s.steps, ms: s.ms }
           case 'factored': return { ...b, p: s.p, q: s.q, steps: s.steps, ms: s.ms }
           case 'key-rebuilt': return { ...b, d: s.d }
           case 'signed': return { ...b, signed: s.selfCheck, altered: s.altered }
-          case 'uploaded': return { ...b, uploaded: true }
+          case 'uploaded': return { ...b, uploaded: true, itemId: s.itemId }
         }
       })
     }
     runToyBreak(on, ctl.signal, opts).then(result => {
       if (ctl.signal.aborted) return
-      setRun(r => ({ ...(r ?? { steps: result.steps, ms: result.ms }), phase: 'done', result }))
+      setRun(r => ({ ...(r ?? { id, steps: result.steps, ms: result.ms }), phase: 'done', result }))
       done.current(result)
     }).catch((e: unknown) => {
       if (ctl.signal.aborted) return
       // The detail is for the console; on stage the readout just fades away without words.
       console.error('Key break failed:', e)
-      setRun(r => ({ ...(r ?? { steps: 0, ms: 0 }), phase: 'error', error: e instanceof Error ? e.message : String(e) }))
+      setRun(r => ({ ...(r ?? { id, steps: 0, ms: 0 }), phase: 'error', error: e instanceof Error ? e.message : String(e) }))
     })
   }, [])
 
@@ -89,6 +95,24 @@ export function useVerdictGate(run: ForgeRun | null, landed: boolean | undefined
     return () => clearTimeout(t)
   }, [result, g.open, fallback])
   return !!result && g.open
+}
+
+/**
+ * The stage's panels, open until put away (see `PanelsState`): the capture log for `log` (an arrival;
+ * a new arrival is a new object) and the readout and verdict for the run `runId`. Walking back to the
+ * tunnel or to Today (before the Post-Quantum Day door) puts the log away. `verdictReady`: the gate is open.
+ */
+export function usePanels<L>(log: L | null, runId: number | null, region: Region, verdictReady: boolean) {
+  const [s, setS] = useState<PanelsState<L, number>>(noPanels)
+  const [lastRegion, setLastRegion] = useState(region)
+  let next = syncPanels(s, log, runId)
+  if (region !== lastRegion) {
+    setLastRegion(region)
+    if (region !== 'qday') next = closePanels(next, 'log')
+  }
+  if (next !== s) setS(next)
+  const close = useCallback((which: Panel | 'all') => setS(c => closePanels(c, which)), [])
+  return { up: panelsUp(next, verdictReady), close }
 }
 
 const ORDER: CardId[] = ['today', 'qday', 'break', 'end']

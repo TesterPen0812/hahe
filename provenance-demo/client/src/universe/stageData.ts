@@ -201,3 +201,79 @@ export function stepVerdictGate<R>(g: VerdictGateState<R>, result: R | null, lan
   if (!landed) return g.sawDown ? g : { ...g, sawDown: true }
   return g.sawDown ? { ...g, open: true } : g
 }
+
+// ── what stays on stage: the presenter puts each panel away; nothing goes by the clock ──
+
+export type Panel = 'log' | 'readout' | 'verdict'
+
+/**
+ * The capture log (keyed by its arrival) and the forge run's readout and verdict (keyed by the run).
+ * Each stays open until it is put away; a new arrival or a new run opens its panels again.
+ */
+export interface PanelsState<L, R> {
+  log: L | null
+  run: R | null
+  logClosed: boolean
+  readoutClosed: boolean
+  verdictClosed: boolean
+}
+export const noPanels = <L, R>(): PanelsState<L, R> =>
+  ({ log: null, run: null, logClosed: false, readoutClosed: false, verdictClosed: false })
+
+/** Follow what is on stage. A new arrival reopens the log; a new run reopens its readout and verdict. Returns `s` when nothing changed. */
+export function syncPanels<L, R>(s: PanelsState<L, R>, log: L | null, run: R | null): PanelsState<L, R> {
+  if (s.log !== log) s = { ...s, log, logClosed: false }
+  if (s.run !== run) s = { ...s, run, readoutClosed: false, verdictClosed: false }
+  return s
+}
+
+/** Put one panel away (a click on it), or every one (Esc). Returns `s` when nothing changed. */
+export function closePanels<L, R>(s: PanelsState<L, R>, which: Panel | 'all'): PanelsState<L, R> {
+  const log = which === 'all' || which === 'log'
+  const readout = which === 'all' || which === 'readout'
+  const verdict = which === 'all' || which === 'verdict'
+  if ((!log || s.logClosed) && (!readout || s.readoutClosed) && (!verdict || s.verdictClosed)) return s
+  return {
+    ...s,
+    logClosed: s.logClosed || log,
+    readoutClosed: s.readoutClosed || readout,
+    verdictClosed: s.verdictClosed || verdict,
+  }
+}
+
+/** Which panels are up. `verdictReady`: the forgery has landed (the verdict gate is open). */
+export function panelsUp<L, R>(s: PanelsState<L, R>, verdictReady: boolean): Record<Panel, boolean> {
+  return {
+    log: s.log !== null && !s.logClosed,
+    readout: s.run !== null && !s.readoutClosed,
+    verdict: s.run !== null && verdictReady && !s.verdictClosed,
+  }
+}
+
+/** After the forge is put away, B does nothing for this long (a double tap can't start a second break). */
+export const B_QUIET_MS = 2000
+
+export interface BreakKeyInput {
+  /** A key break is still running. */
+  running: boolean
+  /** A run (finished or failed) is on stage. */
+  hasRun: boolean
+  /** Its result is in but the forgery hasn't landed yet, so the verdict is still to come. */
+  settling: boolean
+  /** The verdict is up (not put away; a story card passing over it still counts). */
+  verdictUp: boolean
+  qday: boolean
+  /** ms since the forge was last put away. */
+  sinceDismiss: number
+}
+
+/**
+ * What B does. Mid-run, nothing. With the verdict up, B puts the run away. Otherwise, after Post-Quantum
+ * Day and outside the quiet spell, it starts a new run, which replaces the readout left on stage.
+ */
+export function breakKeyAction(i: BreakKeyInput): 'none' | 'dismiss' | 'start' {
+  if (i.running || i.settling) return 'none'
+  if (i.verdictUp) return 'dismiss'
+  if (!i.qday) return i.hasRun ? 'dismiss' : 'none'
+  return i.sinceDismiss < B_QUIET_MS ? 'none' : 'start'
+}
