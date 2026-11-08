@@ -1,7 +1,7 @@
 // Hooks and small helpers behind the stage components (kept apart so fast refresh works).
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { runToyBreak, type ToyBreakOptions, type ToyBreakResult, type ToyBreakStage } from '../lib/toyRsa'
-import type { CardId, CardState, DoorTints, Region } from './contract'
+import type { CardId, CardState, DoorTints } from './contract'
 import { closedGate, closePanels, noPanels, panelsUp, stepVerdictGate, syncPanels, type Panel, type PanelsState, type VerdictGateState } from './stageData'
 
 export interface ForgeRun {
@@ -99,23 +99,18 @@ export function useVerdictGate(run: ForgeRun | null, landed: boolean | undefined
 
 /**
  * The stage's panels, open until put away (see `PanelsState`): the capture log for `log` (an arrival;
- * a new arrival is a new object) and the readout and verdict for the run `runId`. Walking back to the
- * tunnel or to Today (before the Post-Quantum Day door) puts the log away. `verdictReady`: the gate is open.
+ * a new arrival is a new object) and the readout and verdict for the run `runId`. Only Esc, a click or
+ * the next one closes them: walking between worlds never does. `verdictReady`: the gate is open.
  */
-export function usePanels<L>(log: L | null, runId: number | null, region: Region, verdictReady: boolean) {
+export function usePanels<L>(log: L | null, runId: number | null, verdictReady: boolean) {
   const [s, setS] = useState<PanelsState<L, number>>(noPanels)
-  const [lastRegion, setLastRegion] = useState(region)
-  let next = syncPanels(s, log, runId)
-  if (region !== lastRegion) {
-    setLastRegion(region)
-    if (region !== 'qday') next = closePanels(next, 'log')
-  }
+  const next = syncPanels(s, log, runId)
   if (next !== s) setS(next)
   const close = useCallback((which: Panel | 'all') => setS(c => closePanels(c, which)), [])
   return { up: panelsUp(next, verdictReady), close }
 }
 
-const ORDER: CardId[] = ['today', 'qday', 'break', 'end']
+const ORDER: CardId[] = ['today', 'qday', 'break']
 
 /**
  * DEV only (`?mockwalk`): cycles the cards so the screen can be built before the scene emits them.
@@ -152,7 +147,8 @@ export function useMockCard(enabled: boolean): CardState | null {
   return card
 }
 
-const KEY = 'uv.doorTints'
+// the version changed with the door colours: tints saved before can't override the new defaults
+const KEY = 'uv.doorTints.v2'
 export function loadTints(): Partial<DoorTints> {
   try { return JSON.parse(localStorage.getItem(KEY) ?? '{}') as Partial<DoorTints> } catch { return {} }
 }

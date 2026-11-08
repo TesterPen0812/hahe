@@ -304,3 +304,16 @@
   .uv-card-text { transform: none; }
   .uv-card.in h2, .uv-card.in p { animation: none; }
 }
+
+/* The ending: a mask over everything on stage (the scene sets its shape), then the closing line on black. */
+.uv-ending { position: absolute; inset: 0; z-index: 30; display: none; }
+.uv-closing {
+  position: absolute; inset: 0; z-index: 31; pointer-events: none;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.5em;
+  font-family: var(--story); color: #f2f1ec; text-align: center; padding: 0 8vw;
+}
+.uv-closing p { margin: 0; font-size: clamp(22px, 3.4vw, 46px); font-weight: 300; letter-spacing: 0.01em; line-height: 1.25; }
+.uv-closing p { opacity: 0; transition: opacity 0.5s ease-out; }
+.uv-closing.on p { opacity: 1; transition: opacity 3.2s ease-in-out 0.7s; }
+/* the second beat: once the first has come in and held for a little under two seconds */
+.uv-closing.on p:nth-child(2) { transition-delay: 5.65s; }
