@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type WheelEvent as ReactWheelEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { ItemSummary, WorldMode } from '@provenance-demo/shared'
 import '@fontsource-variable/newsreader/opsz.css'
@@ -14,11 +14,11 @@ import type { DoorId, DoorTints, RGB, WalkControls } from './contract'
 import { useGesture, useHands } from '../gesture/gestures'
 import { StoryCard } from './StoryCard'
 import { CaptureLog } from './CaptureLog'
-import { ForgeReadout, VERDICT_MS } from './ForgeReadout'
+import { ForgeReadout } from './ForgeReadout'
 import { StageTools } from './StageTools'
-import { loadTints, useForge, useMockCard, useVerdictGate } from './stageHooks'
+import { loadTints, useForge, useMockCard, usePanels, useVerdictGate } from './stageHooks'
 import { toForgeryArrival, toLiveArrival } from './sealParts'
-import { cardShowing } from './stageData'
+import { breakKeyAction, cardShowing } from './stageData'
 import './universe.css'
 
 const INITIAL: EngineState = {
@@ -30,8 +30,6 @@ const params = new URLSearchParams(window.location.search)
 const REHEARSE = import.meta.env.DEV && params.has('rehearse')
 // Building the screen before the scene emits walk state: /?mockwalk cycles the cards.
 const MOCKWALK = import.meta.env.DEV && params.has('mockwalk')
-/** After a finished run is put away, B does nothing for this long. */
-const B_QUIET_MS = 2000
 
 
 function webglAvailable() {
@@ -117,27 +115,60 @@ export default function UniversePage() {
   // …and for any story card to clear, so a card never hides it and its reading time starts once it's seen.
   const card = MOCKWALK ? mockCard : state.walk.card
   const cardUp = view === 'journey' && cardShowing(card?.strength)
-  const verdict = verdictOpen && !cardUp
-  // Once the verdict has been read (or the run failed and faded), the readout goes; the 3D frame stays.
-  const forgeOver = forgeRun?.phase === 'error' ? 'error' : verdict ? 'verdict' : null
+  // The capture log, the readout and the verdict stay up until put away: a click on one, Esc for all,
+  // the next photo (log) or the next run (readout and verdict).
+  const panels = usePanels(feed.arrival, forgeRun?.id ?? null, state.walk.region, verdictOpen)
+  const { close: closePanel } = panels
+  const verdict = panels.up.verdict && !cardUp
+  // A failed run leaves no words on stage: its readout fades and the run is put away.
+  const failedRun = forgeRun?.phase === 'error'
   useEffect(() => {
-    if (!forgeOver) return
-    const t = setTimeout(dismissForge, forgeOver === 'verdict' ? VERDICT_MS + 400 : 1500)
+    if (!failedRun) return
+    const t = setTimeout(dismissForge, 1500)
     return () => clearTimeout(t)
-  }, [forgeOver, dismissForge])
+  }, [failedRun, dismissForge])
   // Only after Q-Day: before it there is nothing to break. A finished run can always be put away.
   const qday = world.mode === 'q-day'
   // The fake is a doctored copy of the newest live photo the walk has shown (none yet: the drawn fake).
   const sourceUrl = feed.arrival?.imageUrl
   const breakKey = useCallback(() => {
-    if (forgeRun?.phase === 'running') return
-    if (forgeRun) dismissForge()
-    else if (qday && performance.now() - putAwayAt.current > B_QUIET_MS) {
+    const action = breakKeyAction({
+      running: forgeRun?.phase === 'running',
+      hasRun: !!forgeRun,
+      settling: forgeRun?.phase === 'done' && !verdictOpen,
+      verdictUp: panels.up.verdict,
+      qday,
+      sinceDismiss: performance.now() - putAwayAt.current,
+    })
+    if (action === 'dismiss') dismissForge()
+    else if (action === 'start') {
       startForge({ sourceUrl })
       // The camera glides to the break stop while the key breaks, so the forgery lands in view.
       ;(engine.current as WalkControls | null)?.goToBreak?.()
     }
-  }, [forgeRun, startForge, dismissForge, qday, sourceUrl])
+  }, [forgeRun, verdictOpen, panels.up.verdict, startForge, dismissForge, qday, sourceUrl])
+  // Esc puts away everything open (and aborts a running break). With nothing open it passes through to
+  // the walk, whose own Esc steps back a world.
+  const anyUp = view === 'journey' && (panels.up.log || panels.up.readout || panels.up.verdict)
+  useEffect(() => {
+    if (!anyUp) return
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || typing(e)) return
+      e.stopImmediatePropagation()
+      closePanel('all')
+      dismissForge()
+    }
+    // Capture phase on window: runs before the walk's own keydown listener, which it then never reaches.
+    window.addEventListener('keydown', onEsc, true)
+    return () => window.removeEventListener('keydown', onEsc, true)
+  }, [anyUp, closePanel, dismissForge])
+  // The panels sit over the canvas; a wheel over them still walks.
+  const onStoryWheel = useCallback((e: ReactWheelEvent) => {
+    host.current?.querySelector('canvas')?.dispatchEvent(new WheelEvent('wheel', {
+      deltaX: e.deltaX, deltaY: e.deltaY, deltaZ: e.deltaZ, deltaMode: e.deltaMode,
+      clientX: e.clientX, clientY: e.clientY, bubbles: true, cancelable: true,
+    }))
+  }, [])
 
   // ── door colours (demo-only tuning, remembered in this browser) ──
   const [tints, setTints] = useState<Partial<DoorTints>>(loadTints)
@@ -257,9 +288,12 @@ export default function UniversePage() {
         )}
       </header>
 
-      <div className="uv-story" hidden={!journey}>
-        <CaptureLog item={feed.arrival} hidden={!!forgeRun} fold={!!forgeRun?.result} region={state.walk.region} />
-        <ForgeReadout run={forgeRun} verdict={verdict} />
+      <div className="uv-story" hidden={!journey} onWheel={onStoryWheel}>
+        <CaptureLog item={feed.arrival} open={panels.up.log} forging={panels.up.readout} onClose={() => closePanel('log')} />
+        <ForgeReadout
+          run={forgeRun} readout={panels.up.readout} verdict={verdict}
+          onCloseReadout={() => closePanel('readout')} onCloseVerdict={() => closePanel('verdict')}
+        />
       </div>
 
       <StoryCard card={journey ? card : null} />
