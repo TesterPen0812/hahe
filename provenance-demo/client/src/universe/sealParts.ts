@@ -43,11 +43,20 @@ const NAMES: Record<TrustLabel, string> = {
   unknown: 'Not proven',
 }
 
+/** The forgery as the screen hands it to the scene: `altered` when it is a doctored copy of a live photo. */
+export type ForgeryShown = ForgeryArrival & { altered?: boolean }
+
 /**
  * The label under a live photo: who or what is proven, then the seals. A forgery reads "Rejected" only
  * while our verifier actually rejects it (status grey); being a forgery alone never decides the verdict.
+ * A doctored copy of a live photo always says so first, whatever the verdict, so the screen never shows
+ * it as the genuine photo.
  */
 export function labelFor(a: LiveArrival, forgery = false): Label {
+  if (forgery && (a as ForgeryShown).altered) {
+    return a.status === 'grey' ? { kicker: 'Altered copy · rejected', tone: 'rose', parts: a.parts }
+      : { kicker: 'Altered copy', tone: 'ash', parts: a.parts }
+  }
   if (forgery && a.status === 'grey') return { kicker: 'Rejected', tone: 'rose', parts: a.parts }
   const tone = a.status === 'green' ? 'mint' : a.status === 'amber' ? 'brass' : 'ash'
   const kicker = NAMES[a.label as TrustLabel] ?? a.label
@@ -60,9 +69,11 @@ export function toLiveArrival(i: ItemSummary): LiveArrival {
 }
 
 /** The toy-RSA fake: judged by our verifier (rejected) and by the naive one (fooled). */
-export function toForgeryArrival(r: { itemId: string; imageUrl: string; ours: VerificationResult; naive: VerificationResult }): ForgeryArrival {
+export function toForgeryArrival(
+  r: { itemId: string; imageUrl: string; ours: VerificationResult; naive: VerificationResult; altered?: boolean },
+): ForgeryShown {
   return {
     id: r.itemId, url: r.imageUrl, status: r.ours.status, label: r.ours.label,
-    parts: partsFromVerification(r.ours, { forgery: true }), naiveStatus: r.naive.status,
+    parts: partsFromVerification(r.ours, { forgery: true }), naiveStatus: r.naive.status, altered: !!r.altered,
   }
 }

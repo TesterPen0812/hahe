@@ -33,6 +33,9 @@ export function ForgeReadout({ run, verdict }: { run: ForgeRun | null; verdict: 
           {run.d !== undefined && (
             <div className="row"><dt>d</dt><dd>{run.d.toString()}</dd></div>
           )}
+          {run.signed !== undefined && run.altered && (
+            <div className="row"><dt>σ</dt><dd className="note">altered copy of your photo</dd></div>
+          )}
         </dl>
       </section>
       {r && verdict && (

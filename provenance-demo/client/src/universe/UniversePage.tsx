@@ -127,15 +127,17 @@ export default function UniversePage() {
   }, [forgeOver, dismissForge])
   // Only after Q-Day: before it there is nothing to break. A finished run can always be put away.
   const qday = world.mode === 'q-day'
+  // The fake is a doctored copy of the newest live photo the walk has shown (none yet: the drawn fake).
+  const sourceUrl = feed.arrival?.imageUrl
   const breakKey = useCallback(() => {
     if (forgeRun?.phase === 'running') return
     if (forgeRun) dismissForge()
     else if (qday && performance.now() - putAwayAt.current > B_QUIET_MS) {
-      startForge()
+      startForge({ sourceUrl })
       // The camera glides to the break stop while the key breaks, so the forgery lands in view.
       ;(engine.current as WalkControls | null)?.goToBreak?.()
     }
-  }, [forgeRun, startForge, dismissForge, qday])
+  }, [forgeRun, startForge, dismissForge, qday, sourceUrl])
 
   // ── door colours (demo-only tuning, remembered in this browser) ──
   const [tints, setTints] = useState<Partial<DoorTints>>(loadTints)

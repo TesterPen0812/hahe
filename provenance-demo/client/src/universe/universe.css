@@ -156,6 +156,7 @@
 .uv-forge dt::before { content: "› "; }
 .uv-forge dd { margin: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
 .uv-forge dd em { font-style: normal; color: rgba(214, 236, 224, 0.42); margin-left: 1.2em; word-break: normal; white-space: nowrap; }
+.uv-forge dd.note { word-break: normal; }
 .uv-forge dd i { font-style: normal; color: rgba(214, 236, 224, 0.42); padding: 0 0.3em; }
 .uv-forge dd.live::after { content: ""; display: inline-block; width: 0.55em; height: 1.05em; margin-left: 0.5em; vertical-align: -0.18em; background: currentColor; animation: uv-blink .9s steps(1) infinite; }
 @keyframes uv-type { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0 0 0 0) } }

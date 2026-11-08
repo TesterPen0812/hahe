@@ -1,6 +1,6 @@
 // Hooks and small helpers behind the stage components (kept apart so fast refresh works).
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { runToyBreak, type ToyBreakResult, type ToyBreakStage } from '../lib/toyRsa'
+import { runToyBreak, type ToyBreakOptions, type ToyBreakResult, type ToyBreakStage } from '../lib/toyRsa'
 import type { CardId, CardState, DoorTints } from './contract'
 import { closedGate, stepVerdictGate, type VerdictGateState } from './stageData'
 
@@ -14,19 +14,24 @@ export interface ForgeRun {
   q?: bigint
   d?: bigint
   signed?: boolean
+  /** What was signed: a doctored copy of the live photo (true) or the drawn fallback (false). */
+  altered?: boolean
   uploaded?: boolean
   result?: ToyBreakResult
   error?: string
 }
 
-/** The live break: factor the toy camera's public modulus in a worker, rebuild d, sign, upload, judge. */
+/**
+ * The live break: factor the toy camera's public modulus in a worker, rebuild d, sign, upload, judge.
+ * `start({ sourceUrl })` names the live photo to doctor; without one the fake is the drawn fallback.
+ */
 export function useForge(onDone: (r: ToyBreakResult) => void) {
   const [run, setRun] = useState<ForgeRun | null>(null)
   const abort = useRef<AbortController | null>(null)
   const done = useRef(onDone)
   useEffect(() => { done.current = onDone })
 
-  const start = useCallback(() => {
+  const start = useCallback((opts: ToyBreakOptions = {}) => {
     abort.current?.abort()
     const ctl = new AbortController()
     abort.current = ctl
@@ -40,12 +45,12 @@ export function useForge(onDone: (r: ToyBreakResult) => void) {
           case 'factoring': return { ...b, steps: s.steps, ms: s.ms }
           case 'factored': return { ...b, p: s.p, q: s.q, steps: s.steps, ms: s.ms }
           case 'key-rebuilt': return { ...b, d: s.d }
-          case 'signed': return { ...b, signed: s.selfCheck }
+          case 'signed': return { ...b, signed: s.selfCheck, altered: s.altered }
           case 'uploaded': return { ...b, uploaded: true }
         }
       })
     }
-    runToyBreak(on, ctl.signal).then(result => {
+    runToyBreak(on, ctl.signal, opts).then(result => {
       if (ctl.signal.aborted) return
       setRun(r => ({ ...(r ?? { steps: result.steps, ms: result.ms }), phase: 'done', result }))
       done.current(result)
