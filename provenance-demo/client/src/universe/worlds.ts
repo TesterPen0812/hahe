@@ -90,8 +90,9 @@ const GLYPHS = '01#%&*+=:;/\\<>{}ABCDEF$@^~|?![]9'
 const GLYPH_SHARE: Record<number, number> = { 11: 0.24, 12: 0.14, 13: 0.3, 14: 0, 20: 1 }
 
 let atlas: THREE.Texture | null = null
-/** White characters on a transparent atlas, drawn once at runtime and shared by every layer. */
-function glyphAtlas() {
+/** White characters on a transparent atlas, drawn once at runtime and shared by every layer
+ * (and by the screen's character crossing into Post-Quantum Day). */
+export function glyphAtlas() {
   if (atlas) return atlas
   const cell = 64
   const canvas = document.createElement('canvas')
@@ -365,12 +366,13 @@ export function glowingPath(
   return p
 }
 
-/** The gate is round: a circle of radius width/2 whose top is at `height`. */
-export const DOOR = { width: 2.3, height: 3.4, frame: 1.1, slit: 0.012 }
+/** A doorway: an opening `width` wide and `height` tall, standing on the ground. Proportioned like
+ * a doorway you'd walk through, not a pane: about 4 wide to 5 high. */
+export const DOOR = { width: 2.4, height: 3.0, frame: 1.1, slit: 0.012 }
 
 /** Shared by the membrane, sliding dust and CPU picking. */
 export function doorHalfWidth(open: number) {
-  return DOOR.slit + 1.138 * THREE.MathUtils.clamp(open, 0, 1)
+  return DOOR.slit + (DOOR.width / 2 - DOOR.slit) * THREE.MathUtils.clamp(open, 0, 1)
 }
 
 export function doorProgress(remaining: number) {
@@ -437,9 +439,180 @@ export function portal(tint: RGB, target: THREE.WebGLRenderTarget, lowPower = fa
   sparks.frustumCulled = false
   sparks.renderOrder = 6
 
-  group.add(content, sparks)
+  // No frame line: a soft glow of the next world's colour round the opening, and a pool of it on
+  // the floor in front, so the doorway reads as light rather than glass.
+  const margin = 2.2
+  const haloMat = new THREE.ShaderMaterial({
+    vertexShader: portalVertex,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uTint; uniform vec2 uSize; uniform float uHalfWidth, uPresence, uOpen, uImpact, uFloor;
+      varying vec2 vUv;
+      void main() {
+        vec2 plane = uSize + vec2(${(margin * 2).toFixed(1)});
+        vec2 local = (vUv - 0.5) * plane;
+        float a;
+        if (uFloor > 0.5) {
+          // on the floor: a pool spreading out from the threshold toward the visitor
+          vec2 q = vec2(local.x / (uHalfWidth * 1.6 + 0.4), (plane.y * 0.5 - local.y) / 3.2);
+          a = exp(-dot(q, q) * 2.2) * 0.13;
+        } else {
+          local.y += uSize.y * 0.5;            // y from the ground up
+          if (local.y < 0.0) discard;
+          vec2 d2 = abs(local - vec2(0.0, uSize.y * 0.5)) - vec2(uHalfWidth, uSize.y * 0.5);
+          float d = length(max(d2, 0.0)) + min(max(d2.x, d2.y), 0.0);
+          // wide and faint, with a tighter warmth hugging the edge; nothing inside the opening
+          a = (exp(-max(d, 0.0) * 2.0) * 0.1 + exp(-max(d, 0.0) * 7.0) * 0.16) * smoothstep(-0.06, 0.02, d);
+        }
+        a *= uPresence * (0.35 + 0.65 * smoothstep(0.0, 0.4, uOpen)) * (1.0 + uImpact * 0.8);
+        if (a < 0.002) discard;
+        gl_FragColor = vec4(uTint * a, a);
+      }
+    `,
+    uniforms: { ...shared, uSize: { value: new THREE.Vector2(DOOR.width, DOOR.height) }, uFloor: { value: 0 } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  })
+  const halo = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width + margin * 2, DOOR.height + margin * 2), haloMat)
+  halo.position.set(0, DOOR.height / 2, 0.03)
+  halo.renderOrder = 5
+  const poolMat = haloMat.clone()
+  poolMat.uniforms = { ...haloMat.uniforms, uFloor: { value: 1 } }
+  const pool = new THREE.Mesh(new THREE.PlaneGeometry(DOOR.width + margin * 2, DOOR.height + margin * 2), poolMat)
+  pool.rotation.x = -Math.PI / 2
+  // the plane's far edge sits at the threshold; it spreads toward the visitor
+  pool.position.set(0, 0.03, (DOOR.height + margin * 2) / 2)
+  pool.renderOrder = 5
+
+  group.add(content, sparks, halo, pool)
   group.visible = false
   return { group, content, contentMat, sparkMat }
+}
+
+const fixed01 = (i: number, salt: number) => portalRandom(i, salt)
+
+export interface SurroundOptions {
+  /** Where the surround may grow, in the door's frame (x across, y up): true inside the wall. */
+  inside: (x: number, y: number) => boolean
+  /** Bounding box of that shape: [x half-extent, top]. */
+  extent: [number, number]
+  count: number
+  /** How tightly grains crowd the opening's edges (world units); small hugs, large fills the wall. */
+  hug: number
+  /** A grain's own colour from its brightness and a random tone. */
+  color: (brightness: number, tone: number) => RGB
+  size: number
+  seed: number
+  name: string
+}
+
+/** A grain of the surround: where the next world's colour has crept into it (0..1) and how bright. */
+export interface Surround {
+  pos: Float32Array; col: Float32Array; size: Float32Array; hang: Float32Array
+  base: Float32Array; leak: Float32Array; bright: Float32Array
+}
+
+/**
+ * Grains crowding round a doorway, in the door's own frame (+z toward the visitor). They pack up to
+ * the opening and spill a little over its edges, the spill in front of it so it reads over the view
+ * through. Near the opening the next world's colour has crept into them (recoloured by tintSurround).
+ */
+export function doorSurround(o: SurroundOptions): Surround {
+  const hw = DOOR.width / 2, H = DOOR.height
+  const pos: number[] = [], col: number[] = [], size: number[] = [], hang: number[] = []
+  const base: number[] = [], leak: number[] = [], bright: number[] = []
+  // distance outside the opening's rectangle (negative inside)
+  const outside = (x: number, y: number) => {
+    const dx = Math.abs(x) - hw, dy = Math.max(y - H, -y)
+    return Math.hypot(Math.max(dx, 0), Math.max(dy, 0)) + Math.min(Math.max(dx, dy), 0)
+  }
+  for (let i = 0, tries = 0; pos.length < o.count * 3 && tries < o.count * 40; tries++) {
+    const k = tries
+    const x = (fixed01(k, o.seed + 1) * 2 - 1) * o.extent[0]
+    const y = fixed01(k, o.seed + 2) * o.extent[1]
+    if (!o.inside(x, y)) continue
+    const d = outside(x, y)
+    // a ragged edge: grains reach a little way into the opening
+    const reach = 0.1 + 0.16 * fixed01(k, o.seed + 3) ** 2
+    if (d < -reach) continue
+    // crowd the edges
+    if (fixed01(k, o.seed + 4) > 0.22 + 0.78 * Math.exp(-Math.max(d, 0) / o.hug)) continue
+    const spill = d < 0.05
+    const z = spill ? 0.06 + fixed01(k, o.seed + 5) * 0.4
+      : (fixed01(k, o.seed + 5) - 0.7) * 0.9 * (1 + Math.min(d, 1.5))
+    pos.push(x, y, z)
+    const near = Math.exp(-Math.max(d, 0) / 0.55)
+    const b = (0.35 + 1.1 * fixed01(k, o.seed + 6) ** 1.6) * (0.8 + near * 0.25)
+    const tone = fixed01(k, o.seed + 7)
+    const c = o.color(b, tone)
+    base.push(...c)
+    col.push(...c)
+    // the next world's colour has crept into some of the grains by the opening
+    leak.push(near * (fixed01(k, o.seed + 8) < 0.45 ? 0.85 : 0.2))
+    bright.push(b)
+    size.push(o.size * THREE.MathUtils.lerp(0.8, 1.7, fixed01(k, o.seed + 9) ** 2) * (spill ? 0.85 : 1))
+    hang.push(i++, Math.atan2(x, y), fixed01(k, o.seed + 10), 0)
+  }
+  return {
+    pos: new Float32Array(pos), col: new Float32Array(col), size: new Float32Array(size), hang: new Float32Array(hang),
+    base: new Float32Array(base), leak: new Float32Array(leak), bright: new Float32Array(bright),
+  }
+}
+
+/** Recolour a surround's grains toward a door's tint, in place. */
+export function tintSurround(colors: Float32Array, s: Surround, tint: RGB) {
+  for (let i = 0; i < s.leak.length; i++) {
+    const w = s.leak[i], b = s.bright[i] * 1.1
+    for (let c = 0; c < 3; c++) colors[i * 3 + c] = s.base[i * 3 + c] * (1 - w) + tint[c] * 0.75 * b * w
+  }
+}
+
+export interface Leak { pos: Float32Array; col: Float32Array; size: Float32Array; hang: Float32Array; drift: Float32Array; bright: Float32Array }
+
+/**
+ * Motes of the next world's colour leaving the opening: most drift out and settle on the floor in
+ * front of the door, some into the grains beside it, a few float out into the air. Door frame;
+ * `ground(x, z)` is the floor height in that frame. Drawn with field mode 21.
+ */
+export function doorLeak(count: number, ground: (x: number, z: number) => number, seed: number): Leak {
+  const hw = DOOR.width / 2, H = DOOR.height
+  const pos = new Float32Array(count * 3), col = new Float32Array(count * 3), size = new Float32Array(count)
+  const hang = new Float32Array(count * 4), drift = new Float32Array(count * 4), bright = new Float32Array(count)
+  for (let i = 0; i < count; i++) {
+    const r = (salt: number) => fixed01(i, seed + salt)
+    const x = (r(1) * 2 - 1) * hw * 0.92, y = 0.1 + r(2) * (H - 0.2), z = -0.05
+    pos.set([x, y, z], i * 3)
+    const kind = r(3)
+    let dx: number, dy: number, dz: number
+    if (kind < 0.6) {
+      // out over the threshold and down onto the floor
+      dz = 0.8 + r(4) * 3.6
+      dx = x * (0.3 + r(5) * 0.8) + (r(6) - 0.5) * 1.4
+      dy = ground(x + dx, z + dz) + 0.03 - y
+    } else if (kind < 0.94) {
+      // sideways into the grains beside the opening
+      const side = x < 0 ? -1 : 1
+      dx = side * (hw + 0.2 + r(4) * 1.1) - x
+      dy = (r(5) - 0.5) * 1.2
+      dz = 0.1 + r(6) * 0.7
+    } else {
+      // out into the air
+      dz = 1.2 + r(4) * 2.8
+      dx = (r(5) - 0.5) * 1.6
+      dy = 0.2 + r(6) * 0.8
+    }
+    drift.set([dx, dy, dz, 0], i * 4)
+    // aHang: drifts per second (each takes 4–10 s), phase
+    hang.set([1 / (4 + r(7) * 6), r(8), 0, 0], i * 4)
+    bright[i] = 0.4 + r(9) ** 2 * 0.9
+    size[i] = 0.012 + r(10) ** 2 * 0.016
+  }
+  return { pos, col, size, hang, drift, bright }
+}
+
+/** Colour the leaking motes with a door's tint, in place. */
+export function tintLeak(colors: Float32Array, bright: Float32Array, tint: RGB) {
+  for (let i = 0; i < bright.length; i++) {
+    for (let c = 0; c < 3; c++) colors[i * 3 + c] = (tint[c] * 0.95 + 0.05) * bright[i]
+  }
 }
 
 export function gateWall(tint: RGB, lowPower: boolean) {
@@ -456,7 +629,7 @@ export function gateWall(tint: RGB, lowPower: boolean) {
       // x: movement per unit half-width, y: reach, z: top beam, w: -1 for slab.
       shape.push(top ? 0 : side * (1 - reach), reach, top ? 1 : 0, -1)
       const b = r(88) < 0.09 ? 1.5 : 0.65 + r(89) * 0.35
-      col.push((tint[0] * 0.7 + 0.3) * b, (tint[1] * 0.7 + 0.3) * b, (tint[2] * 0.7 + 0.3) * b)
+      col.push((tint[0] * 0.85 + 0.08) * b, (tint[1] * 0.85 + 0.08) * b, (tint[2] * 0.85 + 0.08) * b)
       bright.push(b)
       size.push(0.04 * THREE.MathUtils.lerp(0.6, 1.2, r(89)))
     } else {
@@ -464,7 +637,7 @@ export function gateWall(tint: RGB, lowPower: boolean) {
       const bell = (r(92) + r(93) + r(94)) * (2 / 3) - 1
       pos.push(bell * 0.02, 0.015, distance + 0.175)
       shape.push(bell * (1 + distance * 0.35), 0, 0, distance)
-      col.push(tint[0] * 0.7 + 0.3, tint[1] * 0.7 + 0.3, tint[2] * 0.7 + 0.3)
+      col.push(tint[0] * 0.85 + 0.08, tint[1] * 0.85 + 0.08, tint[2] * 0.85 + 0.08)
       bright.push(1)
       size.push(0.04 * THREE.MathUtils.lerp(0.6, 1.2, r(94)))
     }
@@ -476,9 +649,9 @@ export function gateWall(tint: RGB, lowPower: boolean) {
 export function tintGateWall(colors: Float32Array, bright: Float32Array, tint: RGB) {
   for (let i = 0; i < bright.length; i++) {
     const b = bright[i]
-    colors[i * 3] = (tint[0] * 0.7 + 0.3) * b
-    colors[i * 3 + 1] = (tint[1] * 0.7 + 0.3) * b
-    colors[i * 3 + 2] = (tint[2] * 0.7 + 0.3) * b
+    colors[i * 3] = (tint[0] * 0.85 + 0.08) * b
+    colors[i * 3 + 1] = (tint[1] * 0.85 + 0.08) * b
+    colors[i * 3 + 2] = (tint[2] * 0.85 + 0.08) * b
   }
 }
 

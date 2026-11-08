@@ -1,9 +1,9 @@
-// A door's name written in light just above its frame, e.g. "Q-DAY · 2035". Original design.
+// A door's name written in light just above its frame, e.g. "POST-QUANTUM DAY · 2035". Original design.
 import * as THREE from 'three'
 import { DOOR, type RGB } from './worlds'
 
-const W = 1024, H = 144
-const WIDTH = 2.5 // world units
+const W = 2048, H = 160
+const WIDTH = 4.2 // world units: room for a long name over a 2.4-wide door
 
 export interface DoorCaption {
   mesh: THREE.Mesh
@@ -38,7 +38,8 @@ export function doorCaption(text: string, tint: RGB): DoorCaption {
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
   })
   const mesh = new THREE.Mesh(new THREE.PlaneGeometry(WIDTH, WIDTH * H / W), material)
-  mesh.position.y = DOOR.height + 0.62
+  // close over the opening, so it's still in view as the door fills the screen
+  mesh.position.y = DOOR.height + 0.42
   mesh.renderOrder = 7
   mesh.name = 'Door caption'
 
@@ -48,10 +49,14 @@ export function doorCaption(text: string, tint: RGB): DoorCaption {
     ctx.fillStyle = '#fff'
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.font = '300 64px -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Inter", sans-serif'
-    // Wide tracking reads as engraved light rather than a label.
-    ;(ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = '22px'
-    ctx.fillText(t.toUpperCase(), W / 2 + 11, H / 2 + 2)
+    // Wide tracking reads as engraved light rather than a label; a long name steps down to fit.
+    const text = t.toUpperCase()
+    for (let size = 76; size >= 40; size -= 4) {
+      ctx.font = `300 ${size}px -apple-system, BlinkMacSystemFont, "Helvetica Neue", "Inter", sans-serif`
+      ;(ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = `${Math.round(size * 0.3)}px`
+      if (ctx.measureText(text).width < W - 96) break
+    }
+    ctx.fillText(text, W / 2 + 11, H / 2 + 2)
     texture.needsUpdate = true
   }
   const setTint = (rgb: RGB) => {
