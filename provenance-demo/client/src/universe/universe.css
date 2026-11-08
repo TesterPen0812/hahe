@@ -43,24 +43,29 @@
 
 /* ── story cards: the walk slows, the world blurs, a line arrives ─────── */
 .uv-card { position: absolute; inset: 0; z-index: 8; pointer-events: none; display: grid; place-items: center; }
-/* In fast (0.4 s), a fixed hold (timed in StoryCard.tsx), out in 0.6 s. Veil and words share the beat;
-   each fades itself, so the veil's backdrop blur never sits under a fading parent. */
+/* No timers: StoryCard sets --card-text / --card-veil from how deep the camera is in the card's zone, and
+   --card-rise / --card-scale from how far through it, so the words travel with the walk. Veil and words
+   each fade themselves, so the veil's backdrop blur never sits under a fading parent. */
 .uv-card-veil {
-  position: absolute; inset: 0;
+  position: absolute; inset: 0; opacity: var(--card-veil, 1);
   background: radial-gradient(ellipse 80% 70% at 50% 50%, rgba(2, 3, 7, 0.5), rgba(2, 3, 7, 0.22));
   backdrop-filter: blur(12px) saturate(0.8); -webkit-backdrop-filter: blur(12px) saturate(0.8);
-  animation: uv-fade-in .4s ease-out both;
 }
 .uv-card-text {
   position: relative; text-align: center; padding: 0 6vw; max-width: 1400px;
-  animation: uv-card-in .4s cubic-bezier(.2, .8, .2, 1) both;
+  opacity: var(--card-text, 1);
+  transform: translate3d(0, var(--card-rise, 0px), 0) scale(var(--card-scale, 1));
+  will-change: opacity, transform;
 }
-.uv-card.out .uv-card-veil { animation: uv-fade-out .6s ease-in both; }
-.uv-card.out .uv-card-text { animation: uv-card-out .6s ease-in both; }
-@keyframes uv-fade-in { from { opacity: 0 } to { opacity: 1 } }
-@keyframes uv-fade-out { from { opacity: 1 } to { opacity: 0 } }
-@keyframes uv-card-in { from { opacity: 0; transform: translateY(14px); filter: blur(8px) } to { opacity: 1; transform: none; filter: blur(0) } }
-@keyframes uv-card-out { from { opacity: 1; filter: blur(0) } to { opacity: 0; filter: blur(6px) } }
+/* A letter still decoding: the real letter keeps its place (and width), a mono glyph stands over it. */
+.uv-card .ch { position: relative; }
+.uv-card .ch-l { opacity: 0; }
+.uv-card .ch-g {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font: 400 0.58em/1 var(--mono); font-style: normal; letter-spacing: 0; color: #cfe3d8;
+  text-shadow: 0 0 0.6em rgba(166, 236, 198, 0.35);
+}
+.uv-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .uv-card h2 {
   margin: 0; font: 340 clamp(52px, 7.4vw, 132px)/0.98 var(--display);
   letter-spacing: -0.028em; text-wrap: balance; color: #f6f3ec;
@@ -72,9 +77,8 @@
 }
 .uv-card-qday h2 { color: #fbe6dc; }
 .uv-card-end p { color: #f6f3ec; font-style: italic; }
-/* While a card is being read, the corner panels step back. */
+/* While a card is being read, the corner panels step back. (The verdict waits for the card in UniversePage.) */
 .uv:has(.uv-card.in) .uv-log, .uv:has(.uv-card.in) .uv-forge { opacity: 0.25; }
-.uv:has(.uv-card.in) .uv-verdict { display: none; }
 
 /* ── capture log: what happened to the photo that just arrived ─────────── */
 .uv-log {
@@ -138,8 +142,8 @@
 /* ── the live key break: a terminal printing onto the scene, no card ─── */
 .uv-forge {
   position: absolute; left: 28px; bottom: 26px; z-index: 7; box-sizing: border-box;
-  width: max-content; max-width: min(720px, calc(100vw - 56px));
-  font-size: clamp(12px, 0.9vw, 14px); line-height: 1.7; color: rgba(214, 236, 224, 0.86);
+  width: max-content; max-width: min(1100px, calc(100vw - 56px));
+  font-size: clamp(17px, 1.45vw, 24px); line-height: 1.6; color: rgba(214, 236, 224, 0.86);
   text-shadow: 0 0 14px rgba(0, 0, 0, 0.9), 0 0 2px rgba(0, 0, 0, 0.9);
   transition: opacity .8s, filter .8s;
 }
@@ -147,31 +151,37 @@
 /* a failed run leaves no words on stage: the evidence just goes */
 .uv-forge.error { opacity: 0; filter: blur(6px); transition-delay: .3s; }
 .uv-forge dl { margin: 0; display: grid; gap: 0; }
-.uv-forge .row { display: grid; grid-template-columns: 3em 1fr; gap: 12px; animation: uv-type .5s steps(8, end) both; }
+.uv-forge .row { display: grid; grid-template-columns: 3.5em 1fr; gap: 12px; animation: uv-type .5s steps(8, end) both; }
 .uv-forge dt { color: rgba(214, 236, 224, 0.42); }
 .uv-forge dt::before { content: "› "; }
 .uv-forge dd { margin: 0; word-break: break-all; font-variant-numeric: tabular-nums; }
 .uv-forge dd em { font-style: normal; color: rgba(214, 236, 224, 0.42); margin-left: 1.2em; word-break: normal; white-space: nowrap; }
+.uv-forge dd.note { word-break: normal; }
 .uv-forge dd i { font-style: normal; color: rgba(214, 236, 224, 0.42); padding: 0 0.3em; }
 .uv-forge dd.live::after { content: ""; display: inline-block; width: 0.55em; height: 1.05em; margin-left: 0.5em; vertical-align: -0.18em; background: currentColor; animation: uv-blink .9s steps(1) infinite; }
 @keyframes uv-type { from { clip-path: inset(0 100% 0 0) } to { clip-path: inset(0 0 0 0) } }
 
-/* the verdict: centred, as long as it takes to read, then the 3D frame carries it */
+/* the verdict: either side of the forged frame (never over it), as long as it takes to read, then the
+   3D frame carries it. The middle column is the frame's width; the frame scales with the viewport height. */
 .uv-verdict {
+  --frame: 52vh;
   position: absolute; inset: 0; z-index: 8; pointer-events: none;
-  display: flex; align-items: center; justify-content: center; gap: clamp(48px, 8vw, 140px);
+  display: grid; grid-template-columns: 1fr var(--frame) 1fr; align-items: center;
+  padding: 0 4vw 6vh; box-sizing: border-box;
   animation: uv-verdict 3.4s cubic-bezier(.2, .8, .2, 1) .15s both;
 }
-/* a soft dimming behind the words, so they never sit straight on a photo */
-.uv-verdict::before {
-  content: ""; position: absolute; inset: 0; z-index: -1;
-  background: radial-gradient(ellipse 55% 42% at 50% 50%, rgba(2, 3, 8, 0.72), rgba(2, 3, 8, 0.3) 70%, transparent);
-  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
-  mask-image: radial-gradient(ellipse 60% 48% at 50% 50%, #000 40%, transparent 100%);
-  -webkit-mask-image: radial-gradient(ellipse 60% 48% at 50% 50%, #000 40%, transparent 100%);
+.uv-verdict p {
+  position: relative; margin: 0; display: grid; gap: 14px;
+  font: 340 clamp(44px, 5.6vw, 96px)/1 var(--display); letter-spacing: -0.025em; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
 }
-.uv-verdict p { position: relative; margin: 0; display: grid; justify-items: center; gap: 12px; font: 340 clamp(44px, 5.6vw, 96px)/1 var(--display); letter-spacing: -0.025em; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8); }
-.uv-verdict span { font: 400 11px/1 var(--mono); letter-spacing: 0.32em; margin-right: -0.32em; text-transform: uppercase; color: var(--dim); }
+.uv-verdict p:first-child { grid-column: 1; justify-items: end; text-align: right; }
+.uv-verdict p:last-child { grid-column: 3; justify-items: start; text-align: left; }
+/* a soft dimming behind each word, so it never sits straight on the meadow */
+.uv-verdict p::before {
+  content: ""; position: absolute; inset: -60% -28%; z-index: -1;
+  background: radial-gradient(closest-side, rgba(2, 3, 8, 0.66), rgba(2, 3, 8, 0.25) 65%, transparent);
+}
+.uv-verdict span { font: 500 clamp(13px, 1.05vw, 17px)/1 var(--mono); letter-spacing: 0.26em; margin-right: -0.26em; text-transform: uppercase; color: rgba(242, 240, 234, 0.8); }
 .uv-verdict .bad { color: var(--fail); }
 .uv-verdict .good { color: var(--ok); }
 @keyframes uv-verdict {
@@ -186,10 +196,11 @@
 .uv-tools { position: absolute; right: 22px; bottom: 22px; z-index: 9; }
 .uv-tools-mark {
   display: block; width: 12px; height: 12px; padding: 0; border-radius: 50%;
-  background: transparent; border: 1px solid rgba(255, 255, 255, 0.5); opacity: 0.22;
-  transition: opacity .25s, background .25s;
+  background: transparent; border: 1px solid rgba(255, 255, 255, 0.5); opacity: 0;
+  transition: opacity .35s, background .25s;
 }
-.uv-tools-mark:hover, .uv-tools.open .uv-tools-mark { opacity: 0.9; }
+.uv-tools.near .uv-tools-mark { opacity: 0.35; }
+.uv-tools-mark:hover, .uv-tools-mark:focus-visible, .uv-tools.open .uv-tools-mark { opacity: 0.9; }
 .uv-tools.open .uv-tools-mark { background: rgba(255, 255, 255, 0.85); }
 .uv-tools-panel {
   position: absolute; right: 0; bottom: 24px; width: 292px; box-sizing: border-box; display: grid; gap: 12px;
@@ -229,9 +240,13 @@
 @media (max-width: 720px) {
   .uv-top { padding: 16px 18px; }
   .uv-log, .uv-forge { left: 14px; right: 14px; bottom: 14px; width: auto; max-width: none; }
+  .uv-forge { font-size: 15px; }
   .uv-tools { top: 18px; bottom: auto; right: 16px; }
   .uv-tools-panel { top: 22px; bottom: auto; width: min(292px, calc(100vw - 32px)); }
-  .uv-verdict { flex-direction: column; gap: 36px; }
+  /* On a phone the frame fills the middle: the two words sit side by side below it. */
+  .uv-verdict { grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; padding: 66vh 16px 0; }
+  .uv-verdict p, .uv-verdict p:first-child, .uv-verdict p:last-child { grid-column: auto; justify-items: center; text-align: center; font-size: clamp(34px, 10vw, 48px); gap: 10px; }
+  .uv-verdict span { font-size: 12px; }
   /* "Post-Quantum Day · 2035" → two whole lines: the dot becomes the break. */
   .uv-card h2 { font-size: clamp(38px, 11vw, 64px); }
   .uv-card h2 .sep { display: block; height: 0; overflow: hidden; }
@@ -239,6 +254,5 @@
 @media (prefers-reduced-motion: reduce) {
   .uv-log, .uv-forge .row, .uv-tools-panel { animation: none; }
   .uv-log li, .uv-log footer { transition: none; }
-  .uv-card-text { animation-name: uv-fade-in; }
-  .uv-card.out .uv-card-text { animation-name: uv-fade-out; }
+  .uv-card-text { transform: none; }
 }

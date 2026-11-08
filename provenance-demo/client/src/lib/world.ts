@@ -40,3 +40,29 @@ export function useWorld(pollMs = 1500) {
   }
   return { world, set, reset, resetCount }
 }
+
+/**
+ * Sends values one at a time, in order, but only the newest that is waiting: while one send is in flight,
+ * later calls replace each other, so a burst collapses to its last value and the last call always lands
+ * last. A failed (or timed-out) send never blocks the ones after it.
+ */
+export function latestWins<T>(send: (value: T) => Promise<unknown>): (value: T) => Promise<void> {
+  let busy = false
+  let next: { value: T } | null = null
+  let idle: Promise<void> = Promise.resolve()
+  const pump = async () => {
+    busy = true
+    try {
+      while (next) {
+        const { value } = next
+        next = null
+        try { await send(value) } catch { /* the next write (or the poll) will put it right */ }
+      }
+    } finally { busy = false }
+  }
+  return (value: T) => {
+    next = { value }
+    if (!busy) idle = pump()
+    return idle
+  }
+}
