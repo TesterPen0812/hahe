@@ -114,5 +114,7 @@ export function crossing(x: number) {
   const density = x < 0 ? Math.pow(ss(CROSSING_FROM, -0.4, x), 1.6) : 1 - ss(0.4, CROSSING_TO, x)
   const scramble = 1 - ss(0, 1.6, Math.abs(x))
   const shift = ss(-1.2, 2.2, x)
-  return { density, scramble, shift }
+  // at the threshold the characters close into a solid wall: nothing of either world shows through
+  const wall = x < 0 ? ss(-2.8, -0.9, x) : 1 - ss(0.9, 3, x)
+  return { density, scramble, shift, wall }
 }

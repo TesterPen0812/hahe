@@ -14,7 +14,7 @@ import { buildGallery, type Gallery, type GalleryPhoto, type SealVerdict } from 
 import { PHONE_HOST } from './liveFrame'
 import { createLiveSequence, LIVE_VIEW, type LiveFrames } from './liveSequence'
 import { Fluid } from './fluid'
-import { buildGreenWorld, insideTunnel } from './greenWorld'
+import { TUNNEL_GLYPH_GREEN, buildGreenWorld, insideTunnel } from './greenWorld'
 import { buildPrismWorld } from './prismWorld'
 import { curveStream } from './scenePath'
 import { ParticleSimulation } from './particles'
@@ -84,10 +84,10 @@ const BREAK_AFTER = 11
 const END_AFTER = 11
 const PRISM_TAIL = 3       // the walk ends this far before the Prism path's end
 const DOOR_TINTS: DoorTints = { door1: [0.55, 0.75, 1.0], door2: [1.0, 0.38, 0.22] }
-// The character crossing at door 2 (walk.ts `crossing`): blue characters, the door's own tint at the
-// threshold, violet after.
+// The character crossing at door 2 (walk.ts `crossing`): the blue world's characters turn the green of
+// the tunnel's character strands as they close into the wall, and stay green as it clears.
 const ASCII_BLUE = new THREE.Vector3(0.5, 0.68, 1.0)
-const ASCII_VIOLET = new THREE.Vector3(0.74, 0.46, 1.0)
+const ASCII_GREEN = new THREE.Vector3(...TUNNEL_GLYPH_GREEN)
 /** Seconds the walk may sit still inside the crossing before it eases out to the nearer side. */
 const CROSSING_IDLE = 0.6
 const DOOR_CAPTIONS: Partial<Record<DoorId, string>> = { door2: 'Post-Quantum Day · 2035' }
@@ -1301,17 +1301,15 @@ export class UniverseEngine implements WalkControls {
 
     const f = this.finish.uniforms
     f.uTime.value = t
-    // Crossing into Post-Quantum Day the blue world breaks into characters, they scramble at the
-    // threshold and resolve into the Prism: all on route distance, so walking back reverses it.
+    // Crossing door 2 the blue world breaks into characters, sparse then dense; they close into an
+    // opaque green wall at the threshold and clear into the next world: all on route distance, so
+    // walking back reverses it.
     const c = crossing(this.showcase ? 99 : this.r - this.stages[2].start)
     f.uAscii.value = c.density
     f.uScramble.value = c.scramble
-    const tint = f.uAsciiTint.value as THREE.Vector3
-    const d2 = this.door('door2')?.tint ?? DOOR_TINTS.door2
-    // the door's colour at the threshold, softened toward the blue it breaks from and the violet it becomes
-    this.tmpTint.set(d2[0], d2[1], d2[2]).lerp(c.shift < 0.5 ? ASCII_BLUE : ASCII_VIOLET, 0.45)
-    if (c.shift < 0.5) tint.lerpVectors(ASCII_BLUE, this.tmpTint, c.scramble)
-    else tint.lerpVectors(ASCII_VIOLET, this.tmpTint, c.scramble)
+    f.uWall.value = c.wall
+    const glyphTint = f.uAsciiTint.value as THREE.Vector3
+    glyphTint.lerpVectors(ASCII_BLUE, ASCII_GREEN, Math.max(c.wall, c.shift))
     this.flash = Math.max(0, this.flash - dt * 1.8)
     f.uFlash.value = this.flash * 0.8
     f.uZoom.value = this.zoom * this.zoom
@@ -1324,7 +1322,6 @@ export class UniverseEngine implements WalkControls {
     }
   }
 
-  private tmpTint = new THREE.Vector3()
   /** Focus the lens on what the visitor is walking toward: the path ahead, then the door. */
   private tmpV = new THREE.Vector3()
   private updateLens(dt: number) {

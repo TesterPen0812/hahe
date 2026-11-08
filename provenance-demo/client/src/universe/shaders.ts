@@ -974,6 +974,7 @@ export const finishShader = {
     uFluidAmt: { value: 0 },
     uAscii: { value: 0 },
     uScramble: { value: 0 },
+    uWall: { value: 0 },
     uAsciiTint: { value: new Vector3(0.55, 0.72, 1.0) },
     uCell: { value: 11 },
     uGlyphs: { value: null },
@@ -999,6 +1000,7 @@ export const finishShader = {
     uniform float uFluidAmt;
     uniform float uAscii;        // 0..1: how far the picture has broken into characters
     uniform float uScramble;     // 0..1: at the threshold, the characters cycle like a cipher cracking
+    uniform float uWall;         // 0..1: the characters close into an opaque wall at the threshold
     uniform vec3 uAsciiTint;     // the world the characters belong to (blue, the door's own tint, violet)
     uniform float uCell;         // character cell, in output pixels
     uniform sampler2D uGlyphs;
@@ -1032,7 +1034,7 @@ export const finishShader = {
       float seed = rand(cell * 0.173 + 0.31);
       // a cell's threshold: random, lowered for bright cells so the lights go first
       float key = rand(vec2(column, row) * 0.71 + 0.13) * (1.0 - 0.6 * clamp(lum * 3.0, 0.0, 1.0)) * 0.92;
-      on = smoothstep(key, key + 0.08, uAscii * 1.02);
+      on = max(smoothstep(key, key + 0.08, uAscii * 1.02), uWall);
       hole = 0.0;
       if (on < 0.001) return vec3(0.0);
       // the light in a cell that has given way gathers into its character: a soft, round hollow
@@ -1053,7 +1055,9 @@ export const finishShader = {
       // as they scramble a bright head runs down each column
       float u = fract(vUv.y * (0.9 + h1(column + 9.0) * 0.8) + uTime * (0.35 + 0.5 * h1(column + 5.0)) + h1(column + 1.0));
       float head = smoothstep(0.035, 0.0, u) * uScramble;
-      return (colour * light + vec3(0.85, 0.9, 1.0) * head * (0.4 + lum)) * ink;
+      // in the wall every cell is a character in the wall's own colour, bright or dim at random
+      vec3 body = mix(colour * light, uAsciiTint * (0.45 + 1.3 * seed * seed), uWall);
+      return (body + mix(vec3(0.85, 0.9, 1.0), uAsciiTint * 1.6, uWall) * head * (0.4 + lum + uWall)) * ink;
     }
     float surfaceHeight(vec2 uv) {
       return texture2D(uDye, uv).x + length(texture2D(uFluid, uv).xy * uFluidTexel) * 0.12;
@@ -1093,6 +1097,8 @@ export const finishShader = {
         float on, hole;
         vec3 chars = asciiPicture(vUv * uResolution, on, hole);
         col *= (1.0 - hole) * (1.0 - 0.3 * uAscii - 0.3 * uScramble);
+        // the wall is opaque: the picture gives way to a near-black ground under the characters
+        col = mix(col, uAsciiTint * 0.02, uWall);
         col += chars * on;
       }
       col *= max(0.0, 1.0 - dot(c, c) * uVignette * 2.0);

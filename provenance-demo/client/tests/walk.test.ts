@@ -93,7 +93,7 @@ test('glides are never instant and never a crawl', () => {
   assert.equal(glideSeconds(-65), 10)
 })
 
-test('the character crossing builds toward door 2, scrambles at it, resolves after, and is 0 where the walk rests', () => {
+test('the character crossing builds toward door 2, closes into a wall at it, clears after, and is 0 where the walk rests', () => {
   assert.equal(crossing(CROSSING_FROM).density, 0)
   assert.equal(crossing(CROSSING_FROM - 3).density, 0)
   assert.equal(crossing(CROSSING_TO).density, 0)
@@ -105,8 +105,12 @@ test('the character crossing builds toward door 2, scrambles at it, resolves aft
   assert.equal(crossing(0).scramble, 1)
   assert.equal(crossing(-2).scramble, 0)
   assert.ok(crossing(-3).shift === 0 && crossing(3).shift === 1)
+  // a solid wall at the threshold only, gone well inside the band on both sides
+  assert.equal(crossing(0).wall, 1)
+  assert.ok(crossing(-0.9).wall === 1 && crossing(0.9).wall === 1)
+  assert.ok(crossing(-2.8).wall === 0 && crossing(3).wall === 0 && crossing(-5).wall === 0)
   // nothing at the Q-Day stop (11 past the door) or anywhere on its slow zone's floor
   const qday = cardZone(11, 'qday', CARD_ZONE.long)
-  for (let x = qday.at - qday.inner; x <= 11; x += 0.05) assert.equal(crossing(x).density, 0)
+  for (let x = qday.at - qday.inner; x <= 11; x += 0.05) assert.ok(crossing(x).density === 0 && crossing(x).wall === 0)
   assert.ok(qday.at - qday.inner >= CROSSING_TO)
 })
