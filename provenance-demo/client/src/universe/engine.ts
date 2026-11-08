@@ -392,7 +392,7 @@ export class UniverseEngine {
     const fwd = this.keys.has('w') || this.keys.has('arrowup')
     const bwd = this.keys.has('s') || this.keys.has('arrowdown')
 
-    // A pinch-zoom in the air (webcam) pushes like a scroll wheel: spread thumb and index to go forward.
+    // A pinch-zoom in the air (webcam): two fingers spread to go forward, three to go back, fist stops.
     const hand = this.hands ? driveVelocity(this.hands, this.v, dt) : null
     if (hand?.active) this.target = null
 

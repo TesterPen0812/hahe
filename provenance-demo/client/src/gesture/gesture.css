@@ -27,3 +27,4 @@
 .gt-slider { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 
 @media (max-width: 720px) { .gt-stage { grid-template-columns: 1fr; } }
+.gt-read dd.amber { color: var(--amber); }

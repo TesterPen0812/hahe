@@ -55,17 +55,20 @@ export default function GestureTestPage() {
   }, [control])
 
   const hands = frame?.hands ?? []
-  const STROKE = { none: 'Ready: spread or pinch', in: 'Zooming in', out: 'Zooming out', return: 'Return stroke (ignored)' }
+  const POSE = { none: '', two: 'Two fingers', three: 'Three fingers', fist: 'Fist: stop' }
+  const STROKE = { none: 'spread to move', in: 'zooming in', out: 'zooming out', reset: 'resetting' }
   const state = !frame ? '—'
-    : frame.active >= 0 ? STROKE[frame.stroke]
-    : hands.length ? 'Curl middle, ring and little fingers'
+    : frame.pose === 'fist' ? POSE.fist
+    : frame.pose !== 'none' ? `${POSE[frame.pose]} · ${STROKE[frame.stroke]}`
+    : hands.length ? 'Curl ring and little fingers; thumb + index (in) or + middle (out)'
     : 'No hands'
+  const lead = frame && frame.active >= 0 ? frame.hands[frame.active] : hands[0]
 
   return (
     <main className="page gt">
       <header className="gt-head">
         <h1>Hand control</h1>
-        <p>Pinch-zoom in the air with one hand. Curl your middle, ring and little fingers, then spread thumb and index apart to zoom in, or pinch them together to zoom out. A quick move back right after a zoom is ignored, so you can zoom again; pause for a moment to change direction.</p>
+        <p>Pinch-zoom in the air with one hand, ring and little fingers curled. Spread <strong>two fingers</strong> (thumb and index) to zoom in, <strong>three</strong> (thumb, index and middle) to zoom out. Closing them again is the reset and doesn't move anything. A fist stops.</p>
       </header>
 
       {status !== 'running' && (
@@ -83,9 +86,10 @@ export default function GestureTestPage() {
           <div className="gt-stage">
             <HandPreview control={control} className="gt-preview" />
             <dl className="gt-read">
-              <div><dt>State</dt><dd className={frame?.stroke === 'in' ? 'on' : frame?.stroke === 'out' ? 'brake' : ''}>{state}</dd></div>
-              <div><dt>Hands</dt><dd>{hands.length} {hands.map(h => (h.pinchPose ? 'pinch pose' : 'open')).join(' · ')}</dd></div>
-              <div><dt>Thumb–index gap</dt><dd>{frame?.gap != null ? `${frame.gap.toFixed(2)} hand-sizes` : '—'}</dd></div>
+              <div><dt>State</dt><dd className={frame?.pose === 'two' ? 'on' : frame?.pose === 'three' ? 'amber' : frame?.pose === 'fist' ? 'brake' : ''}>{state}</dd></div>
+              <div><dt>Hands</dt><dd>{hands.length} {hands.map(h => h.pose).join(' · ')}</dd></div>
+              <div><dt>Finger reach (index · middle · ring · little)</dt><dd>{lead ? lead.reach.map(r => r.toFixed(2)).join(' · ') : '—'}</dd></div>
+              <div><dt>Pinch gap</dt><dd>{frame?.gap != null ? `${frame.gap.toFixed(2)} hand-sizes` : '—'}</dd></div>
               <div><dt>Speed</dt><dd>{pos.v.toFixed(1)}</dd></div>
               <div><dt>Tracking</dt><dd>{frame ? `${frame.fps.toFixed(0)} fps` : '—'}</dd></div>
             </dl>
