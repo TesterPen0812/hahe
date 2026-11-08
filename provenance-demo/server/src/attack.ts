@@ -1,4 +1,7 @@
 // DEMO SIMULATION — stands in for Shor's algorithm on a quantum computer.
+// The REAL live break now runs in the client (client/src/lib/toyRsa.ts): the laptop factors the
+// toy camera's 96-bit modulus from the public trust list, rebuilds its private key and uploads a
+// forgery through the normal items route. These simulated routes remain for the AttackerPage.
 // All secrets stay in this process; only public fingerprints and real verdicts leave it.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync } from 'node:fs';
