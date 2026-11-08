@@ -68,23 +68,27 @@ export default function UniversePage() {
 
   // ── the live feed: phone photos land in the scene and stream their checks into the log ──
   const feed = useLiveFeed(false)
-  // Photos shown in the live frames, by id; when the world changes they are judged again in place.
-  const shown = useRef(new Set<string>())
-  useEffect(() => {
-    if (!feed.arrival) return
-    shown.current.add(feed.arrival.id)
-    engine.current?.showLive(toLiveArrival(feed.arrival))
-  }, [feed.arrival])
+  // Photos shown in the live frames, by id, with the verdict they wear. When the world changes they
+  // are judged again in place; an unchanged verdict (every poll) leaves the frame alone.
+  const shown = useRef(new Map<string, string>())
+  const showLive = useCallback((i: ItemSummary, isNew: boolean) => {
+    const a = toLiveArrival(i)
+    const sig = JSON.stringify([a.status, a.label, a.parts])
+    if (!isNew && (!shown.current.has(a.id) || shown.current.get(a.id) === sig)) return
+    shown.current.set(a.id, sig)
+    engine.current?.showLive(a)
+  }, [])
+  useEffect(() => { if (feed.arrival) showLive(feed.arrival, true) }, [feed.arrival, showLive])
   const { refresh } = feed
   useEffect(() => { refresh() }, [world.mode, refresh])
   useEffect(() => {
     if (!feed.items) return
-    for (const i of feed.items) if (shown.current.has(i.id)) engine.current?.showLive(toLiveArrival(i))
+    for (const i of feed.items) showLive(i, false)
     if (world.mode !== 'q-day') return
     const verdicts = new Map<string, SealVerdict>()
     for (const i of feed.items) verdicts.set(i.id, { status: i.verification.status, anchored: i.verification.anchoredBeforeQDay })
     engine.current?.setVerdicts(verdicts)
-  }, [world.mode, feed.items])
+  }, [world.mode, feed.items, showLive])
 
   // ── the live key break ──
   const forge = useForge(result => engine.current?.showForgery(toForgeryArrival(result)))

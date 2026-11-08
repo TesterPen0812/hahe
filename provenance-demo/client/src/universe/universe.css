@@ -154,7 +154,15 @@
   display: flex; align-items: center; justify-content: center; gap: clamp(48px, 8vw, 140px);
   animation: uv-verdict 3.4s cubic-bezier(.2, .8, .2, 1) .9s both;
 }
-.uv-verdict p { margin: 0; display: grid; justify-items: center; gap: 12px; font: 340 clamp(44px, 5.6vw, 96px)/1 var(--display); letter-spacing: -0.025em; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8); }
+/* a soft dimming behind the words, so they never sit straight on a photo */
+.uv-verdict::before {
+  content: ""; position: absolute; inset: 0; z-index: -1;
+  background: radial-gradient(ellipse 55% 42% at 50% 50%, rgba(2, 3, 8, 0.72), rgba(2, 3, 8, 0.3) 70%, transparent);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  mask-image: radial-gradient(ellipse 60% 48% at 50% 50%, #000 40%, transparent 100%);
+  -webkit-mask-image: radial-gradient(ellipse 60% 48% at 50% 50%, #000 40%, transparent 100%);
+}
+.uv-verdict p { position: relative; margin: 0; display: grid; justify-items: center; gap: 12px; font: 340 clamp(44px, 5.6vw, 96px)/1 var(--display); letter-spacing: -0.025em; text-shadow: 0 0 40px rgba(0, 0, 0, 0.8); }
 .uv-verdict span { font: 400 11px/1 var(--mono); letter-spacing: 0.32em; margin-right: -0.32em; text-transform: uppercase; color: var(--dim); }
 .uv-verdict .bad { color: var(--fail); }
 .uv-verdict .good { color: var(--ok); }
