@@ -449,8 +449,8 @@ export class UniverseEngine implements WalkControls {
     if (!photos.length) return
     const blue = this.stages[1], prism = this.stages[2]
     const gate = blue.door!.s
-    this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, blue.ground) })
-    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, 10 / prism.len, (LIVE_START - 4) / prism.len, 1, prism.ground) })
+    this.galleries.push({ stage: 1, gallery: buildGallery(photos, blue.path, 22 / blue.len, (gate - 6) / blue.len, 0, { ground: blue.ground }) })
+    this.galleries.push({ stage: 2, gallery: buildGallery(photos, prism.path, 10 / prism.len, (LIVE_START - 4) / prism.len, 1, { ground: prism.ground }) })
     for (const g of this.galleries) this.stages[g.stage].scene.add(g.gallery.group)
   }
 

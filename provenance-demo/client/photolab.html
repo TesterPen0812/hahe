@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Photo lab</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #05070b; overflow: hidden; }
+      #lab-ui { position: fixed; top: 10px; left: 10px; display: flex; gap: 6px; flex-wrap: wrap; z-index: 2; font: 12px ui-monospace, monospace; }
+      #lab-ui button { background: rgba(255,255,255,.06); color: #cfd6e2; border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 4px 8px; cursor: pointer; }
+      body.clean #lab-ui { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="lab-ui"></div>
+    <script type="module" src="/src/universe/photolab.ts"></script>
+  </body>
+</html>
