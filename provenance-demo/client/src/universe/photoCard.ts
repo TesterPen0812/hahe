@@ -305,6 +305,8 @@ const poolFragment = /* glsl */ `
   void main() {
     vec2 q = (vUv - 0.5) * 2.0;
     float a = exp(-dot(q, q) * 4.0) * uOn;
+    // die out well inside the quad, so seen edge-on it never ends in a hard line
+    a *= (1.0 - smoothstep(0.5, 0.95, abs(q.x))) * (1.0 - smoothstep(0.5, 0.95, abs(q.y)));
     a *= 1.0 - smoothstep(uFog.x, uFog.y, vDist);
     if (a < 0.002) discard;
     vec3 c = worldLight(uTint, uIris, q.x * 0.3 + uTime * 0.04);

@@ -135,8 +135,8 @@ const fragment = /* glsl */ `
       if (r > 1.0) discard;
       a = exp(-r * r * 7.0) * 0.85 + (1.0 - smoothstep(0.55, 1.0, r)) * 0.22;
     }
-    // additive blending scales by alpha
-    gl_FragColor = vec4(vColor, a * vA);
+    // additive blending scales by alpha; characters stay as faint as the tunnel's own rain
+    gl_FragColor = vec4(vColor, a * vA * (uGlyph > 0.5 ? 0.5 : 1.0));
   }
 `
 
@@ -173,7 +173,7 @@ export class CardMotes {
       uIris: { value: look.iris ? 1 : 0 },
       uRose: { value: new THREE.Vector3(0.95, 0.5, 0.5) },
       uFogRange: { value: new THREE.Vector2(fog[0], fog[1]) },
-      uScale: { value: look.glyph ? 1.5 : 1 },
+      uScale: { value: look.glyph ? 0.85 : 1 },
       uGlyph: { value: look.glyph ? 1 : 0 },
       uGlyphs: { value: look.glyph ? glyphAtlas() : null },
     }
